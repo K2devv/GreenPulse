@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   AlertTriangle,
   ArrowDownUp,
@@ -14,6 +14,7 @@ import {
   Crosshair,
   Droplets,
   Filter,
+  Flame,
   Leaf,
   LogIn,
   LogOut,
@@ -30,7 +31,8 @@ import {
   X,
 } from 'lucide-react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet'
+import MarkerClusterGroup from 'react-leaflet-cluster'
+import { Circle, MapContainer, Marker, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet'
 import { divIcon, type LatLngExpression } from 'leaflet'
 import type { Session } from '@supabase/supabase-js'
 import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type NotificationRow, type Profile, type ReportEvent, type ReportRow } from './lib/supabase'
@@ -122,15 +124,70 @@ const intakeCategories: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainag
 const statusOptions: Status[] = ['Submitted', 'Under review', 'Additional information requested', 'Verified', 'In progress', 'Awaiting verification', 'Resolved', 'Rejected', 'Closed']
 function createReportMarker(report: Report, selected: boolean) {
   const categoryClass = report.category.toLowerCase().replace(/[^a-z]/g, '-')
+  const statusClass = report.status.toLowerCase().replace(/ /g, '-')
   const Icon = categoryIcon(report.category)
   const iconMarkup = renderToStaticMarkup(<Icon size={18} strokeWidth={2.2} aria-hidden="true" />)
   return divIcon({
     className: 'incident-marker-shell',
-    html: `<span class="incident-marker incident-marker-${categoryClass}${report.urgency === 'High' ? ' incident-marker-urgent' : ''}${selected ? ' incident-marker-selected' : ''}"><span class="incident-marker-icon">${iconMarkup}</span>${report.urgency === 'High' ? '<i></i>' : ''}</span>`,
+    html: `<span class="incident-marker incident-marker-${categoryClass}${report.urgency === 'High' ? ' incident-marker-urgent' : ''}${selected ? ' incident-marker-selected' : ''}"><span class="incident-marker-icon">${iconMarkup}</span><i class="incident-marker-status status-${statusClass}"></i>${report.urgency === 'High' ? '<i class="incident-marker-urgency"></i>' : ''}</span>`,
     iconSize: [42, 48],
     iconAnchor: [21, 42],
     popupAnchor: [0, -39],
   })
+}
+
+function approximateCoordinates([latitude, longitude]: [number, number]): [number, number] {
+  return [Number(latitude.toFixed(3)), Number(longitude.toFixed(3))]
+}
+
+function distanceInMeters(first: [number, number], second: [number, number]) {
+  const radians = (degrees: number) => degrees * Math.PI / 180
+  const latitudeDelta = radians(second[0] - first[0])
+  const longitudeDelta = radians(second[1] - first[1])
+  const latitudeOne = radians(first[0])
+  const latitudeTwo = radians(second[0])
+  const haversine = Math.sin(latitudeDelta / 2) ** 2
+    + Math.cos(latitudeOne) * Math.cos(latitudeTwo) * Math.sin(longitudeDelta / 2) ** 2
+  return 6_371_000 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine))
+}
+
+async function searchPlaces(query: string, center: [number, number], signal: AbortSignal): Promise<LocationSuggestion[]> {
+  const parameters = new URLSearchParams({
+    q: query,
+    lat: String(center[0]),
+    lon: String(center[1]),
+    limit: '6',
+    lang: 'en',
+  })
+  const response = await fetch(`https://photon.komoot.io/api/?${parameters}`, { signal })
+  if (!response.ok) throw new Error('Place search is temporarily unavailable.')
+  const result = await response.json() as {
+    features?: Array<{ geometry?: { coordinates?: [number, number] }; properties?: Record<string, string | undefined> }>
+  }
+  return (result.features ?? []).flatMap((feature) => {
+    const coordinates = feature.geometry?.coordinates
+    const properties = feature.properties
+    if (!coordinates || !properties || !Number.isFinite(coordinates[0]) || !Number.isFinite(coordinates[1])) return []
+    const parts = [properties.name, properties.street, properties.district, properties.city, properties.state, properties.country]
+      .filter((part): part is string => Boolean(part))
+      .filter((part, index, allParts) => allParts.indexOf(part) === index)
+    return parts.length ? [{ label: parts.join(', '), coordinates: [coordinates[1], coordinates[0]] as [number, number] }] : []
+  })
+}
+
+async function reverseGeocode(coordinates: [number, number], signal?: AbortSignal): Promise<string> {
+  const parameters = new URLSearchParams({ lat: String(coordinates[0]), lon: String(coordinates[1]), lang: 'en' })
+  const response = await fetch(`https://photon.komoot.io/reverse?${parameters}`, { signal })
+  if (!response.ok) throw new Error('Address lookup is temporarily unavailable.')
+  const result = await response.json() as {
+    features?: Array<{ properties?: Record<string, string | undefined> }>
+  }
+  const properties = result.features?.[0]?.properties
+  const parts = [properties?.name, properties?.street, properties?.district, properties?.city, properties?.state]
+    .filter((part): part is string => Boolean(part))
+    .filter((part, index, allParts) => allParts.indexOf(part) === index)
+  if (!parts.length) throw new Error('No nearby address could be found.')
+  return parts.join(', ')
 }
 
 function formatCreatedAt(value: string) {
@@ -166,8 +223,25 @@ const categoryIcon = (category: Category) => {
 function MapFocus({ report, center }: { report: Report | undefined; center: [number, number] }) {
   const map = useMap()
   useEffect(() => {
-    map.flyTo(report?.coordinates ?? center, report ? 16 : map.getZoom(), { duration: 0.65 })
+    map.flyTo(report ? approximateCoordinates(report.coordinates) : center, report ? 16 : map.getZoom(), { duration: 0.65 })
   }, [center, map, report])
+  return null
+}
+
+function LocationPickerFocus({ center }: { center: [number, number] }) {
+  const map = useMap()
+  useEffect(() => {
+    map.flyTo(center, Math.max(map.getZoom(), 16), { duration: 0.35 })
+  }, [center, map])
+  return null
+}
+
+function LocationPickerEvents({ onSelect }: { onSelect: (coordinates: [number, number]) => void }) {
+  useMapEvents({
+    click(event) {
+      onSelect([event.latlng.lat, event.latlng.lng])
+    },
+  })
   return null
 }
 
@@ -235,6 +309,14 @@ function App() {
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState<string>()
   const [newestFirst, setNewestFirst] = useState(true)
+  const [mapSearchQuery, setMapSearchQuery] = useState('')
+  const [mapSearchSuggestions, setMapSearchSuggestions] = useState<LocationSuggestion[]>([])
+  const [mapSearchBusy, setMapSearchBusy] = useState(false)
+  const [mapSearchMessage, setMapSearchMessage] = useState('')
+  const [heatmapEnabled, setHeatmapEnabled] = useState(false)
+  const [nearbyOnly, setNearbyOnly] = useState(false)
+  const [gpsLocation, setGpsLocation] = useState<[number, number]>()
+  const [mapLocationError, setMapLocationError] = useState('')
   const [reporting, setReporting] = useState(false)
   const [photo, setPhoto] = useState<string>()
   const [formError, setFormError] = useState('')
@@ -246,6 +328,7 @@ function App() {
   const [locationSearchBusy, setLocationSearchBusy] = useState(false)
   const [locationSearchMessage, setLocationSearchMessage] = useState('')
   const [locationConfirmed, setLocationConfirmed] = useState(false)
+  const geocodeRequest = useRef(0)
   const [theme, setTheme] = useState<Theme>(() => {
     try {
       return localStorage.getItem('greenpulse-theme') === 'dark' ? 'dark' : 'light'
@@ -297,29 +380,7 @@ function App() {
     setLocationSearchBusy(true)
     const timer = window.setTimeout(async () => {
       try {
-        const parameters = new URLSearchParams({
-          q: query,
-          lat: String(districtCenter[0]),
-          lon: String(districtCenter[1]),
-          limit: '6',
-          lang: 'en',
-        })
-        const response = await fetch(`https://photon.komoot.io/api/?${parameters}`, { signal: controller.signal })
-        if (!response.ok) throw new Error('Place search is temporarily unavailable.')
-        const result = await response.json() as {
-          features?: Array<{ geometry?: { coordinates?: [number, number] }; properties?: Record<string, string | undefined> }>
-        }
-        const suggestions = (result.features ?? []).flatMap((feature) => {
-          const coordinates = feature.geometry?.coordinates
-          const properties = feature.properties
-          if (!coordinates || !properties || !Number.isFinite(coordinates[0]) || !Number.isFinite(coordinates[1])) return []
-          const parts = [properties.name, properties.street, properties.district, properties.city, properties.state, properties.country]
-            .filter((part): part is string => Boolean(part))
-            .filter((part, index, parts) => parts.indexOf(part) === index)
-          if (parts.length === 0) return []
-          return [{ label: parts.join(', '), coordinates: [coordinates[1], coordinates[0]] as [number, number] }]
-        })
-        setLocationSuggestions(suggestions)
+        setLocationSuggestions(await searchPlaces(query, districtCenter, controller.signal))
       } catch (error) {
         if (!controller.signal.aborted) {
           setLocationSuggestions([])
@@ -334,6 +395,35 @@ function App() {
       controller.abort()
     }
   }, [locationConfirmed, locationQuery, reporting])
+
+  useEffect(() => {
+    const query = mapSearchQuery.trim()
+    if (query.length < 3) {
+      setMapSearchSuggestions([])
+      setMapSearchBusy(false)
+      setMapSearchMessage('')
+      return
+    }
+    const controller = new AbortController()
+    setMapSearchBusy(true)
+    setMapSearchMessage('')
+    const timer = window.setTimeout(async () => {
+      try {
+        setMapSearchSuggestions(await searchPlaces(query, mapCenter, controller.signal))
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setMapSearchSuggestions([])
+          setMapSearchMessage(error instanceof Error ? error.message : 'Place search is temporarily unavailable.')
+        }
+      } finally {
+        if (!controller.signal.aborted) setMapSearchBusy(false)
+      }
+    }, 450)
+    return () => {
+      window.clearTimeout(timer)
+      controller.abort()
+    }
+  }, [mapCenter, mapSearchQuery])
 
   useEffect(() => {
     if (!supabase || !session) {
@@ -438,7 +528,21 @@ function App() {
     const matchesSearch = `${report.title} ${report.location} ${report.id}`.toLowerCase().includes(search.toLowerCase())
     return matchesCategory && matchesStatus && matchesSearch
   }), [categoryFilter, reports, search, statusFilter])
-  const orderedReports = newestFirst ? visibleReports : [...visibleReports].reverse()
+  const nearbyCenter = gpsLocation ?? mapCenter
+  const nearbyReports = useMemo(() => visibleReports.filter((report) => distanceInMeters(report.coordinates, nearbyCenter) <= 1000), [nearbyCenter, visibleReports])
+  const mapReports = nearbyOnly ? nearbyReports : visibleReports
+  const orderedReports = newestFirst ? mapReports : [...mapReports].reverse()
+  const heatmapCells = useMemo(() => {
+    const cells = new Map<string, { coordinates: [number, number]; count: number }>()
+    for (const report of orderedReports) {
+      const coordinates = approximateCoordinates(report.coordinates)
+      const key = coordinates.join(',')
+      const cell = cells.get(key)
+      if (cell) cell.count += 1
+      else cells.set(key, { coordinates, count: 1 })
+    }
+    return [...cells.values()]
+  }, [orderedReports])
   const staffQueue = useMemo(() => reports.filter((report) => {
     const matchesQuery = `${report.title} ${report.location} ${report.category}`.toLowerCase().includes(staffSearch.toLowerCase())
     const matchesStatus = staffStatusFilter === 'All reports'
@@ -448,7 +552,7 @@ function App() {
   }), [reports, staffSearch, staffStatusFilter])
   const adminAnalytics = useMemo(() => buildReportAnalytics(reports), [reports])
 
-  const selectedReport = reports.find((report) => report.id === selectedId)
+  const selectedReport = mapReports.find((report) => report.id === selectedId)
   const staffReport = reports.find((report) => report.id === staffReportId)
   const openReports = reports.filter((report) => report.status !== 'Resolved' && report.status !== 'Rejected' && report.status !== 'Closed').length
   const verifiedReports = reports.filter((report) => report.status === 'Verified' || report.status === 'In progress').length
@@ -588,26 +692,66 @@ function App() {
     setReporting(true)
   }
 
-  function requestLocation() {
+  function requestLocation(showNearby = false) {
     if (!navigator.geolocation) {
-      setFormError('Location access is not available in this browser.')
+      const message = 'Location access is not available in this browser.'
+      setMapLocationError(message)
+      if (reporting) setFormError(message)
       return
     }
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
         const currentLocation: [number, number] = [coords.latitude, coords.longitude]
+        setGpsLocation(currentLocation)
         setLocation(currentLocation)
         setMapCenter(currentLocation)
         setLocationQuery('Current location')
         setLocationConfirmed(true)
         setLocationSuggestions([])
         setLocationSearchMessage('')
+        setMapLocationError('')
+        if (showNearby) setNearbyOnly(true)
         setSelectedId(undefined)
         setFormError('')
+        const request = ++geocodeRequest.current
+        void reverseGeocode(currentLocation).then((label) => {
+          if (request === geocodeRequest.current) setLocationQuery(label)
+        }).catch((error: unknown) => {
+          if (request === geocodeRequest.current) {
+            const message = error instanceof Error ? error.message : 'Address lookup is temporarily unavailable.'
+            setLocationSearchMessage(`${message} Coordinates are still selected.`)
+          }
+        })
       },
-      () => setFormError('Location was not shared. You can still submit the approximate map location.'),
+      () => {
+        const message = 'Location was not shared. You can still select a point on the map.'
+        setMapLocationError(message)
+        if (reporting) setFormError(message)
+      },
       { enableHighAccuracy: true, timeout: 10000 },
     )
+  }
+
+  function selectMapLocation(coordinates: [number, number]) {
+    const preciseCoordinates: [number, number] = [Number(coordinates[0].toFixed(6)), Number(coordinates[1].toFixed(6))]
+    setLocation(preciseCoordinates)
+    setMapCenter(preciseCoordinates)
+    setLocationConfirmed(true)
+    setLocationSuggestions([])
+    setFormError('')
+    setLocationSearchMessage('Finding a nearby address…')
+    const request = ++geocodeRequest.current
+    void reverseGeocode(preciseCoordinates).then((label) => {
+      if (request === geocodeRequest.current) {
+        setLocationQuery(label)
+        setLocationSearchMessage('')
+      }
+    }).catch((error: unknown) => {
+      if (request === geocodeRequest.current) {
+        setLocationQuery('Selected map location')
+        setLocationSearchMessage(`${error instanceof Error ? error.message : 'Address lookup is temporarily unavailable.'} Coordinates are still selected.`)
+      }
+    })
   }
 
   function handlePhoto(file?: File) {
@@ -918,33 +1062,51 @@ function App() {
         {!staffMode && <section className="monitoring-layout">
           <div className="map-column">
             <div className="section-toolbar">
-              <div><h2>Incident map</h2><span className="section-caption">Verified community reports in District 5</span></div>
-              <button className="map-location-button" type="button" onClick={requestLocation} title="Use my current location"><Crosshair size={15} /><span>My location</span></button>
+              <div><h2>Incident map</h2><span className="section-caption">{nearbyOnly ? `${nearbyReports.length} reports within 1 km` : `${visibleReports.length} reports · filters apply to map markers`}</span></div>
+              <button className={`map-location-button ${nearbyOnly ? 'active' : ''}`} type="button" onClick={() => nearbyOnly ? setNearbyOnly(false) : requestLocation(true)} title={nearbyOnly ? 'Show all filtered reports' : 'Show reports near my current location'}><Crosshair size={15} /><span>{nearbyOnly ? 'All reports' : 'Nearby'}</span></button>
             </div>
             <div className="map-frame">
               <MapContainer center={mapCenter as LatLngExpression} zoom={15} scrollWheelZoom className="leaflet-map">
                 <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
                 <MapFocus report={selectedReport} center={mapCenter} />
-                {orderedReports.map((report) => (
-                  <Marker
-                    key={report.id}
-                    position={report.coordinates}
-                    icon={createReportMarker(report, selectedId === report.id)}
-                    eventHandlers={{ click: () => setSelectedId(report.id) }}
-                  >
-                    <Popup className="report-map-popup"><div><span>{report.category} · {report.status}</span><strong>{report.title}</strong><small className="popup-reporter"><UserRound size={12} />Reported by {report.reporterName || 'Community resident'}</small><small><MapPin size={12} />{report.location}</small><p>{report.description}</p></div></Popup>
-                  </Marker>
-                ))}
+                {heatmapEnabled && heatmapCells.map((cell) => {
+                  const density = cell.count >= 6 ? 'high' : cell.count >= 3 ? 'moderate' : 'low'
+                  const color = density === 'high' ? '#c94c3c' : density === 'moderate' ? '#df9638' : '#65a36e'
+                  return <Circle key={cell.coordinates.join(',')} center={cell.coordinates} radius={cell.count >= 6 ? 190 : cell.count >= 3 ? 140 : 95} pathOptions={{ color, fillColor: color, fillOpacity: 0.22, opacity: 0.38, weight: 1 }} />
+                })}
+                <MarkerClusterGroup chunkedLoading spiderfyOnMaxZoom showCoverageOnHover={false}>
+                  {orderedReports.map((report) => (
+                    <Marker
+                      key={report.id}
+                      position={approximateCoordinates(report.coordinates)}
+                      icon={createReportMarker(report, selectedId === report.id)}
+                      eventHandlers={{ click: () => setSelectedId(report.id) }}
+                    >
+                      <Popup className="report-map-popup"><div><span>{report.category} · {report.status}</span><strong>{report.title}</strong><small className="popup-reporter"><UserRound size={12} />Reported by {report.reporterName || 'Community resident'}</small><small><MapPin size={12} />Approx. {approximateCoordinates(report.coordinates).map((coordinate) => coordinate.toFixed(3)).join(', ')}</small><p>{report.description}</p></div></Popup>
+                    </Marker>
+                  ))}
+                </MarkerClusterGroup>
+                {gpsLocation && <Circle center={gpsLocation} radius={55} pathOptions={{ color: '#3979bd', fillColor: '#4388cc', fillOpacity: 0.28, weight: 2 }} />}
               </MapContainer>
+              <div className="map-search-wrap">
+                <label className="map-search-box"><Search size={15} /><input value={mapSearchQuery} onChange={(event) => { setMapSearchQuery(event.target.value); setMapSearchMessage('') }} placeholder="Search a place or address" aria-label="Search the map by place or address" autoComplete="off" />{mapSearchBusy && <span className="search-spinner" aria-label="Searching places" />}{mapSearchQuery && <button type="button" onClick={() => { setMapSearchQuery(''); setMapSearchSuggestions([]); setMapSearchMessage('') }} aria-label="Clear map search"><X size={13} /></button>}</label>
+                {mapSearchSuggestions.length > 0 && <ul className="map-search-suggestions" role="listbox" aria-label="Map place suggestions">{mapSearchSuggestions.map((suggestion) => <li key={`${suggestion.label}-${suggestion.coordinates.join(',')}`}><button type="button" role="option" onClick={() => { setMapCenter(suggestion.coordinates); setMapSearchQuery(''); setMapSearchSuggestions([]); setMapSearchMessage(''); setNearbyOnly(false); setSelectedId(undefined) }}><MapPin size={14} /><span>{suggestion.label}<small>{suggestion.coordinates[0].toFixed(5)}, {suggestion.coordinates[1].toFixed(5)}</small></span></button></li>)}</ul>}
+                {!mapSearchBusy && mapSearchMessage && <p className="map-search-feedback map-search-error" role="status">{mapSearchMessage}</p>}
+                {!mapSearchBusy && mapSearchQuery.trim().length >= 3 && !mapSearchMessage && mapSearchSuggestions.length === 0 && <p className="map-search-feedback" role="status">No matching places found.</p>}
+              </div>
+              <div className="map-actions">
+                <button className={`map-action-button ${heatmapEnabled ? 'active' : ''}`} type="button" aria-pressed={heatmapEnabled} onClick={() => setHeatmapEnabled((enabled) => !enabled)}><Flame size={14} />{heatmapEnabled ? 'Hide density' : 'Heatmap'}</button>
+              </div>
               <div className="map-label"><MapPin size={13} /> District 5, Quezon City</div>
-              <div className="map-legend"><span className="legend-title">REPORT TYPE</span>{categoryOptions.map((category) => <span className="legend-item" key={category}><i style={{ backgroundColor: categoryColors[category] }} />{category}</span>)}</div>
+              <div className="map-legend"><span className="legend-title">CATEGORY</span>{categoryOptions.map((category) => <span className="legend-item" key={category}><i style={{ backgroundColor: categoryColors[category] }} />{category}</span>)}<span className="legend-divider" /><span className="legend-title">STATUS DOT</span><span className="legend-item"><i className="status-dot status-submitted" />Submitted</span><span className="legend-item"><i className="status-dot status-under-review" />Under review</span><span className="legend-item"><i className="status-dot status-in-progress" />In progress</span><span className="legend-item"><i className="status-dot status-resolved" />Resolved</span><span className="legend-divider" /><span className="legend-title">REPORT DENSITY</span><span className="legend-item"><i className="density-low" />Low · 1–2</span><span className="legend-item"><i className="density-moderate" />Moderate · 3–5</span><span className="legend-item"><i className="density-high" />High · 6+</span></div>
+              {mapLocationError && <p className="map-search-feedback map-search-error map-location-error" role="status">{mapLocationError}</p>}
             </div>
-            <div className="map-footnote"><MapPin size={13} /> Pins show approximate report locations <span>·</span> Select a pin for details</div>
+            <div className="map-footnote"><MapPin size={13} /> Pins are approximate locations · Status dots match report progress <span>·</span> Select a pin for details</div>
           </div>
 
           <aside className="reports-panel" aria-label="Recent environmental reports">
             <div className="reports-heading">
-              <div><div className="reports-title-line"><h2>Recent reports</h2><span className="count-badge">{visibleReports.length}</span></div><span className="section-caption">Community-submitted concerns</span></div>
+              <div><div className="reports-title-line"><h2>{nearbyOnly ? 'Nearby reports' : 'Recent reports'}</h2><span className="count-badge">{mapReports.length}</span></div><span className="section-caption">Community-submitted concerns</span></div>
               <button className="icon-button sort-button" title={`Sort ${newestFirst ? 'oldest' : 'newest'} first`} aria-label={`Sort ${newestFirst ? 'oldest' : 'newest'} first`} onClick={() => setNewestFirst((current) => !current)} type="button"><ArrowDownUp size={16} /></button>
             </div>
             <div className="report-controls">
@@ -959,7 +1121,7 @@ function App() {
                 const Icon = categoryIcon(report.category)
                 return <button type="button" className={`report-item ${selectedId === report.id ? 'is-selected' : ''}`} key={report.id} onClick={() => setSelectedId(report.id)}>
                   <span className="report-category-icon" style={{ color: categoryColors[report.category], backgroundColor: `${categoryColors[report.category]}14` }}><Icon size={17} /></span>
-                  <span className="report-main"><span className="report-title">{report.title}</span><span className="report-meta"><MapPin size={12} />{report.location}<span>·</span>{formatCreatedAt(report.createdAt)}</span><span className="report-tags"><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span>{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></span>
+                  <span className="report-main"><span className="report-title">{report.title}</span><span className="report-meta"><MapPin size={12} />Approx. {approximateCoordinates(report.coordinates).map((coordinate) => coordinate.toFixed(3)).join(', ')}<span>·</span>{formatCreatedAt(report.createdAt)}</span><span className="report-tags"><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span>{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></span>
                   <span className="report-id">{report.id.replace('GP-', '#')}</span>
                 </button>
               })}
@@ -982,18 +1144,32 @@ function App() {
               <label className="field-label" htmlFor="report-location">Location <span className="field-hint">Search a street, landmark, barangay, or facility</span></label>
               <div className={`location-autocomplete ${locationConfirmed ? 'location-confirmed' : ''}`}>
                 <MapPin size={16} />
-                <input id="report-location" name="location" value={locationQuery} onChange={(event) => { setLocationQuery(event.target.value); setLocationConfirmed(false); setLocationSearchMessage('') }} placeholder="e.g. Batasan Hills, Quezon City" autoComplete="off" role="combobox" aria-autocomplete="list" aria-expanded={locationSuggestions.length > 0} aria-controls="location-suggestions" />
+                <input id="report-location" name="location" value={locationQuery} onChange={(event) => { geocodeRequest.current += 1; setLocationQuery(event.target.value); setLocationConfirmed(false); setLocationSearchMessage('') }} placeholder="e.g. Batasan Hills, Quezon City" autoComplete="off" role="combobox" aria-autocomplete="list" aria-expanded={locationSuggestions.length > 0} aria-controls="location-suggestions" />
                 {locationSearchBusy && <span className="search-spinner" aria-label="Searching locations" />}
                 {locationConfirmed && <Check size={16} className="location-check" />}
               </div>
-              {locationSuggestions.length > 0 && <ul className="location-suggestions" id="location-suggestions" role="listbox" aria-label="Suggested places">{locationSuggestions.map((suggestion) => <li key={`${suggestion.label}-${suggestion.coordinates.join(',')}`}><button type="button" role="option" aria-selected="false" onClick={() => { setLocation(suggestion.coordinates); setMapCenter(suggestion.coordinates); setLocationQuery(suggestion.label); setLocationConfirmed(true); setLocationSuggestions([]); setLocationSearchMessage(''); setFormError('') }}><MapPin size={15} /><span>{suggestion.label}<small>{suggestion.coordinates[0].toFixed(5)}, {suggestion.coordinates[1].toFixed(5)}</small></span></button></li>)}</ul>}
+              {locationSuggestions.length > 0 && <ul className="location-suggestions" id="location-suggestions" role="listbox" aria-label="Suggested places">{locationSuggestions.map((suggestion) => <li key={`${suggestion.label}-${suggestion.coordinates.join(',')}`}><button type="button" role="option" aria-selected="false" onClick={() => { geocodeRequest.current += 1; setLocation(suggestion.coordinates); setMapCenter(suggestion.coordinates); setLocationQuery(suggestion.label); setLocationConfirmed(true); setLocationSuggestions([]); setLocationSearchMessage(''); setFormError('') }}><MapPin size={15} /><span>{suggestion.label}<small>{suggestion.coordinates[0].toFixed(5)}, {suggestion.coordinates[1].toFixed(5)}</small></span></button></li>)}</ul>}
               {locationSearchBusy && <p className="location-feedback" role="status">Searching nearby places…</p>}
               {!locationSearchBusy && locationSearchMessage && <p className="location-feedback location-search-error" role="status">{locationSearchMessage}</p>}
               {!locationSearchBusy && locationQuery.trim().length >= 3 && !locationConfirmed && !locationSearchMessage && locationSuggestions.length === 0 && <p className="location-feedback" role="status">No matches yet. Try another nearby name or use your current location.</p>}
               <p className="location-attribution">Place suggestions by Photon · OpenStreetMap contributors</p>
             </div>
-              <div className="location-field"><div className="location-copy"><MapPin size={16} /><span><strong>{locationConfirmed ? 'Selected map location' : 'Choose a map location'}</strong><small>{locationConfirmed ? `${location[0].toFixed(5)}, ${location[1].toFixed(5)}` : 'Pick a search suggestion or use GPS'}</small></span></div><button className="text-button" type="button" onClick={requestLocation}><Crosshair size={14} /> Use my location</button></div>
-            {isSupabaseConfigured && <p className="privacy-note">Your account identity stays private. Verified reports show their description and location on the community map.</p>}
+            <div className="location-picker-heading"><MapPin size={15} /><strong>Pin the exact spot</strong><span>Click or drag the map to adjust</span><button className="text-button" type="button" onClick={() => requestLocation()}><Crosshair size={14} /> Use my location</button></div>
+            <div className="report-location-map">
+              <MapContainer center={location as LatLngExpression} zoom={15} scrollWheelZoom className="leaflet-map">
+                <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                <LocationPickerFocus center={location} />
+                <LocationPickerEvents onSelect={selectMapLocation} />
+                <Marker
+                  position={location}
+                  draggable
+                  icon={divIcon({ className: 'location-pin-shell', html: '<span class="location-pin"></span>', iconSize: [24, 30], iconAnchor: [12, 28] })}
+                  eventHandlers={{ dragend: (event) => { const point = event.target.getLatLng(); selectMapLocation([point.lat, point.lng]) } }}
+                />
+              </MapContainer>
+            </div>
+            <div className="location-field"><div className="location-copy"><MapPin size={16} /><span><strong>{locationConfirmed ? 'Selected location' : 'Choose a map location'}</strong><small>{locationConfirmed ? `${location[0].toFixed(5)}, ${location[1].toFixed(5)}` : 'Pick a search suggestion or use GPS'}</small></span></div></div>
+            {isSupabaseConfigured && <p className="privacy-note">Your account identity stays private. The public map shows approximate report locations.</p>}
             <div className="photo-row"><label className="upload-button"><Camera size={15} />{photo ? 'Photo attached' : 'Add a photo'}<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => handlePhoto(event.target.files?.[0])} /></label>{photo && <button className="remove-photo" type="button" onClick={() => { setPhoto(undefined); setPhotoFile(undefined) }}><X size={13} /> Remove</button>}<span>Optional · JPEG, PNG, or WebP · max 5 MB</span></div>
             {photo && <img className="photo-preview" src={photo} alt="Selected report attachment preview" />}
             {formError && <p className="form-error" role="alert">{formError}</p>}
