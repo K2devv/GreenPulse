@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   AlertTriangle,
   ArrowDownUp,
+  BarChart3,
   Bell,
+  CalendarDays,
   Camera,
   Check,
   CheckCheck,
@@ -32,6 +34,7 @@ import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet'
 import { divIcon, type LatLngExpression } from 'leaflet'
 import type { Session } from '@supabase/supabase-js'
 import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type NotificationRow, type Profile, type ReportEvent, type ReportRow } from './lib/supabase'
+import { buildReportAnalytics, type ChartDatum } from './lib/report-analytics'
 
 type Category = 'Waste' | 'Pollution' | 'Flooding' | 'Drainage' | 'Water pollution' | 'Air pollution'
 type Status = 'Submitted' | 'Under review' | 'Additional information requested' | 'Verified' | 'In progress' | 'Awaiting verification' | 'Resolved' | 'Rejected' | 'Closed'
@@ -61,6 +64,7 @@ type Report = {
   photoPath?: string
   assignedTo?: string
   resolutionNote?: string
+  resolvedAt?: string
   reporterId?: string
   reporterName?: string
 }
@@ -167,6 +171,20 @@ function MapFocus({ report, center }: { report: Report | undefined; center: [num
   return null
 }
 
+function AdminBarChart({ title, description, data }: { title: string; description: string; data: ChartDatum[] }) {
+  const maximum = Math.max(1, ...data.map((item) => item.value))
+  return <article className="analytics-chart">
+    <div className="analytics-chart-heading"><div><strong>{title}</strong><span>{description}</span></div><span className="analytics-total"><b>{data.reduce((sum, item) => sum + item.value, 0)}</b> reports</span></div>
+    {data.length ? <div className="category-bars" role="list" aria-label={title}>
+      {data.map((item) => <div className="category-row" role="listitem" key={item.label} aria-label={`${item.label}: ${item.value} reports`}>
+        <span title={item.label}>{item.label}</span>
+        <i><b style={{ width: `${(item.value / maximum) * 100}%` }} /></i>
+        <strong>{item.value}</strong>
+      </div>)}
+    </div> : <p className="admin-chart-empty">No report data yet.</p>}
+  </article>
+}
+
 function readSavedReports(): Report[] {
   try {
     const saved = localStorage.getItem('greenpulse-reports')
@@ -194,6 +212,7 @@ function App() {
   const [authBusy, setAuthBusy] = useState(false)
   const [confirmationEmail, setConfirmationEmail] = useState('')
   const [staffMode, setStaffMode] = useState(false)
+  const [staffDashboardOpen, setStaffDashboardOpen] = useState(true)
   const [staffSearch, setStaffSearch] = useState('')
   const [staffStatusFilter, setStaffStatusFilter] = useState('Open reports')
   const [staffUsers, setStaffUsers] = useState<Profile[]>([])
@@ -427,6 +446,7 @@ function App() {
       || report.status === staffStatusFilter
     return matchesQuery && matchesStatus
   }), [reports, staffSearch, staffStatusFilter])
+  const adminAnalytics = useMemo(() => buildReportAnalytics(reports), [reports])
 
   const selectedReport = reports.find((report) => report.id === selectedId)
   const staffReport = reports.find((report) => report.id === staffReportId)
@@ -744,6 +764,7 @@ function App() {
     }
     if (profile?.role === 'admin' || profile?.role === 'responder') {
       setStaffMode(true)
+      setStaffDashboardOpen(false)
       setStaffReportId(notification.report_id)
     } else setSelectedId(notification.report_id)
     setNotificationPanelOpen(false)
@@ -775,7 +796,7 @@ function App() {
           <button className="icon-button theme-toggle" type="button" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button>
           {session && <button className={`icon-button notification-toggle ${notificationPanelOpen ? 'active' : ''}`} type="button" onClick={() => setNotificationPanelOpen((open) => !open)} aria-label={`Notifications${unreadNotificationCount ? `, ${unreadNotificationCount} unread` : ''}`} aria-expanded={notificationPanelOpen} title="Notifications"><Bell size={16} />{unreadNotificationCount > 0 && <span className="notification-count">{unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}</span>}</button>}
           {session ? <>
-            {(profile?.role === 'responder' || profile?.role === 'admin') && <button className={`text-button staff-toggle ${staffMode ? 'active' : ''}`} type="button" title={staffMode ? 'Return to community view' : 'Open staff desk'} aria-label={staffMode ? 'Return to community view' : 'Open staff desk'} onClick={() => setStaffMode((current) => !current)}><ClipboardCheck size={15} /><span>{staffMode ? 'Community view' : 'Staff desk'}</span></button>}
+            {(profile?.role === 'responder' || profile?.role === 'admin') && <button className={`text-button staff-toggle ${staffMode ? 'active' : ''}`} type="button" title={staffMode ? 'Return to community view' : 'Open staff desk'} aria-label={staffMode ? 'Return to community view' : 'Open staff desk'} onClick={() => { setStaffMode((current) => !current); setStaffDashboardOpen(true) }}><ClipboardCheck size={15} /><span>{staffMode ? 'Community view' : 'Staff desk'}</span></button>}
             <button className="profile-button" type="button" onClick={() => { setProfileAvatarPreview(profileAvatarUrl); setProfileModal(true) }} aria-label="Open profile settings"><span className="avatar">{profileAvatarUrl ? <img src={profileAvatarUrl} alt="" /> : (profile?.display_name || session.user.email || 'R').slice(0, 1).toUpperCase()}</span><span className="profile-label">{profile?.display_name || session.user.email}</span></button>
             <button className="icon-button" type="button" onClick={() => void supabase?.auth.signOut()} aria-label="Sign out" title="Sign out"><LogOut size={16} /></button>
           </> : isSupabaseConfigured ? <button className="sign-in-button" type="button" onClick={() => { setAuthModal('sign-in'); setAuthMessage(''); setAuthMessageSuccess(false); setConfirmationEmail('') }} disabled={!authReady}><LogIn size={15} />Sign in</button> : <span className="profile-button"><span className="avatar">G</span><span className="profile-label">Guest</span></span>}
@@ -819,8 +840,60 @@ function App() {
           <div className="stat-updated"><span className="live-dot" /> Updated just now</div>
         </section>}
 
-        {staffMode && (profile?.role === 'responder' || profile?.role === 'admin') && <section className="staff-workbench" aria-label="Staff report management">
-          <div className="staff-workbench-heading"><div><p className="eyebrow">RESPONSE MANAGEMENT</p><h2>Staff desk</h2><p>Review incoming reports, assign responders, and record outcomes.</p></div><span className="role-chip"><ShieldCheck size={14} />{profile.role}</span></div>
+        {staffMode && profile?.role === 'admin' && staffDashboardOpen && <section className="admin-overview" aria-label="Admin dashboard" aria-busy={loadingReports}>
+          <div className="analytics-heading">
+            <div><p className="eyebrow">ADMIN DASHBOARD</p><h2>Environmental report overview</h2></div>
+            <div className="analytics-heading-actions"><span className="analytics-period">{loadingReports ? 'Loading reports…' : 'All reports'}<i />Current data</span><button className="secondary-button admin-dashboard-action" type="button" onClick={() => setStaffDashboardOpen(false)}><ClipboardCheck size={14} /> Response desk</button></div>
+          </div>
+          <div className="admin-metrics-grid">
+            {[
+              { label: 'Total reports', value: adminAnalytics.total, note: 'All recorded reports', icon: <Leaf size={15} /> },
+              { label: 'Pending reports', value: adminAnalytics.pending, note: 'Awaiting review or follow-up', icon: <Clock3 size={15} /> },
+              { label: 'Verified reports', value: adminAnalytics.verified, note: 'Verified by staff', icon: <ShieldCheck size={15} /> },
+              { label: 'Assigned reports', value: adminAnalytics.assigned, note: 'With a responder assigned', icon: <UserRound size={15} /> },
+              { label: 'In-progress reports', value: adminAnalytics.inProgress, note: 'Response underway', icon: <ArrowDownUp size={15} /> },
+              { label: 'Resolved reports', value: adminAnalytics.resolved, note: 'Marked resolved', icon: <Check size={15} /> },
+              { label: 'Closed reports', value: adminAnalytics.closed, note: 'Closed without resolution', icon: <X size={15} /> },
+              { label: 'Rejected reports', value: adminAnalytics.rejected, note: 'Rejected by staff', icon: <AlertTriangle size={15} /> },
+              { label: 'Critical reports', value: adminAnalytics.critical, note: 'High urgency', icon: <AlertTriangle size={15} /> },
+              { label: 'Reports this week', value: adminAnalytics.thisWeek, note: 'Since Monday', icon: <CalendarDays size={15} /> },
+              { label: 'Reports this month', value: adminAnalytics.thisMonth, note: 'Since the first of the month', icon: <CalendarDays size={15} /> },
+            ].map((metric) => <article className="admin-metric" key={metric.label}>
+              <span className="admin-metric-icon">{metric.icon}</span><strong>{metric.value}</strong><span>{metric.label}</span><small>{metric.note}</small>
+            </article>)}
+          </div>
+          <div className="admin-chart-grid">
+            <AdminBarChart title="Reports by category" description="Environmental concern type" data={adminAnalytics.byCategory} />
+            <AdminBarChart title="Reports by status" description="Current response stage" data={adminAnalytics.byStatus} />
+            <AdminBarChart title="Reports by urgency" description="Reported urgency level" data={adminAnalytics.byUrgency} />
+            <AdminBarChart title="Reports by location" description="Most reported locations" data={adminAnalytics.byLocation} />
+            <article className="analytics-chart admin-trend-chart">
+              <div className="analytics-chart-heading"><div><strong>Reports over time</strong><span>Daily submissions over the last 14 days</span></div><span className="analytics-total"><b>{adminAnalytics.overTime.reduce((sum, day) => sum + day.value, 0)}</b> reports</span></div>
+              <div className="admin-trend-bars" role="list" aria-label="Reports submitted per day over the last 14 days">
+                {adminAnalytics.overTime.map((day) => <div className="admin-trend-day" role="listitem" key={day.date} aria-label={`${day.date}: ${day.value} reports`} title={`${day.date}: ${day.value} reports`}>
+                  <small>{day.value || ''}</small><span className="admin-trend-track"><b style={{ height: `${Math.max(day.value ? 4 : 0, (day.value / Math.max(1, ...adminAnalytics.overTime.map((entry) => entry.value))) * 100)}%` }} /></span><small>{day.label}</small>
+                </div>)}
+              </div>
+            </article>
+            <article className="analytics-chart admin-outcome-chart">
+              <div className="analytics-chart-heading"><div><strong>Resolution performance</strong><span>Resolved reports as a share of all reports</span></div><ShieldCheck size={17} /></div>
+              <div className="resolution-content">
+                <div className="resolution-ring" role="img" aria-label={`Resolution rate ${Math.round(adminAnalytics.resolutionRate)} percent`} style={{ background: `conic-gradient(#548a78 ${adminAnalytics.resolutionRate}%, #edf2eb 0)` }}><span>{Math.round(adminAnalytics.resolutionRate)}<small>%</small></span></div>
+                <p><strong>{adminAnalytics.resolved} of {adminAnalytics.total}</strong><small>reports resolved</small></p>
+              </div>
+              <div className="average-resolution">
+                <span>Average resolution time</span>
+                <strong>{adminAnalytics.averageResolutionMs === undefined ? '—' : adminAnalytics.averageResolutionMs < 86_400_000
+                  ? `${Math.max(1, Math.round(adminAnalytics.averageResolutionMs / 3_600_000))} hr`
+                  : `${(adminAnalytics.averageResolutionMs / 86_400_000).toFixed(1)} days`}</strong>
+                <small>Resolved reports with recorded resolution timestamps</small>
+              </div>
+            </article>
+          </div>
+        </section>}
+
+        {staffMode && (profile?.role === 'responder' || profile?.role === 'admin') && (!staffDashboardOpen || profile.role !== 'admin') && <section className="staff-workbench" aria-label="Staff report management">
+          <div className="staff-workbench-heading"><div><p className="eyebrow">RESPONSE MANAGEMENT</p><h2>Staff desk</h2><p>Review incoming reports, assign responders, and record outcomes.</p></div><div className="staff-workbench-actions">{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => setStaffDashboardOpen(true)}><BarChart3 size={14} /> Dashboard</button>}<span className="role-chip"><ShieldCheck size={14} />{profile.role}</span></div></div>
           <div className="staff-workbench-grid">
             <div className="staff-queue"><div className="queue-heading"><div><h3>Response queue</h3><span>{staffQueue.length} shown · {openReports} open</span></div><div className="staff-queue-controls"><label className="search-box"><Search size={14} /><input value={staffSearch} onChange={(event) => setStaffSearch(event.target.value)} placeholder="Search queue" aria-label="Search staff queue" /></label><label className="select-wrap"><span className="sr-only">Filter staff queue by status</span><select value={staffStatusFilter} onChange={(event) => setStaffStatusFilter(event.target.value)}><option>Open reports</option><option>All reports</option>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select><ChevronDown size={13} /></label></div></div>
               {staffQueue.length === 0 ? <div className="staff-empty">No reports match this queue.</div> : staffQueue.map((report) => <button key={report.id} type="button" className={`queue-item ${staffReportId === report.id ? 'selected' : ''}`} onClick={() => { setStaffReportId(report.id); setWorkflowError('') }}><span className="queue-item-title">{report.title}</span><span className="queue-item-meta">{report.category} · {formatCreatedAt(report.createdAt)}</span><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span></button>)}

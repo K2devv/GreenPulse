@@ -41,6 +41,7 @@ describe('toReport', () => {
       photoPaths: ['resident-1/photo.webp', 'resident-1/second-photo.png'],
       assignedTo: 'responder-1',
       resolutionNote: undefined,
+      resolvedAt: undefined,
       reporterId: 'resident-1',
     })
   })

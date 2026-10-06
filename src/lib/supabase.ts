@@ -80,6 +80,7 @@ export function toReport(row: ReportRow) {
     photoPaths: row.photo_paths ?? (row.photo_path ? [row.photo_path] : []),
     assignedTo: row.assigned_to ?? undefined,
     resolutionNote: row.resolution_note ?? undefined,
+    resolvedAt: row.resolved_at ?? undefined,
     reporterId: row.reporter_id,
     ...(reporterName ? { reporterName } : {}),
   }
