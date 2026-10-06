@@ -81,6 +81,10 @@ type InboxNotification = {
   read_at: string | null
 }
 
+function getRoleLabel(role: Profile['role']) {
+  return role === 'resident' ? 'User' : role === 'responder' ? 'Responder' : 'Admin'
+}
+
 const initialReports: Report[] = [
   {
     id: 'DEMO-1048', title: 'Demo: Overflowing bins', category: 'Waste', status: 'Verified', urgency: 'High',
@@ -941,7 +945,7 @@ function App() {
           {session && <button className={`icon-button notification-toggle ${notificationPanelOpen ? 'active' : ''}`} type="button" onClick={() => setNotificationPanelOpen((open) => !open)} aria-label={`Notifications${unreadNotificationCount ? `, ${unreadNotificationCount} unread` : ''}`} aria-expanded={notificationPanelOpen} title="Notifications"><Bell size={16} />{unreadNotificationCount > 0 && <span className="notification-count">{unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}</span>}</button>}
           {session ? <>
             {(profile?.role === 'responder' || profile?.role === 'admin') && <button className={`text-button staff-toggle ${staffMode ? 'active' : ''}`} type="button" title={staffMode ? 'Return to community view' : 'Open staff desk'} aria-label={staffMode ? 'Return to community view' : 'Open staff desk'} onClick={() => { setStaffMode((current) => !current); setStaffDashboardOpen(true) }}><ClipboardCheck size={15} /><span>{staffMode ? 'Community view' : 'Staff desk'}</span></button>}
-            <button className="profile-button" type="button" onClick={() => { setProfileAvatarPreview(profileAvatarUrl); setProfileModal(true) }} aria-label="Open profile settings"><span className="avatar">{profileAvatarUrl ? <img src={profileAvatarUrl} alt="" /> : (profile?.display_name || session.user.email || 'R').slice(0, 1).toUpperCase()}</span><span className="profile-label">{profile?.display_name || session.user.email}</span></button>
+            <button className="profile-button" type="button" onClick={() => { setProfileAvatarPreview(profileAvatarUrl); setProfileModal(true) }} aria-label="Open profile settings"><span className="avatar">{profileAvatarUrl ? <img src={profileAvatarUrl} alt="" /> : (profile?.display_name || session.user.email || 'R').slice(0, 1).toUpperCase()}</span><span className="profile-label">{profile?.display_name || session.user.email}</span>{profile && <span className={`profile-role-badge role-${profile.role}`}>{getRoleLabel(profile.role)}</span>}</button>
             <button className="icon-button" type="button" onClick={() => void supabase?.auth.signOut()} aria-label="Sign out" title="Sign out"><LogOut size={16} /></button>
           </> : isSupabaseConfigured ? <button className="sign-in-button" type="button" onClick={() => { setAuthModal('sign-in'); setAuthMessage(''); setAuthMessageSuccess(false); setConfirmationEmail('') }} disabled={!authReady}><LogIn size={15} />Sign in</button> : <span className="profile-button"><span className="avatar">G</span><span className="profile-label">Guest</span></span>}
         </div>
@@ -1049,7 +1053,7 @@ function App() {
               {staffPhotoUrl && <a className="staff-photo-link" href={staffPhotoUrl} target="_blank" rel="noreferrer"><img src={staffPhotoUrl} alt="Attached report evidence" />View report photo</a>}
               <form className="workflow-form" onSubmit={saveWorkflow} key={`${staffReport.id}-${staffReport.status}-${staffReport.assignedTo ?? ''}-${staffReport.resolutionNote ?? ''}`}>
                 <label className="field-label">Status<select name="status" defaultValue={staffReport.status}>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
-                <label className="field-label">Assign responder<select name="assigned_to" defaultValue={staffReport.assignedTo ?? ''}><option value="">Unassigned</option>{staffUsers.map((user) => <option key={user.id} value={user.id}>{user.display_name || user.role}</option>)}</select></label>
+                <label className="field-label">Assign responder<select name="assigned_to" defaultValue={staffReport.assignedTo ?? ''}><option value="">Unassigned</option>{staffUsers.map((user) => <option key={user.id} value={user.id}>{user.display_name || 'Unnamed staff member'} · {getRoleLabel(user.role)}</option>)}</select></label>
                 <label className="field-label">Response details<textarea name="resolution_note" rows={2} maxLength={1000} defaultValue={staffReport.resolutionNote ?? ''} placeholder="Required for information requests and outcomes" /></label>
                 {workflowError && <p className={workflowError.startsWith('Saved') ? 'workflow-success' : 'form-error'} role="status">{workflowError}</p>}
                 <button className="primary-button" type="submit" disabled={savingWorkflow}>{savingWorkflow ? 'Saving…' : 'Save response update'}</button>
@@ -1199,6 +1203,7 @@ function App() {
             <div className="profile-editor"><div className="profile-avatar-large">{profileAvatarPreview || profileAvatarUrl ? <img src={profileAvatarPreview || profileAvatarUrl} alt="Profile preview" /> : <UserRound size={27} />}</div><label className="upload-button"><Upload size={15} /> Change photo<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => handleProfileAvatar(event.target.files?.[0])} /></label><span className="profile-upload-note">JPEG, PNG, or WebP · max 3 MB</span></div>
             <label className="field-label">Display name<input name="display_name" defaultValue={profile.display_name} maxLength={80} required /></label>
             <label className="field-label">Email<input value={session?.user.email ?? ''} readOnly /></label>
+            <div className="field-label">Role<span><span className={`profile-role-badge role-${profile.role}`}>{getRoleLabel(profile.role)}</span></span></div>
             <label className="notification-email-setting"><input type="checkbox" name="email_notifications" defaultChecked={profile.email_notifications !== false} /><span><strong>Email notifications</strong><small>Send report updates to this account's email address.</small></span></label>
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setProfileModal(false)}>Cancel</button><button className="primary-button" type="submit" disabled={profileSaving}>{profileSaving ? 'Saving…' : <><Check size={16} /> Save profile</>}</button></div>
           </form>
