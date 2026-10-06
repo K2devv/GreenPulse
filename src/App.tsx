@@ -2,8 +2,10 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import {
   AlertTriangle,
   ArrowDownUp,
+  Bell,
   Camera,
   Check,
+  CheckCheck,
   ChevronDown,
   Clock3,
   ClipboardCheck,
@@ -29,10 +31,10 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet'
 import { divIcon, type LatLngExpression } from 'leaflet'
 import type { Session } from '@supabase/supabase-js'
-import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type Profile, type ReportEvent, type ReportRow } from './lib/supabase'
+import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type NotificationRow, type Profile, type ReportEvent, type ReportRow } from './lib/supabase'
 
-type Category = 'Waste' | 'Flooding' | 'Water pollution' | 'Air pollution' | 'Drainage'
-type Status = 'Submitted' | 'Under review' | 'Verified' | 'In progress' | 'Resolved' | 'Rejected'
+type Category = 'Waste' | 'Pollution' | 'Flooding' | 'Drainage' | 'Water pollution' | 'Air pollution'
+type Status = 'Submitted' | 'Under review' | 'Additional information requested' | 'Verified' | 'In progress' | 'Awaiting verification' | 'Resolved' | 'Rejected' | 'Closed'
 type Urgency = 'Low' | 'Medium' | 'High'
 type Theme = 'light' | 'dark'
 
@@ -45,6 +47,10 @@ type Report = {
   id: string
   title: string
   category: Category
+  issueType?: string
+  observedAt?: string
+  additionalInfo?: string
+  photoPaths?: string[]
   status: Status
   urgency: Urgency
   description: string
@@ -59,6 +65,16 @@ type Report = {
   reporterName?: string
 }
 
+type InboxNotification = {
+  id: number | string
+  report_id: string
+  event_type: string
+  title: string
+  message: string
+  created_at: string
+  read_at: string | null
+}
+
 const initialReports: Report[] = [
   {
     id: 'DEMO-1048', title: 'Demo: Overflowing bins', category: 'Waste', status: 'Verified', urgency: 'High',
@@ -71,7 +87,7 @@ const initialReports: Report[] = [
     coordinates: [14.7178, 121.0491], createdAt: '38 min ago',
   },
   {
-    id: 'DEMO-1046', title: 'Demo: Unusual creek discharge', category: 'Water pollution', status: 'Under review', urgency: 'Medium',
+    id: 'DEMO-1046', title: 'Demo: Unusual creek discharge', category: 'Pollution', issueType: 'Water pollution', status: 'Under review', urgency: 'Medium',
     description: 'Sample data only. Replace with a real community report during the pilot.', location: 'Demo site, District 5',
     coordinates: [14.7308, 121.0604], createdAt: '1 hr ago',
   },
@@ -81,7 +97,7 @@ const initialReports: Report[] = [
     coordinates: [14.7135, 121.058], createdAt: 'Yesterday',
   },
   {
-    id: 'DEMO-1044', title: 'Demo: Smoke from waste burning', category: 'Air pollution', status: 'Under review', urgency: 'Medium',
+    id: 'DEMO-1044', title: 'Demo: Smoke from waste burning', category: 'Pollution', issueType: 'Air pollution', status: 'Under review', urgency: 'Medium',
     description: 'Sample data only. Replace with a real community report during the pilot.', location: 'Demo site, District 5',
     coordinates: [14.728, 121.0455], createdAt: 'Yesterday',
   },
@@ -89,6 +105,7 @@ const initialReports: Report[] = [
 
 const categoryColors: Record<Category, string> = {
   Waste: '#d77a37',
+  Pollution: '#527ba4',
   Flooding: '#3986a2',
   'Water pollution': '#527ba4',
   'Air pollution': '#8d775b',
@@ -96,7 +113,9 @@ const categoryColors: Record<Category, string> = {
 }
 
 const districtCenter: [number, number] = [14.7222, 121.0545]
-const statusOptions: Status[] = ['Submitted', 'Under review', 'Verified', 'In progress', 'Resolved', 'Rejected']
+const categoryOptions: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage', 'Water pollution', 'Air pollution']
+const intakeCategories: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage']
+const statusOptions: Status[] = ['Submitted', 'Under review', 'Additional information requested', 'Verified', 'In progress', 'Awaiting verification', 'Resolved', 'Rejected', 'Closed']
 function createReportMarker(report: Report, selected: boolean) {
   const categoryClass = report.category.toLowerCase().replace(/[^a-z]/g, '-')
   const Icon = categoryIcon(report.category)
@@ -120,9 +139,21 @@ function formatCreatedAt(value: string) {
   return created.toLocaleDateString()
 }
 
+async function deliverNotificationEmails(reportId: string, accessToken: string) {
+  try {
+    await fetch('/api/send-notification-emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reportId }),
+    })
+  } catch {
+    return
+  }
+}
+
 const categoryIcon = (category: Category) => {
   if (category === 'Flooding') return Waves
-  if (category === 'Water pollution') return Droplets
+  if (category === 'Pollution' || category === 'Water pollution') return Droplets
   if (category === 'Air pollution') return Trees
   if (category === 'Drainage') return Filter
   return Leaf
@@ -168,6 +199,15 @@ function App() {
   const [staffUsers, setStaffUsers] = useState<Profile[]>([])
   const [staffReportId, setStaffReportId] = useState<string>()
   const [reportEvents, setReportEvents] = useState<ReportEvent[]>([])
+  const [notifications, setNotifications] = useState<NotificationRow[]>([])
+  const [notificationPanelOpen, setNotificationPanelOpen] = useState(false)
+  const [readOverdueIds, setReadOverdueIds] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('greenpulse-read-overdue') ?? '[]') as string[]
+    } catch {
+      return []
+    }
+  })
   const [staffPhotoUrl, setStaffPhotoUrl] = useState('')
   const [workflowError, setWorkflowError] = useState('')
   const [savingWorkflow, setSavingWorkflow] = useState(false)
@@ -282,7 +322,7 @@ function App() {
       return
     }
     let active = true
-    supabase.from('profiles').select('id, display_name, avatar_path, role').eq('id', session.user.id).single().then(async ({ data, error }) => {
+    supabase.from('profiles').select('id, display_name, avatar_path, email_notifications, role').eq('id', session.user.id).single().then(async ({ data, error }) => {
       if (!active) return
       if (error) setBackendError(`Could not load your account profile: ${error.message}`)
       else {
@@ -341,6 +381,31 @@ function App() {
   }, [profile?.role])
 
   useEffect(() => {
+    if (!supabase || !session) {
+      setNotifications([])
+      return
+    }
+    let active = true
+    const refresh = async () => {
+      const { data } = await supabase!.from('notifications').select('id, report_id, event_type, title, message, created_at, read_at').order('created_at', { ascending: false }).limit(50)
+      if (active) setNotifications((data ?? []) as NotificationRow[])
+    }
+    void refresh()
+    const interval = window.setInterval(() => void refresh(), 60_000)
+    return () => {
+      active = false
+      window.clearInterval(interval)
+    }
+  }, [session])
+
+  useEffect(() => {
+    if (!notificationPanelOpen || !supabase || !session) return
+    supabase.from('notifications').select('id, report_id, event_type, title, message, created_at, read_at').order('created_at', { ascending: false }).limit(50).then(({ data }) => {
+      setNotifications((data ?? []) as NotificationRow[])
+    })
+  }, [notificationPanelOpen, session])
+
+  useEffect(() => {
     try {
       if (!isSupabaseConfigured) localStorage.setItem('greenpulse-reports', JSON.stringify(reports.filter((report) => report.id.startsWith('GP-NEW'))))
     } catch {
@@ -358,15 +423,22 @@ function App() {
   const staffQueue = useMemo(() => reports.filter((report) => {
     const matchesQuery = `${report.title} ${report.location} ${report.category}`.toLowerCase().includes(staffSearch.toLowerCase())
     const matchesStatus = staffStatusFilter === 'All reports'
-      || (staffStatusFilter === 'Open reports' && report.status !== 'Resolved' && report.status !== 'Rejected')
+      || (staffStatusFilter === 'Open reports' && report.status !== 'Resolved' && report.status !== 'Rejected' && report.status !== 'Closed')
       || report.status === staffStatusFilter
     return matchesQuery && matchesStatus
   }), [reports, staffSearch, staffStatusFilter])
 
   const selectedReport = reports.find((report) => report.id === selectedId)
   const staffReport = reports.find((report) => report.id === staffReportId)
-  const openReports = reports.filter((report) => report.status !== 'Resolved' && report.status !== 'Rejected').length
+  const openReports = reports.filter((report) => report.status !== 'Resolved' && report.status !== 'Rejected' && report.status !== 'Closed').length
   const verifiedReports = reports.filter((report) => report.status === 'Verified' || report.status === 'In progress').length
+  const overdueNotifications: InboxNotification[] = profile?.role === 'admin'
+    ? reports.filter((report) => report.status !== 'Resolved' && report.status !== 'Rejected' && report.status !== 'Closed' && Date.now() - new Date(report.createdAt).getTime() >= 48 * 60 * 60 * 1000)
+      .map((report) => ({ id: `overdue:${report.id}`, report_id: report.id, event_type: 'overdue_task', title: 'Overdue task', message: `Open report needs attention: ${report.title}.`, created_at: report.createdAt, read_at: readOverdueIds.includes(report.id) ? report.createdAt : null }))
+    : []
+  const inboxNotifications: InboxNotification[] = [...notifications, ...overdueNotifications]
+    .sort((first, second) => new Date(second.created_at).getTime() - new Date(first.created_at).getTime())
+  const unreadNotificationCount = inboxNotifications.filter((notification) => !notification.read_at).length
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -462,7 +534,8 @@ function App() {
         return
       }
     }
-    const { data, error } = await supabase.from('profiles').update({ display_name: displayName, avatar_path: avatarPath }).eq('id', session.user.id).select('id, display_name, avatar_path, role').single()
+    const emailNotifications = formData.get('email_notifications') === 'on'
+    const { data, error } = await supabase.from('profiles').update({ display_name: displayName, avatar_path: avatarPath, email_notifications: emailNotifications }).eq('id', session.user.id).select('id, display_name, avatar_path, email_notifications, role').single()
     setProfileSaving(false)
     if (error || !data) {
       setBackendError(error?.message ?? 'Your profile could not be updated.')
@@ -540,6 +613,8 @@ function App() {
     const formData = new FormData(form)
     const title = String(formData.get('title') ?? '').trim()
     const description = String(formData.get('description') ?? '').trim()
+    const category = String(formData.get('category')) as Category
+    const issueType = String(formData.get('issue_type') ?? '').trim() || 'Other issue'
     const locationLabel = String(formData.get('location') ?? '').trim()
     if (!locationConfirmed || !locationLabel) {
       setFormError('Choose a suggested place or use your current location before submitting.')
@@ -565,13 +640,15 @@ function App() {
       const { data, error } = await supabase.from('reports').insert({
         reporter_id: session.user.id,
         title,
-        category: String(formData.get('category')),
+        category,
+        issue_type: issueType,
         urgency: String(formData.get('urgency')),
         description,
         location_label: locationLabel,
         latitude: location[0],
         longitude: location[1],
         photo_path: photoPath,
+        photo_paths: photoPath ? [photoPath] : [],
       }).select('*').single()
       if (error || !data) {
         if (photoPath) await supabase.storage.from('report-photos').remove([photoPath])
@@ -584,7 +661,8 @@ function App() {
         id: `GP-NEW-${Date.now()}`,
         title,
         description,
-        category: String(formData.get('category')) as Category,
+        category,
+        issueType,
         urgency: String(formData.get('urgency')) as Urgency,
         status: 'Submitted',
         location: locationLabel || 'Community location',
@@ -593,6 +671,7 @@ function App() {
         image: photo,
       }
     }
+    if (supabase && session) void deliverNotificationEmails(report.id, session.access_token)
     setReports((current) => [report, ...current])
     setSelectedId(report.id)
     setReporting(false)
@@ -608,8 +687,8 @@ function App() {
     const formData = new FormData(event.currentTarget)
     const nextStatus = String(formData.get('status')) as Status
     const resolutionNote = String(formData.get('resolution_note') ?? '').trim()
-    if ((nextStatus === 'Resolved' || nextStatus === 'Rejected') && resolutionNote.length < 8) {
-      setWorkflowError('Add resolution or rejection details (at least 8 characters) before saving.')
+    if (['Additional information requested', 'Awaiting verification', 'Resolved', 'Rejected', 'Closed'].includes(nextStatus) && resolutionNote.length < 8) {
+      setWorkflowError('Add response details (at least 8 characters) before saving this status.')
       return
     }
     setSavingWorkflow(true)
@@ -626,6 +705,7 @@ function App() {
       return
     }
     const updatedReport = toReport(data as ReportRow)
+    void deliverNotificationEmails(updatedReport.id, session.access_token)
     setReports((current) => current.map((report) => report.id === updatedReport.id ? updatedReport : report))
     setWorkflowError('Saved. The report timeline has been updated.')
   }
@@ -640,12 +720,47 @@ function App() {
       setReportEvents((data ?? []) as ReportEvent[])
     })
     const selected = reports.find((report) => report.id === staffReportId)
+
     if (selected?.photoPath) {
       supabase.storage.from('report-photos').createSignedUrl(selected.photoPath, 300).then(({ data }) => {
         setStaffPhotoUrl(data?.signedUrl ?? '')
       })
     } else setStaffPhotoUrl('')
   }, [profile?.role, staffMode, staffReportId, reports])
+
+  function markNotificationRead(notification: InboxNotification) {
+    const readAt = new Date().toISOString()
+    if (typeof notification.id === 'string') {
+      const nextIds = [...new Set([...readOverdueIds, notification.report_id])]
+      setReadOverdueIds(nextIds)
+      try {
+        localStorage.setItem('greenpulse-read-overdue', JSON.stringify(nextIds))
+      } catch {
+        setBackendError('Overdue alert read state could not be saved in this browser.')
+      }
+    } else if (supabase) {
+      void supabase.from('notifications').update({ read_at: readAt }).eq('id', notification.id)
+      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, read_at: readAt } : item))
+    }
+    if (profile?.role === 'admin' || profile?.role === 'responder') {
+      setStaffMode(true)
+      setStaffReportId(notification.report_id)
+    } else setSelectedId(notification.report_id)
+    setNotificationPanelOpen(false)
+  }
+
+  function markAllNotificationsRead() {
+    const readAt = new Date().toISOString()
+    if (supabase) void supabase.from('notifications').update({ read_at: readAt }).is('read_at', null)
+    setNotifications((current) => current.map((item) => ({ ...item, read_at: item.read_at ?? readAt })))
+    const nextIds = [...new Set([...readOverdueIds, ...overdueNotifications.map((item) => item.report_id)])]
+    setReadOverdueIds(nextIds)
+    try {
+      localStorage.setItem('greenpulse-read-overdue', JSON.stringify(nextIds))
+    } catch {
+      setBackendError('Overdue alert read state could not be saved in this browser.')
+    }
+  }
 
   return (
     <div className={`app-shell theme-${theme}`}>
@@ -658,6 +773,7 @@ function App() {
         <div className="topbar-actions">
           {!isSupabaseConfigured ? <span className="mode-badge">DEMO MODE</span> : null}
           <button className="icon-button theme-toggle" type="button" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button>
+          {session && <button className={`icon-button notification-toggle ${notificationPanelOpen ? 'active' : ''}`} type="button" onClick={() => setNotificationPanelOpen((open) => !open)} aria-label={`Notifications${unreadNotificationCount ? `, ${unreadNotificationCount} unread` : ''}`} aria-expanded={notificationPanelOpen} title="Notifications"><Bell size={16} />{unreadNotificationCount > 0 && <span className="notification-count">{unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}</span>}</button>}
           {session ? <>
             {(profile?.role === 'responder' || profile?.role === 'admin') && <button className={`text-button staff-toggle ${staffMode ? 'active' : ''}`} type="button" title={staffMode ? 'Return to community view' : 'Open staff desk'} aria-label={staffMode ? 'Return to community view' : 'Open staff desk'} onClick={() => setStaffMode((current) => !current)}><ClipboardCheck size={15} /><span>{staffMode ? 'Community view' : 'Staff desk'}</span></button>}
             <button className="profile-button" type="button" onClick={() => { setProfileAvatarPreview(profileAvatarUrl); setProfileModal(true) }} aria-label="Open profile settings"><span className="avatar">{profileAvatarUrl ? <img src={profileAvatarUrl} alt="" /> : (profile?.display_name || session.user.email || 'R').slice(0, 1).toUpperCase()}</span><span className="profile-label">{profile?.display_name || session.user.email}</span></button>
@@ -665,6 +781,18 @@ function App() {
           </> : isSupabaseConfigured ? <button className="sign-in-button" type="button" onClick={() => { setAuthModal('sign-in'); setAuthMessage(''); setAuthMessageSuccess(false); setConfirmationEmail('') }} disabled={!authReady}><LogIn size={15} />Sign in</button> : <span className="profile-button"><span className="avatar">G</span><span className="profile-label">Guest</span></span>}
         </div>
       </header>
+
+      {notificationPanelOpen && <section className="notification-panel" aria-label="Notifications">
+        <div className="notification-panel-heading"><div><strong>Notifications</strong><span>{unreadNotificationCount ? `${unreadNotificationCount} unread` : 'All caught up'}</span></div><button className="icon-button" type="button" onClick={() => setNotificationPanelOpen(false)} aria-label="Close notifications"><X size={15} /></button></div>
+        <div className="notification-list">
+          {inboxNotifications.length === 0 ? <p className="notification-empty">No notifications yet.</p> : inboxNotifications.slice(0, 40).map((notification) => <button className="notification-item" type="button" key={notification.id} onClick={() => markNotificationRead(notification)}>
+            <span className={`notification-marker ${notification.read_at ? '' : 'is-new'}`} />
+            <span><strong>{notification.title}</strong><small>{notification.message} · {formatCreatedAt(notification.created_at)}</small></span>
+            {!notification.read_at && <em>NEW</em>}
+          </button>)}
+        </div>
+        <div className="notification-panel-footer"><span>In-app alerts · email updates in profile</span><button type="button" onClick={markAllNotificationsRead} disabled={unreadNotificationCount === 0}><CheckCheck size={13} />Mark all read</button></div>
+      </section>}
 
       <main id="home" className="workspace">
         <section className="page-heading">
@@ -705,7 +833,7 @@ function App() {
               <form className="workflow-form" onSubmit={saveWorkflow} key={`${staffReport.id}-${staffReport.status}-${staffReport.assignedTo ?? ''}-${staffReport.resolutionNote ?? ''}`}>
                 <label className="field-label">Status<select name="status" defaultValue={staffReport.status}>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
                 <label className="field-label">Assign responder<select name="assigned_to" defaultValue={staffReport.assignedTo ?? ''}><option value="">Unassigned</option>{staffUsers.map((user) => <option key={user.id} value={user.id}>{user.display_name || user.role}</option>)}</select></label>
-                <label className="field-label">Resolution or rejection details<textarea name="resolution_note" rows={2} maxLength={1000} defaultValue={staffReport.resolutionNote ?? ''} placeholder="Required to resolve or reject a report" /></label>
+                <label className="field-label">Response details<textarea name="resolution_note" rows={2} maxLength={1000} defaultValue={staffReport.resolutionNote ?? ''} placeholder="Required for information requests and outcomes" /></label>
                 {workflowError && <p className={workflowError.startsWith('Saved') ? 'workflow-success' : 'form-error'} role="status">{workflowError}</p>}
                 <button className="primary-button" type="submit" disabled={savingWorkflow}>{savingWorkflow ? 'Saving…' : 'Save response update'}</button>
               </form>
@@ -736,7 +864,7 @@ function App() {
                 ))}
               </MapContainer>
               <div className="map-label"><MapPin size={13} /> District 5, Quezon City</div>
-              <div className="map-legend"><span className="legend-title">REPORT TYPE</span>{(['Waste', 'Flooding', 'Water pollution', 'Air pollution', 'Drainage'] as Category[]).map((category) => <span className="legend-item" key={category}><i style={{ backgroundColor: categoryColors[category] }} />{category}</span>)}</div>
+              <div className="map-legend"><span className="legend-title">REPORT TYPE</span>{categoryOptions.map((category) => <span className="legend-item" key={category}><i style={{ backgroundColor: categoryColors[category] }} />{category}</span>)}</div>
             </div>
             <div className="map-footnote"><MapPin size={13} /> Pins show approximate report locations <span>·</span> Select a pin for details</div>
           </div>
@@ -749,7 +877,7 @@ function App() {
             <div className="report-controls">
               <label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search reports" aria-label="Search reports" />{search && <button type="button" onClick={() => setSearch('')} aria-label="Clear search"><X size={13} /></button>}</label>
               <div className="filter-row">
-                <label className="select-wrap"><span className="sr-only">Filter by category</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>All categories</option>{(['Waste', 'Flooding', 'Water pollution', 'Air pollution', 'Drainage'] as Category[]).map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={13} /></label>
+                <label className="select-wrap"><span className="sr-only">Filter by category</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>All categories</option>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={13} /></label>
                 <label className="select-wrap"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All statuses</option>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select><ChevronDown size={13} /></label>
               </div>
             </div>
@@ -775,7 +903,7 @@ function App() {
           <div className="modal-header"><div><p className="eyebrow">COMMUNITY REPORT</p><h2 id="modal-title">What did you notice?</h2><p>Help your community respond with a few details.</p></div><button className="icon-button" type="button" onClick={() => setReporting(false)} aria-label="Close report form"><X size={19} /></button></div>
           <form onSubmit={submitReport}>
             <label className="field-label">Report title<input name="title" maxLength={90} placeholder="e.g. Waste piling up beside the road" required /></label>
-            <div className="form-grid"><label className="field-label">Issue type<select name="category" defaultValue="Waste">{(['Waste', 'Flooding', 'Water pollution', 'Air pollution', 'Drainage'] as Category[]).map((category) => <option key={category}>{category}</option>)}</select></label><label className="field-label">Urgency<select name="urgency" defaultValue="Medium"><option>Low</option><option>Medium</option><option>High</option></select></label></div>
+            <div className="form-grid"><label className="field-label">Category<select name="category" defaultValue="Waste">{intakeCategories.map((category) => <option key={category}>{category}</option>)}</select></label><label className="field-label">Specific issue<input name="issue_type" maxLength={80} placeholder="e.g. Clogged drainage" required /></label><label className="field-label">Urgency<select name="urgency" defaultValue="Medium"><option>Low</option><option>Medium</option><option>High</option></select></label></div>
             <label className="field-label">What is happening?<textarea name="description" rows={3} maxLength={500} placeholder="Describe what you observed and any immediate risks." required /></label>
             <div className="location-autocomplete-wrap">
               <label className="field-label" htmlFor="report-location">Location <span className="field-hint">Search a street, landmark, barangay, or facility</span></label>
@@ -822,6 +950,7 @@ function App() {
             <div className="profile-editor"><div className="profile-avatar-large">{profileAvatarPreview || profileAvatarUrl ? <img src={profileAvatarPreview || profileAvatarUrl} alt="Profile preview" /> : <UserRound size={27} />}</div><label className="upload-button"><Upload size={15} /> Change photo<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => handleProfileAvatar(event.target.files?.[0])} /></label><span className="profile-upload-note">JPEG, PNG, or WebP · max 3 MB</span></div>
             <label className="field-label">Display name<input name="display_name" defaultValue={profile.display_name} maxLength={80} required /></label>
             <label className="field-label">Email<input value={session?.user.email ?? ''} readOnly /></label>
+            <label className="notification-email-setting"><input type="checkbox" name="email_notifications" defaultChecked={profile.email_notifications !== false} /><span><strong>Email notifications</strong><small>Send report updates to this account's email address.</small></span></label>
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setProfileModal(false)}>Cancel</button><button className="primary-button" type="submit" disabled={profileSaving}>{profileSaving ? 'Saving…' : <><Check size={16} /> Save profile</>}</button></div>
           </form>
         </section>
