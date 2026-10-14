@@ -19,6 +19,12 @@ export type Profile = {
   role: 'resident' | 'responder' | 'admin'
 }
 
+export type Team = {
+  id: string
+  name: string
+  memberIds: string[]
+}
+
 export type NotificationRow = {
   id: number
   report_id: string
@@ -47,6 +53,8 @@ export type ReportRow = {
   photo_path?: string | null
   photo_paths?: string[]
   assigned_to?: string | null
+  assigned_team_id?: string | null
+  barangay?: string | null
   reporter_id?: string
   resolution_note?: string | null
   resolved_at?: string | null
@@ -79,6 +87,8 @@ export function toReport(row: ReportRow) {
     photoPath: row.photo_path ?? undefined,
     photoPaths: row.photo_paths ?? (row.photo_path ? [row.photo_path] : []),
     assignedTo: row.assigned_to ?? undefined,
+    assignedTeamId: row.assigned_team_id ?? undefined,
+    barangay: row.barangay ?? undefined,
     resolutionNote: row.resolution_note ?? undefined,
     resolvedAt: row.resolved_at ?? undefined,
     reporterId: row.reporter_id,

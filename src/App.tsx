@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   AlertTriangle,
   ArrowDownUp,
@@ -15,12 +15,16 @@ import {
   Droplets,
   Filter,
   Flame,
+  Layers,
   Leaf,
   LogIn,
   LogOut,
   MapPin,
   Moon,
   Plus,
+  SlidersHorizontal,
+  Trash2,
+  Users,
   Search,
   ShieldCheck,
   Sun,
@@ -35,7 +39,8 @@ import MarkerClusterGroup from 'react-leaflet-cluster'
 import { Circle, MapContainer, Marker, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet'
 import { divIcon, type LatLngExpression } from 'leaflet'
 import type { Session } from '@supabase/supabase-js'
-import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type NotificationRow, type Profile, type ReportEvent, type ReportRow } from './lib/supabase'
+import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type NotificationRow, type Profile, type ReportEvent, type ReportRow, type Team } from './lib/supabase'
+import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, countActiveFilters, defaultReportFilters, detectBarangay, filterReports, formatReportId, type ReportFilters } from './lib/report-filters'
 import { buildReportAnalytics, type ChartDatum } from './lib/report-analytics'
 
 type Category = 'Waste' | 'Pollution' | 'Flooding' | 'Drainage' | 'Water pollution' | 'Air pollution'
@@ -65,6 +70,8 @@ type Report = {
   image?: string
   photoPath?: string
   assignedTo?: string
+  assignedTeamId?: string
+  barangay?: string
   resolutionNote?: string
   resolvedAt?: string
   reporterId?: string
@@ -125,6 +132,7 @@ const categoryColors: Record<Category, string> = {
 const districtCenter: [number, number] = [14.7222, 121.0545]
 const categoryOptions: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage', 'Water pollution', 'Air pollution']
 const intakeCategories: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage']
+const STAFF_PAGE_SIZE = 50
 const statusOptions: Status[] = ['Submitted', 'Under review', 'Additional information requested', 'Verified', 'In progress', 'Awaiting verification', 'Resolved', 'Rejected', 'Closed']
 function createReportMarker(report: Report, selected: boolean) {
   const categoryClass = report.category.toLowerCase().replace(/[^a-z]/g, '-')
@@ -249,6 +257,19 @@ function LocationPickerEvents({ onSelect }: { onSelect: (coordinates: [number, n
   return null
 }
 
+function ReportListSkeleton({ rows = 4, variant = 'report' }: { rows?: number; variant?: 'report' | 'queue' }) {
+  return <div className={`skeleton-list skeleton-${variant}`} role="status" aria-busy="true"><span className="sr-only">Loading reports…</span>
+    {Array.from({ length: rows }, (_, index) => <div className="skeleton-item" aria-hidden="true" key={index}>
+      {variant === 'report' && <span className="skeleton skeleton-icon" />}
+      <div className="skeleton-lines"><span className="skeleton skeleton-line skeleton-title" /><span className="skeleton skeleton-line skeleton-meta" /><span className="skeleton-tags"><span className="skeleton skeleton-pill" /><span className="skeleton skeleton-pill skeleton-pill-short" /></span></div>
+    </div>)}
+  </div>
+}
+
+function FilterSelect({ label, value, onChange, children }: { label: string; value: string; onChange: (value: string) => void; children: ReactNode }) {
+  return <label className="filter-field"><span>{label}</span><span className="select-wrap"><select value={value} onChange={(event) => onChange(event.target.value)}>{children}</select><ChevronDown size={13} /></span></label>
+}
+
 function AdminBarChart({ title, description, data }: { title: string; description: string; data: ChartDatum[] }) {
   const maximum = Math.max(1, ...data.map((item) => item.value))
   return <article className="analytics-chart">
@@ -291,8 +312,14 @@ function App() {
   const [confirmationEmail, setConfirmationEmail] = useState('')
   const [staffMode, setStaffMode] = useState(false)
   const [staffDashboardOpen, setStaffDashboardOpen] = useState(true)
-  const [staffSearch, setStaffSearch] = useState('')
-  const [staffStatusFilter, setStaffStatusFilter] = useState('Open reports')
+  const [staffFilters, setStaffFilters] = useState<ReportFilters>(defaultReportFilters)
+  const [staffFiltersOpen, setStaffFiltersOpen] = useState(false)
+  const [staffVisibleCount, setStaffVisibleCount] = useState(STAFF_PAGE_SIZE)
+  const [teams, setTeams] = useState<Team[]>([])
+  const [teamModalOpen, setTeamModalOpen] = useState(false)
+  const [teamMessage, setTeamMessage] = useState('')
+  const [teamBusy, setTeamBusy] = useState(false)
+  const [reportBarangay, setReportBarangay] = useState('')
   const [staffUsers, setStaffUsers] = useState<Profile[]>([])
   const [staffReportId, setStaffReportId] = useState<string>()
   const [reportEvents, setReportEvents] = useState<ReportEvent[]>([])
@@ -318,6 +345,7 @@ function App() {
   const [mapSearchBusy, setMapSearchBusy] = useState(false)
   const [mapSearchMessage, setMapSearchMessage] = useState('')
   const [heatmapEnabled, setHeatmapEnabled] = useState(false)
+  const [legendOpen, setLegendOpen] = useState(false)
   const [nearbyOnly, setNearbyOnly] = useState(false)
   const [gpsLocation, setGpsLocation] = useState<[number, number]>()
   const [mapLocationError, setMapLocationError] = useState('')
@@ -493,6 +521,26 @@ function App() {
     })
   }, [profile?.role])
 
+  async function loadTeams() {
+    if (!supabase) return
+    const { data, error } = await supabase.from('teams').select('id, name, team_members(profile_id)').order('name')
+    if (error) {
+      setTeams([])
+      return
+    }
+    setTeams((data ?? []).map((team) => ({ id: team.id as string, name: team.name as string, memberIds: ((team.team_members ?? []) as { profile_id: string }[]).map((member) => member.profile_id) })))
+  }
+
+  useEffect(() => {
+    if (!supabase || (profile?.role !== 'responder' && profile?.role !== 'admin')) {
+      setTeams([])
+      return
+    }
+    void loadTeams()
+  }, [profile?.role])
+
+  useEffect(() => setStaffVisibleCount(STAFF_PAGE_SIZE), [staffFilters])
+
   useEffect(() => {
     if (!supabase || !session) {
       setNotifications([])
@@ -547,13 +595,13 @@ function App() {
     }
     return [...cells.values()]
   }, [orderedReports])
-  const staffQueue = useMemo(() => reports.filter((report) => {
-    const matchesQuery = `${report.title} ${report.location} ${report.category}`.toLowerCase().includes(staffSearch.toLowerCase())
-    const matchesStatus = staffStatusFilter === 'All reports'
-      || (staffStatusFilter === 'Open reports' && report.status !== 'Resolved' && report.status !== 'Rejected' && report.status !== 'Closed')
-      || report.status === staffStatusFilter
-    return matchesQuery && matchesStatus
-  }), [reports, staffSearch, staffStatusFilter])
+  const filterLookup = useMemo(() => ({
+    people: new Map(staffUsers.map((user) => [user.id, user.display_name || 'Unnamed staff member'])),
+    teams: new Map(teams.map((team) => [team.id, team.name])),
+  }), [staffUsers, teams])
+  const staffMatches = useMemo(() => filterReports(reports, staffFilters, filterLookup), [reports, staffFilters, filterLookup])
+  const staffQueue = useMemo(() => staffMatches.slice(0, staffVisibleCount), [staffMatches, staffVisibleCount])
+  const activeFilterCount = countActiveFilters(staffFilters)
   const adminAnalytics = useMemo(() => buildReportAnalytics(reports), [reports])
 
   const selectedReport = mapReports.find((report) => report.id === selectedId)
@@ -719,7 +767,10 @@ function App() {
         setFormError('')
         const request = ++geocodeRequest.current
         void reverseGeocode(currentLocation).then((label) => {
-          if (request === geocodeRequest.current) setLocationQuery(label)
+          if (request === geocodeRequest.current) {
+            setLocationQuery(label)
+            setReportBarangay((current) => detectBarangay(label) ?? current)
+          }
         }).catch((error: unknown) => {
           if (request === geocodeRequest.current) {
             const message = error instanceof Error ? error.message : 'Address lookup is temporarily unavailable.'
@@ -748,6 +799,7 @@ function App() {
     void reverseGeocode(preciseCoordinates).then((label) => {
       if (request === geocodeRequest.current) {
         setLocationQuery(label)
+        setReportBarangay((current) => detectBarangay(label) ?? current)
         setLocationSearchMessage('')
       }
     }).catch((error: unknown) => {
@@ -784,6 +836,7 @@ function App() {
     const category = String(formData.get('category')) as Category
     const issueType = String(formData.get('issue_type') ?? '').trim() || 'Other issue'
     const locationLabel = String(formData.get('location') ?? '').trim()
+    const barangay = String(formData.get('barangay') ?? '').trim()
     if (!locationConfirmed || !locationLabel) {
       setFormError('Choose a suggested place or use your current location before submitting.')
       return
@@ -805,7 +858,7 @@ function App() {
           return
         }
       }
-      const { data, error } = await supabase.from('reports').insert({
+      const newReport = {
         reporter_id: session.user.id,
         title,
         category,
@@ -817,7 +870,10 @@ function App() {
         longitude: location[1],
         photo_path: photoPath,
         photo_paths: photoPath ? [photoPath] : [],
-      }).select('*').single()
+      }
+      let { data, error } = await supabase.from('reports').insert({ ...newReport, barangay: barangay || null }).select('*').single()
+      // Keep submissions working if the barangay migration has not been applied yet.
+      if (error?.message.includes('barangay')) ({ data, error } = await supabase.from('reports').insert(newReport).select('*').single())
       if (error || !data) {
         if (photoPath) await supabase.storage.from('report-photos').remove([photoPath])
         setFormError(error?.message ?? 'The report could not be saved. Please try again.')
@@ -835,6 +891,7 @@ function App() {
         status: 'Submitted',
         location: locationLabel || 'Community location',
         coordinates: location,
+        barangay: barangay || undefined,
         createdAt: new Date().toISOString(),
         image: photo,
       }
@@ -846,7 +903,54 @@ function App() {
     setPhoto(undefined)
     setPhotoFile(undefined)
     setFormError('')
+    setReportBarangay('')
     form.reset()
+  }
+
+  async function createTeam(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase) return
+    const form = event.currentTarget
+    const name = String(new FormData(form).get('team_name') ?? '').trim()
+    if (name.length < 2) {
+      setTeamMessage('Enter a team name of at least 2 characters.')
+      return
+    }
+    setTeamBusy(true)
+    const { error } = await supabase.from('teams').insert({ name })
+    setTeamBusy(false)
+    if (error) {
+      setTeamMessage(error.code === '23505' ? 'A team with that name already exists.' : error.message)
+      return
+    }
+    form.reset()
+    setTeamMessage('')
+    await loadTeams()
+  }
+
+  async function deleteTeam(team: Team) {
+    if (!supabase || !window.confirm(`Delete "${team.name}"? Reports assigned to it will become unassigned.`)) return
+    setTeamBusy(true)
+    const { error } = await supabase.from('teams').delete().eq('id', team.id)
+    setTeamBusy(false)
+    setTeamMessage(error?.message ?? '')
+    await loadTeams()
+    if (!error) setReports((current) => current.map((report) => report.assignedTeamId === team.id ? { ...report, assignedTeamId: undefined } : report))
+  }
+
+  async function toggleTeamMember(team: Team, userId: string) {
+    if (!supabase) return
+    setTeamBusy(true)
+    const { error } = team.memberIds.includes(userId)
+      ? await supabase.from('team_members').delete().eq('team_id', team.id).eq('profile_id', userId)
+      : await supabase.from('team_members').insert({ team_id: team.id, profile_id: userId })
+    setTeamBusy(false)
+    setTeamMessage(error?.message ?? '')
+    await loadTeams()
+  }
+
+  function updateStaffFilters(changes: Partial<ReportFilters>) {
+    setStaffFilters((current) => ({ ...current, ...changes }))
   }
 
   async function saveWorkflow(event: FormEvent<HTMLFormElement>) {
@@ -864,6 +968,7 @@ function App() {
     const { data, error } = await supabase.from('reports').update({
       status: nextStatus,
       assigned_to: String(formData.get('assigned_to') ?? '') || null,
+      ...(teams.length > 0 ? { assigned_team_id: String(formData.get('assigned_team_id') ?? '') || null } : {}),
       verified_by: nextStatus === 'Verified' ? session.user.id : undefined,
       resolution_note: resolutionNote || null,
     }).eq('id', staffReport.id).select('*').single()
@@ -1041,20 +1146,43 @@ function App() {
         </section>}
 
         {staffMode && (profile?.role === 'responder' || profile?.role === 'admin') && (!staffDashboardOpen || profile.role !== 'admin') && <section className="staff-workbench" aria-label="Staff report management">
-          <div className="staff-workbench-heading"><div><p className="eyebrow">RESPONSE MANAGEMENT</p><h2>Staff desk</h2><p>Review incoming reports, assign responders, and record outcomes.</p></div><div className="staff-workbench-actions">{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => setStaffDashboardOpen(true)}><BarChart3 size={14} /> Dashboard</button>}<span className="role-chip"><ShieldCheck size={14} />{profile.role}</span></div></div>
+          <div className="staff-workbench-heading"><div><p className="eyebrow">RESPONSE MANAGEMENT</p><h2>Staff desk</h2><p>Review incoming reports, assign responders, and record outcomes.</p></div><div className="staff-workbench-actions">{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => { setTeamMessage(''); setTeamModalOpen(true) }}><Users size={14} /> Manage teams</button>}{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => setStaffDashboardOpen(true)}><BarChart3 size={14} /> Dashboard</button>}<span className="role-chip"><ShieldCheck size={14} />{profile.role}</span></div></div>
+          <div className="staff-filters">
+            <div className="staff-filters-bar">
+              <label className="search-box staff-search"><Search size={15} /><input value={staffFilters.query} onChange={(event) => updateStaffFilters({ query: event.target.value })} placeholder="Search by ID, title, description, reporter, location, category, or assignee" aria-label="Search reports" />{staffFilters.query && <button type="button" onClick={() => updateStaffFilters({ query: '' })} aria-label="Clear search"><X size={14} /></button>}</label>
+              <button className={`secondary-button filter-toggle ${staffFiltersOpen ? 'active' : ''}`} type="button" aria-expanded={staffFiltersOpen} aria-controls="staff-filter-panel" onClick={() => setStaffFiltersOpen((open) => !open)}><SlidersHorizontal size={14} /> Filters{activeFilterCount > 0 && <span className="count-badge">{activeFilterCount}</span>}</button>
+              {activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => setStaffFilters(defaultReportFilters)}>Clear all</button>}
+            </div>
+            {staffFiltersOpen && <div className="staff-filter-panel" id="staff-filter-panel">
+              <FilterSelect label="Status" value={staffFilters.status} onChange={(status) => updateStaffFilters({ status })}><option value="open">Open reports</option><option value="all">All reports</option>{statusOptions.map((status) => <option key={status}>{status}</option>)}</FilterSelect>
+              <FilterSelect label="Resolution" value={staffFilters.resolution} onChange={(resolution) => updateStaffFilters({ resolution, ...(resolution && resolution !== 'unresolved' && staffFilters.status === 'open' ? { status: 'all' } : {}) })}><option value="">Any resolution</option><option value="unresolved">Unresolved</option><option value="awaiting">Awaiting verification</option><option value="resolved">Resolved</option><option value="closed">Closed</option></FilterSelect>
+              <FilterSelect label="Category" value={staffFilters.category} onChange={(category) => updateStaffFilters({ category })}><option value="">All categories</option>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</FilterSelect>
+              <FilterSelect label="Urgency" value={staffFilters.urgency} onChange={(urgency) => updateStaffFilters({ urgency })}><option value="">Any urgency</option><option>High</option><option>Medium</option><option>Low</option></FilterSelect>
+              <FilterSelect label="Barangay" value={staffFilters.barangay} onChange={(barangay) => updateStaffFilters({ barangay })}><option value="">All barangays</option><option value={NO_BARANGAY}>No barangay recorded</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay}>{barangay}</option>)}</FilterSelect>
+              <FilterSelect label="Assigned to" value={staffFilters.assignee} onChange={(assignee) => updateStaffFilters({ assignee })}><option value="">Anyone</option><option value={UNASSIGNED}>Unassigned</option>{staffUsers.map((user) => <option key={user.id} value={user.id}>{user.display_name || 'Unnamed staff member'}</option>)}</FilterSelect>
+              <FilterSelect label="Assigned team" value={staffFilters.team} onChange={(team) => updateStaffFilters({ team })}><option value="">Any team</option><option value={UNASSIGNED}>No team</option>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</FilterSelect>
+              <label className="filter-field"><span>Submitted from</span><input type="date" value={staffFilters.dateFrom} max={staffFilters.dateTo || undefined} onChange={(event) => updateStaffFilters({ dateFrom: event.target.value })} /></label>
+              <label className="filter-field"><span>Submitted to</span><input type="date" value={staffFilters.dateTo} min={staffFilters.dateFrom || undefined} onChange={(event) => updateStaffFilters({ dateTo: event.target.value })} /></label>
+            </div>}
+          </div>
           <div className="staff-workbench-grid">
-            <div className="staff-queue"><div className="queue-heading"><div><h3>Response queue</h3><span>{staffQueue.length} shown · {openReports} open</span></div><div className="staff-queue-controls"><label className="search-box"><Search size={14} /><input value={staffSearch} onChange={(event) => setStaffSearch(event.target.value)} placeholder="Search queue" aria-label="Search staff queue" /></label><label className="select-wrap"><span className="sr-only">Filter staff queue by status</span><select value={staffStatusFilter} onChange={(event) => setStaffStatusFilter(event.target.value)}><option>Open reports</option><option>All reports</option>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select><ChevronDown size={13} /></label></div></div>
-              {staffQueue.length === 0 ? <div className="staff-empty">No reports match this queue.</div> : staffQueue.map((report) => <button key={report.id} type="button" className={`queue-item ${staffReportId === report.id ? 'selected' : ''}`} onClick={() => { setStaffReportId(report.id); setWorkflowError('') }}><span className="queue-item-title">{report.title}</span><span className="queue-item-meta">{report.category} · {formatCreatedAt(report.createdAt)}</span><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span></button>)}
+            <div className="staff-queue"><div className="queue-heading"><div><h3>Response queue</h3><span aria-live="polite">{staffMatches.length} of {reports.length} reports · {openReports} open</span></div></div>
+              {loadingReports ? <ReportListSkeleton rows={5} variant="queue" /> : staffMatches.length === 0 ? <div className="staff-empty">No reports match {activeFilterCount > 0 ? 'these filters' : 'this queue'}.{activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => setStaffFilters(defaultReportFilters)}>Clear all filters</button>}</div> : <>
+                {staffQueue.map((report) => <button key={report.id} type="button" className={`queue-item ${staffReportId === report.id ? 'selected' : ''}`} onClick={() => { setStaffReportId(report.id); setWorkflowError('') }}><span className="queue-item-title">{report.title}</span><span className="queue-item-meta">{formatReportId(report.id)} · {report.category}{report.barangay ? ` · ${report.barangay}` : ''} · {formatCreatedAt(report.createdAt)}</span><span className="queue-item-tags"><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span>{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></button>)}
+                {staffMatches.length > staffQueue.length && <button className="show-more-button" type="button" onClick={() => setStaffVisibleCount((count) => count + STAFF_PAGE_SIZE)}>Show more ({staffMatches.length - staffQueue.length} remaining)</button>}
+              </>}
             </div>
             <div className="staff-detail">{staffReport ? <>
               <div className="staff-report-heading"><div><span className="report-id">{staffReport.id.slice(0, 8).toUpperCase()}</span><h3>{staffReport.title}</h3><span className="section-caption">{staffReport.category} · {staffReport.urgency} urgency · {formatCreatedAt(staffReport.createdAt)}</span><span className="reporter-line"><UserRound size={12} /> Reported by {staffReport.reporterName || 'Community resident'}</span></div><MapPin size={18} /></div>
               <p className="staff-description">{staffReport.description}</p>
+              <div className="meta-chips"><span className="meta-chip"><MapPin size={12} />{staffReport.barangay ? `Barangay ${staffReport.barangay}` : 'No barangay recorded'}</span><span className="meta-chip"><UserRound size={12} />{staffReport.assignedTo ? (filterLookup.people.get(staffReport.assignedTo) ?? 'Assigned responder') : 'No responder assigned'}</span>{teams.length > 0 && <span className="meta-chip"><Users size={12} />{staffReport.assignedTeamId ? (filterLookup.teams.get(staffReport.assignedTeamId) ?? 'Assigned team') : 'No team assigned'}</span>}</div>
               <p className="staff-location"><MapPin size={14} />{staffReport.location} <span>({staffReport.coordinates.map((coordinate) => coordinate.toFixed(5)).join(', ')})</span></p>
               {staffPhotoUrl && <a className="staff-photo-link" href={staffPhotoUrl} target="_blank" rel="noreferrer"><img src={staffPhotoUrl} alt="Attached report evidence" />View report photo</a>}
-              <form className="workflow-form" onSubmit={saveWorkflow} key={`${staffReport.id}-${staffReport.status}-${staffReport.assignedTo ?? ''}-${staffReport.resolutionNote ?? ''}`}>
+              <form className="workflow-form" onSubmit={saveWorkflow} key={`${staffReport.id}-${staffReport.status}-${staffReport.assignedTo ?? ''}-${staffReport.assignedTeamId ?? ''}-${staffReport.resolutionNote ?? ''}`}>
                 <label className="field-label">Status<select name="status" defaultValue={staffReport.status}>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
                 <label className="field-label">Assign responder<select name="assigned_to" defaultValue={staffReport.assignedTo ?? ''}><option value="">Unassigned</option>{staffUsers.map((user) => <option key={user.id} value={user.id}>{user.display_name || 'Unnamed staff member'} · {getRoleLabel(user.role)}</option>)}</select></label>
-                <label className="field-label">Response details<textarea name="resolution_note" rows={2} maxLength={1000} defaultValue={staffReport.resolutionNote ?? ''} placeholder="Required for information requests and outcomes" /></label>
+                {teams.length > 0 && <label className="field-label workflow-wide">Assign team<select name="assigned_team_id" defaultValue={staffReport.assignedTeamId ?? ''}><option value="">No team</option>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label>}
+                <label className="field-label workflow-wide">Response details<textarea name="resolution_note" rows={2} maxLength={1000} defaultValue={staffReport.resolutionNote ?? ''} placeholder="Required for information requests and outcomes" /></label>
                 {workflowError && <p className={workflowError.startsWith('Saved') ? 'workflow-success' : 'form-error'} role="status">{workflowError}</p>}
                 <button className="primary-button" type="submit" disabled={savingWorkflow}>{savingWorkflow ? 'Saving…' : 'Save response update'}</button>
               </form>
@@ -1102,7 +1230,7 @@ function App() {
                 <button className={`map-action-button ${heatmapEnabled ? 'active' : ''}`} type="button" aria-pressed={heatmapEnabled} onClick={() => setHeatmapEnabled((enabled) => !enabled)}><Flame size={14} />{heatmapEnabled ? 'Hide density' : 'Heatmap'}</button>
               </div>
               <div className="map-label"><MapPin size={13} /> District 5, Quezon City</div>
-              <div className="map-legend"><span className="legend-title">CATEGORY</span>{categoryOptions.map((category) => <span className="legend-item" key={category}><i style={{ backgroundColor: categoryColors[category] }} />{category}</span>)}<span className="legend-divider" /><span className="legend-title">STATUS DOT</span><span className="legend-item"><i className="status-dot status-submitted" />Submitted</span><span className="legend-item"><i className="status-dot status-under-review" />Under review</span><span className="legend-item"><i className="status-dot status-in-progress" />In progress</span><span className="legend-item"><i className="status-dot status-resolved" />Resolved</span><span className="legend-divider" /><span className="legend-title">REPORT DENSITY</span><span className="legend-item"><i className="density-low" />Low · 1–2</span><span className="legend-item"><i className="density-moderate" />Moderate · 3–5</span><span className="legend-item"><i className="density-high" />High · 6+</span></div>
+              <div className={`map-legend ${legendOpen ? 'is-open' : 'is-collapsed'}`}><button className="legend-toggle" type="button" aria-expanded={legendOpen} onClick={() => setLegendOpen((open) => !open)}><Layers size={13} />Legend<ChevronDown size={12} className="legend-chevron" /></button>{legendOpen && <div className="legend-body"><span className="legend-title">CATEGORY</span>{categoryOptions.map((category) => <span className="legend-item" key={category}><i style={{ backgroundColor: categoryColors[category] }} />{category}</span>)}<span className="legend-divider" /><span className="legend-title">STATUS DOT</span><span className="legend-item"><i className="status-dot status-submitted" />Submitted</span><span className="legend-item"><i className="status-dot status-under-review" />Under review</span><span className="legend-item"><i className="status-dot status-in-progress" />In progress</span><span className="legend-item"><i className="status-dot status-resolved" />Resolved</span><span className="legend-divider" /><span className="legend-title">REPORT DENSITY</span><span className="legend-item"><i className="density-low" />Low · 1–2</span><span className="legend-item"><i className="density-moderate" />Moderate · 3–5</span><span className="legend-item"><i className="density-high" />High · 6+</span></div>}</div>
               {mapLocationError && <p className="map-search-feedback map-search-error map-location-error" role="status">{mapLocationError}</p>}
             </div>
             <div className="map-footnote"><MapPin size={13} /> Pins are approximate locations · Status dots match report progress <span>·</span> Select a pin for details</div>
@@ -1121,12 +1249,12 @@ function App() {
               </div>
             </div>
             <div className="report-list">
-              {loadingReports ? <div className="empty-state"><Clock3 size={20} /><strong>Loading reports</strong><span>Connecting to the community feed.</span></div> : orderedReports.length === 0 ? <div className="empty-state"><Search size={21} /><strong>No matching reports</strong><span>Try changing a filter or search term.</span></div> : orderedReports.map((report) => {
+              {loadingReports ? <ReportListSkeleton /> : orderedReports.length === 0 ? <div className="empty-state"><Search size={21} /><strong>No matching reports</strong><span>Try changing a filter or search term.</span></div> : orderedReports.map((report) => {
                 const Icon = categoryIcon(report.category)
                 return <button type="button" className={`report-item ${selectedId === report.id ? 'is-selected' : ''}`} key={report.id} onClick={() => setSelectedId(report.id)}>
                   <span className="report-category-icon" style={{ color: categoryColors[report.category], backgroundColor: `${categoryColors[report.category]}14` }}><Icon size={17} /></span>
                   <span className="report-main"><span className="report-title">{report.title}</span><span className="report-meta"><MapPin size={12} />Approx. {approximateCoordinates(report.coordinates).map((coordinate) => coordinate.toFixed(3)).join(', ')}<span>·</span>{formatCreatedAt(report.createdAt)}</span><span className="report-tags"><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span>{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></span>
-                  <span className="report-id">{report.id.replace('GP-', '#')}</span>
+                  <span className="report-id">{formatReportId(report.id)}</span>
                 </button>
               })}
             </div>
@@ -1138,12 +1266,23 @@ function App() {
       </main>
 
       {reporting && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReporting(false) }}>
-        <section className="report-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <section className="report-modal report-form-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
           <div className="modal-header"><div><p className="eyebrow">COMMUNITY REPORT</p><h2 id="modal-title">What did you notice?</h2><p>Help your community respond with a few details.</p></div><button className="icon-button" type="button" onClick={() => setReporting(false)} aria-label="Close report form"><X size={19} /></button></div>
-          <form onSubmit={submitReport}>
-            <label className="field-label">Report title<input name="title" maxLength={90} placeholder="e.g. Waste piling up beside the road" required /></label>
-            <div className="form-grid"><label className="field-label">Category<select name="category" defaultValue="Waste">{intakeCategories.map((category) => <option key={category}>{category}</option>)}</select></label><label className="field-label">Specific issue<input name="issue_type" maxLength={80} placeholder="e.g. Clogged drainage" required /></label><label className="field-label">Urgency<select name="urgency" defaultValue="Medium"><option>Low</option><option>Medium</option><option>High</option></select></label></div>
-            <label className="field-label">What is happening?<textarea name="description" rows={3} maxLength={500} placeholder="Describe what you observed and any immediate risks." required /></label>
+          <form className="report-form" onSubmit={submitReport}>
+            <div className="report-form-grid">
+              <div className="report-form-col">
+                <section className="form-section">
+                  <h3 className="form-section-title"><span>1</span>What happened</h3>
+                  <label className="field-label">Report title<input name="title" maxLength={90} placeholder="e.g. Waste piling up beside the road" required /></label>
+                  <fieldset className="choice-group"><legend>Category</legend><div className="choice-chips">{intakeCategories.map((category) => { const CategoryIcon = categoryIcon(category); return <label className="choice-chip" key={category}><input type="radio" name="category" value={category} defaultChecked={category === 'Waste'} /><span><CategoryIcon size={15} />{category}</span></label> })}</div></fieldset>
+                  <label className="field-label">Specific issue<input name="issue_type" maxLength={80} placeholder="e.g. Clogged drainage" required /></label>
+                  <fieldset className="choice-group"><legend>Urgency</legend><div className="segmented">{['Low', 'Medium', 'High'].map((urgency) => <label className={`segment segment-${urgency.toLowerCase()}`} key={urgency}><input type="radio" name="urgency" value={urgency} defaultChecked={urgency === 'Medium'} /><span>{urgency}</span></label>)}</div></fieldset>
+                  <label className="field-label">What is happening?<textarea name="description" rows={4} maxLength={500} placeholder="Describe what you observed and any immediate risks." required /></label>
+                </section>
+              </div>
+              <div className="report-form-col">
+                <section className="form-section">
+                  <h3 className="form-section-title"><span>2</span>Where</h3>
             <div className="location-autocomplete-wrap">
               <label className="field-label" htmlFor="report-location">Location <span className="field-hint">Search a street, landmark, barangay, or facility</span></label>
               <div className={`location-autocomplete ${locationConfirmed ? 'location-confirmed' : ''}`}>
@@ -1152,12 +1291,13 @@ function App() {
                 {locationSearchBusy && <span className="search-spinner" aria-label="Searching locations" />}
                 {locationConfirmed && <Check size={16} className="location-check" />}
               </div>
-              {locationSuggestions.length > 0 && <ul className="location-suggestions" id="location-suggestions" role="listbox" aria-label="Suggested places">{locationSuggestions.map((suggestion) => <li key={`${suggestion.label}-${suggestion.coordinates.join(',')}`}><button type="button" role="option" aria-selected="false" onClick={() => { geocodeRequest.current += 1; setLocation(suggestion.coordinates); setMapCenter(suggestion.coordinates); setLocationQuery(suggestion.label); setLocationConfirmed(true); setLocationSuggestions([]); setLocationSearchMessage(''); setFormError('') }}><MapPin size={15} /><span>{suggestion.label}<small>{suggestion.coordinates[0].toFixed(5)}, {suggestion.coordinates[1].toFixed(5)}</small></span></button></li>)}</ul>}
+              {locationSuggestions.length > 0 && <ul className="location-suggestions" id="location-suggestions" role="listbox" aria-label="Suggested places">{locationSuggestions.map((suggestion) => <li key={`${suggestion.label}-${suggestion.coordinates.join(',')}`}><button type="button" role="option" aria-selected="false" onClick={() => { geocodeRequest.current += 1; setLocation(suggestion.coordinates); setMapCenter(suggestion.coordinates); setLocationQuery(suggestion.label); setReportBarangay((current) => detectBarangay(suggestion.label) ?? current); setLocationConfirmed(true); setLocationSuggestions([]); setLocationSearchMessage(''); setFormError('') }}><MapPin size={15} /><span>{suggestion.label}<small>{suggestion.coordinates[0].toFixed(5)}, {suggestion.coordinates[1].toFixed(5)}</small></span></button></li>)}</ul>}
               {locationSearchBusy && <p className="location-feedback" role="status">Searching nearby places…</p>}
               {!locationSearchBusy && locationSearchMessage && <p className="location-feedback location-search-error" role="status">{locationSearchMessage}</p>}
               {!locationSearchBusy && locationQuery.trim().length >= 3 && !locationConfirmed && !locationSearchMessage && locationSuggestions.length === 0 && <p className="location-feedback" role="status">No matches yet. Try another nearby name or use your current location.</p>}
               <p className="location-attribution">Place suggestions by Photon · OpenStreetMap contributors</p>
             </div>
+<label className="field-label">Barangay<select name="barangay" value={reportBarangay} onChange={(event) => setReportBarangay(event.target.value)} required><option value="">Select barangay</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay}>{barangay}</option>)}</select></label>
             <div className="location-picker-heading"><MapPin size={15} /><strong>Pin the exact spot</strong><span>Click or drag the map to adjust</span><button className="text-button" type="button" onClick={() => requestLocation()}><Crosshair size={14} /> Use my location</button></div>
             <div className="report-location-map">
               <MapContainer center={location as LatLngExpression} zoom={15} scrollWheelZoom className="leaflet-map">
@@ -1174,11 +1314,29 @@ function App() {
             </div>
             <div className="location-field"><div className="location-copy"><MapPin size={16} /><span><strong>{locationConfirmed ? 'Selected location' : 'Choose a map location'}</strong><small>{locationConfirmed ? `${location[0].toFixed(5)}, ${location[1].toFixed(5)}` : 'Pick a search suggestion or use GPS'}</small></span></div></div>
             {isSupabaseConfigured && <p className="privacy-note">Your account identity stays private. The public map shows approximate report locations.</p>}
+                </section>
+                <section className="form-section">
+                  <h3 className="form-section-title"><span>3</span>Photo</h3>
             <div className="photo-row"><label className="upload-button"><Camera size={15} />{photo ? 'Photo attached' : 'Add a photo'}<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => handlePhoto(event.target.files?.[0])} /></label>{photo && <button className="remove-photo" type="button" onClick={() => { setPhoto(undefined); setPhotoFile(undefined) }}><X size={13} /> Remove</button>}<span>Optional · JPEG, PNG, or WebP · max 5 MB</span></div>
             {photo && <img className="photo-preview" src={photo} alt="Selected report attachment preview" />}
+                </section>
+              </div>
+            </div>
             {formError && <p className="form-error" role="alert">{formError}</p>}
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setReporting(false)}>Cancel</button><button className="primary-button" type="submit" disabled={loadingReports}>{loadingReports ? 'Connecting…' : <><Check size={16} /> Submit report</>}</button></div>
           </form>
+        </section>
+      </div>}
+
+      {teamModalOpen && profile?.role === 'admin' && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTeamModalOpen(false) }}>
+        <section className="report-modal team-modal" role="dialog" aria-modal="true" aria-labelledby="team-title">
+          <div className="modal-header"><div><p className="eyebrow">STAFF DESK</p><h2 id="team-title">Manage teams</h2><p>Group responders so reports can be assigned to a crew.</p></div><button className="icon-button" type="button" onClick={() => setTeamModalOpen(false)} aria-label="Close team manager"><X size={19} /></button></div>
+          <form className="team-create" onSubmit={createTeam}><label className="field-label">New team name<input name="team_name" maxLength={60} placeholder="e.g. Drainage crew" required /></label><button className="primary-button" type="submit" disabled={teamBusy}><Plus size={15} /> Add team</button></form>
+          {teamMessage && <p className="form-error" role="alert">{teamMessage}</p>}
+          <div className="team-list">{teams.length === 0 ? <p className="staff-empty">No teams yet. Create one above.</p> : teams.map((team) => <div className="team-card" key={team.id}>
+            <div className="team-card-heading"><strong><Users size={15} />{team.name}</strong><span>{team.memberIds.length} {team.memberIds.length === 1 ? 'member' : 'members'}</span><button className="icon-button" type="button" disabled={teamBusy} onClick={() => void deleteTeam(team)} aria-label={`Delete ${team.name}`}><Trash2 size={15} /></button></div>
+            <div className="choice-chips">{staffUsers.map((user) => <label className="choice-chip" key={user.id}><input type="checkbox" checked={team.memberIds.includes(user.id)} disabled={teamBusy} onChange={() => void toggleTeamMember(team, user.id)} /><span>{user.display_name || 'Unnamed staff member'}</span></label>)}</div>
+          </div>)}</div>
         </section>
       </div>}
 
