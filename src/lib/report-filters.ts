@@ -70,7 +70,7 @@ export type FilterLookup = {
   teams: ReadonlyMap<string, string>
 }
 
-const closedStatuses = ['Resolved', 'Rejected', 'Closed']
+const closedStatuses = ['Resolved', 'Rejected', 'Closed', 'Duplicate']
 const resolutionStages: Record<string, (status: string) => boolean> = {
   unresolved: (status) => !['Awaiting verification', ...closedStatuses].includes(status),
   awaiting: (status) => status === 'Awaiting verification',

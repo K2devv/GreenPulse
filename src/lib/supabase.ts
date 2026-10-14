@@ -55,6 +55,19 @@ export type ReportRow = {
   assigned_to?: string | null
   assigned_team_id?: string | null
   barangay?: string | null
+  verified_by?: string | null
+  verified_at?: string | null
+  verification_note?: string | null
+  duplicate_of?: string | null
+  assigned_at?: string | null
+  due_date?: string | null
+  task_instructions?: string | null
+  task_priority?: 'Low' | 'Medium' | 'High' | null
+  resolution_photo_paths?: string[] | null
+  resolution_decision?: 'approved' | 'rejected' | 'action_requested' | null
+  resolution_review_note?: string | null
+  resolution_reviewed_by?: string | null
+  resolution_reviewed_at?: string | null
   reporter_id?: string
   resolution_note?: string | null
   resolved_at?: string | null
@@ -89,6 +102,19 @@ export function toReport(row: ReportRow) {
     assignedTo: row.assigned_to ?? undefined,
     assignedTeamId: row.assigned_team_id ?? undefined,
     barangay: row.barangay ?? undefined,
+    verifiedBy: row.verified_by ?? undefined,
+    verifiedAt: row.verified_at ?? undefined,
+    verificationNote: row.verification_note ?? undefined,
+    duplicateOf: row.duplicate_of ?? undefined,
+    assignedAt: row.assigned_at ?? undefined,
+    dueDate: row.due_date ?? undefined,
+    taskInstructions: row.task_instructions ?? undefined,
+    taskPriority: row.task_priority ?? undefined,
+    resolutionPhotoPaths: row.resolution_photo_paths ?? [],
+    resolutionDecision: row.resolution_decision ?? undefined,
+    resolutionReviewNote: row.resolution_review_note ?? undefined,
+    resolutionReviewedBy: row.resolution_reviewed_by ?? undefined,
+    resolutionReviewedAt: row.resolution_reviewed_at ?? undefined,
     resolutionNote: row.resolution_note ?? undefined,
     resolvedAt: row.resolved_at ?? undefined,
     reporterId: row.reporter_id,

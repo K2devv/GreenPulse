@@ -40,11 +40,13 @@ import { Circle, MapContainer, Marker, Popup, TileLayer, useMap, useMapEvents } 
 import { divIcon, type LatLngExpression } from 'leaflet'
 import type { Session } from '@supabase/supabase-js'
 import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type NotificationRow, type Profile, type ReportEvent, type ReportRow, type Team } from './lib/supabase'
+import { StaffWorkflowPanel } from './StaffWorkflowPanel'
+import { isOpenStatus } from './lib/report-workflow'
 import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, countActiveFilters, defaultReportFilters, detectBarangay, filterReports, formatReportId, type ReportFilters } from './lib/report-filters'
 import { buildReportAnalytics, type ChartDatum } from './lib/report-analytics'
 
 type Category = 'Waste' | 'Pollution' | 'Flooding' | 'Drainage' | 'Water pollution' | 'Air pollution'
-type Status = 'Submitted' | 'Under review' | 'Additional information requested' | 'Verified' | 'In progress' | 'Awaiting verification' | 'Resolved' | 'Rejected' | 'Closed'
+type Status = 'Submitted' | 'Under review' | 'Additional information requested' | 'Verified' | 'In progress' | 'Awaiting verification' | 'Resolved' | 'Rejected' | 'Closed' | 'Duplicate'
 type Urgency = 'Low' | 'Medium' | 'High'
 type Theme = 'light' | 'dark'
 
@@ -72,6 +74,19 @@ type Report = {
   assignedTo?: string
   assignedTeamId?: string
   barangay?: string
+  verifiedBy?: string
+  verifiedAt?: string
+  verificationNote?: string
+  duplicateOf?: string
+  assignedAt?: string
+  dueDate?: string
+  taskInstructions?: string
+  taskPriority?: string
+  resolutionPhotoPaths?: string[]
+  resolutionDecision?: string
+  resolutionReviewNote?: string
+  resolutionReviewedBy?: string
+  resolutionReviewedAt?: string
   resolutionNote?: string
   resolvedAt?: string
   reporterId?: string
@@ -133,7 +148,7 @@ const districtCenter: [number, number] = [14.7222, 121.0545]
 const categoryOptions: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage', 'Water pollution', 'Air pollution']
 const intakeCategories: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage']
 const STAFF_PAGE_SIZE = 50
-const statusOptions: Status[] = ['Submitted', 'Under review', 'Additional information requested', 'Verified', 'In progress', 'Awaiting verification', 'Resolved', 'Rejected', 'Closed']
+const statusOptions: Status[] = ['Submitted', 'Under review', 'Additional information requested', 'Verified', 'In progress', 'Awaiting verification', 'Resolved', 'Rejected', 'Closed', 'Duplicate']
 function createReportMarker(report: Report, selected: boolean) {
   const categoryClass = report.category.toLowerCase().replace(/[^a-z]/g, '-')
   const statusClass = report.status.toLowerCase().replace(/ /g, '-')
@@ -332,9 +347,7 @@ function App() {
       return []
     }
   })
-  const [staffPhotoUrl, setStaffPhotoUrl] = useState('')
-  const [workflowError, setWorkflowError] = useState('')
-  const [savingWorkflow, setSavingWorkflow] = useState(false)
+  const [staffPhotoUrls, setStaffPhotoUrls] = useState<{ original: string[]; resolution: string[] }>({ original: [], resolution: [] })
   const [categoryFilter, setCategoryFilter] = useState('All categories')
   const [statusFilter, setStatusFilter] = useState('All statuses')
   const [search, setSearch] = useState('')
@@ -606,10 +619,10 @@ function App() {
 
   const selectedReport = mapReports.find((report) => report.id === selectedId)
   const staffReport = reports.find((report) => report.id === staffReportId)
-  const openReports = reports.filter((report) => report.status !== 'Resolved' && report.status !== 'Rejected' && report.status !== 'Closed').length
+  const openReports = reports.filter((report) => isOpenStatus(report.status)).length
   const verifiedReports = reports.filter((report) => report.status === 'Verified' || report.status === 'In progress').length
   const overdueNotifications: InboxNotification[] = profile?.role === 'admin'
-    ? reports.filter((report) => report.status !== 'Resolved' && report.status !== 'Rejected' && report.status !== 'Closed' && Date.now() - new Date(report.createdAt).getTime() >= 48 * 60 * 60 * 1000)
+    ? reports.filter((report) => isOpenStatus(report.status) && Date.now() - new Date(report.createdAt).getTime() >= 48 * 60 * 60 * 1000)
       .map((report) => ({ id: `overdue:${report.id}`, report_id: report.id, event_type: 'overdue_task', title: 'Overdue task', message: `Open report needs attention: ${report.title}.`, created_at: report.createdAt, read_at: readOverdueIds.includes(report.id) ? report.createdAt : null }))
     : []
   const inboxNotifications: InboxNotification[] = [...notifications, ...overdueNotifications]
@@ -953,52 +966,59 @@ function App() {
     setStaffFilters((current) => ({ ...current, ...changes }))
   }
 
-  async function saveWorkflow(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!supabase || !session || !staffReport) return
-    const formData = new FormData(event.currentTarget)
-    const nextStatus = String(formData.get('status')) as Status
-    const resolutionNote = String(formData.get('resolution_note') ?? '').trim()
-    if (['Additional information requested', 'Awaiting verification', 'Resolved', 'Rejected', 'Closed'].includes(nextStatus) && resolutionNote.length < 8) {
-      setWorkflowError('Add response details (at least 8 characters) before saving this status.')
-      return
+  async function applyReportUpdate(payload: Record<string, unknown>, options?: { resolutionFiles?: File[] }) {
+    if (!supabase || !session || !staffReport) return 'You are not signed in.'
+    const uploadedPaths: string[] = []
+    const update = { ...payload }
+    for (const [index, file] of (options?.resolutionFiles ?? []).entries()) {
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) {
+        if (uploadedPaths.length) await supabase.storage.from('report-photos').remove(uploadedPaths)
+        return 'After-photos must be JPEG, PNG, or WebP images of 5 MB or less.'
+      }
+      const path = `${session.user.id}/resolution-${staffReport.id}-${Date.now()}-${index}.${file.type === 'image/png' ? 'png' : file.type === 'image/webp' ? 'webp' : 'jpg'}`
+      const { error: uploadError } = await supabase.storage.from('report-photos').upload(path, file, { contentType: file.type, upsert: false })
+      if (uploadError) {
+        if (uploadedPaths.length) await supabase.storage.from('report-photos').remove(uploadedPaths)
+        return uploadError.message
+      }
+      uploadedPaths.push(path)
     }
-    setSavingWorkflow(true)
-    setWorkflowError('')
-    const { data, error } = await supabase.from('reports').update({
-      status: nextStatus,
-      assigned_to: String(formData.get('assigned_to') ?? '') || null,
-      ...(teams.length > 0 ? { assigned_team_id: String(formData.get('assigned_team_id') ?? '') || null } : {}),
-      verified_by: nextStatus === 'Verified' ? session.user.id : undefined,
-      resolution_note: resolutionNote || null,
-    }).eq('id', staffReport.id).select('*').single()
-    setSavingWorkflow(false)
+    if (uploadedPaths.length) update.resolution_photo_paths = [...(staffReport.resolutionPhotoPaths ?? []), ...uploadedPaths]
+    const { data, error } = await supabase.from('reports').update(update).eq('id', staffReport.id).select('*').single()
     if (error || !data) {
-      setWorkflowError(error?.message ?? 'The update could not be saved.')
-      return
+      if (uploadedPaths.length) await supabase.storage.from('report-photos').remove(uploadedPaths)
+      return error?.message ?? 'The update could not be saved.'
     }
     const updatedReport = toReport(data as ReportRow)
     void deliverNotificationEmails(updatedReport.id, session.access_token)
-    setReports((current) => current.map((report) => report.id === updatedReport.id ? updatedReport : report))
-    setWorkflowError('Saved. The report timeline has been updated.')
+    setReports((current) => current.map((report) => report.id === updatedReport.id ? { ...report, ...updatedReport } : report))
+    const { data: events } = await supabase.from('report_events').select('id, event_type, message, created_at').eq('report_id', updatedReport.id).order('created_at', { ascending: false })
+    setReportEvents((events ?? []) as ReportEvent[])
+    return undefined
   }
 
   useEffect(() => {
     if (!supabase || !staffMode || !staffReportId || (profile?.role !== 'responder' && profile?.role !== 'admin')) {
       setReportEvents([])
-      setStaffPhotoUrl('')
+      setStaffPhotoUrls({ original: [], resolution: [] })
       return
     }
     supabase.from('report_events').select('id, event_type, message, created_at').eq('report_id', staffReportId).order('created_at', { ascending: false }).then(({ data }) => {
       setReportEvents((data ?? []) as ReportEvent[])
     })
     const selected = reports.find((report) => report.id === staffReportId)
-
-    if (selected?.photoPath) {
-      supabase.storage.from('report-photos').createSignedUrl(selected.photoPath, 300).then(({ data }) => {
-        setStaffPhotoUrl(data?.signedUrl ?? '')
-      })
-    } else setStaffPhotoUrl('')
+    const originalPaths = [...new Set([...(selected?.photoPaths ?? []), ...(selected?.photoPath ? [selected.photoPath] : [])])]
+    const resolutionPaths = selected?.resolutionPhotoPaths ?? []
+    let active = true
+    const sign = async (paths: string[]) => {
+      if (!paths.length) return []
+      const { data } = await supabase!.storage.from('report-photos').createSignedUrls(paths, 300)
+      return (data ?? []).flatMap((entry) => entry.signedUrl ? [entry.signedUrl] : [])
+    }
+    void Promise.all([sign(originalPaths), sign(resolutionPaths)]).then(([original, resolution]) => {
+      if (active) setStaffPhotoUrls({ original, resolution })
+    })
+    return () => { active = false }
   }, [profile?.role, staffMode, staffReportId, reports])
 
   function markNotificationRead(notification: InboxNotification) {
@@ -1168,24 +1188,16 @@ function App() {
           <div className="staff-workbench-grid">
             <div className="staff-queue"><div className="queue-heading"><div><h3>Response queue</h3><span aria-live="polite">{staffMatches.length} of {reports.length} reports · {openReports} open</span></div></div>
               {loadingReports ? <ReportListSkeleton rows={5} variant="queue" /> : staffMatches.length === 0 ? <div className="staff-empty">No reports match {activeFilterCount > 0 ? 'these filters' : 'this queue'}.{activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => setStaffFilters(defaultReportFilters)}>Clear all filters</button>}</div> : <>
-                {staffQueue.map((report) => <button key={report.id} type="button" className={`queue-item ${staffReportId === report.id ? 'selected' : ''}`} onClick={() => { setStaffReportId(report.id); setWorkflowError('') }}><span className="queue-item-title">{report.title}</span><span className="queue-item-meta">{formatReportId(report.id)} · {report.category}{report.barangay ? ` · ${report.barangay}` : ''} · {formatCreatedAt(report.createdAt)}</span><span className="queue-item-tags"><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span>{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></button>)}
+                {staffQueue.map((report) => <button key={report.id} type="button" className={`queue-item ${staffReportId === report.id ? 'selected' : ''}`} onClick={() => setStaffReportId(report.id)}><span className="queue-item-title">{report.title}</span><span className="queue-item-meta">{formatReportId(report.id)} · {report.category}{report.barangay ? ` · ${report.barangay}` : ''} · {formatCreatedAt(report.createdAt)}</span><span className="queue-item-tags"><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span>{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></button>)}
                 {staffMatches.length > staffQueue.length && <button className="show-more-button" type="button" onClick={() => setStaffVisibleCount((count) => count + STAFF_PAGE_SIZE)}>Show more ({staffMatches.length - staffQueue.length} remaining)</button>}
               </>}
             </div>
             <div className="staff-detail">{staffReport ? <>
               <div className="staff-report-heading"><div><span className="report-id">{staffReport.id.slice(0, 8).toUpperCase()}</span><h3>{staffReport.title}</h3><span className="section-caption">{staffReport.category} · {staffReport.urgency} urgency · {formatCreatedAt(staffReport.createdAt)}</span><span className="reporter-line"><UserRound size={12} /> Reported by {staffReport.reporterName || 'Community resident'}</span></div><MapPin size={18} /></div>
               <p className="staff-description">{staffReport.description}</p>
-              <div className="meta-chips"><span className="meta-chip"><MapPin size={12} />{staffReport.barangay ? `Barangay ${staffReport.barangay}` : 'No barangay recorded'}</span><span className="meta-chip"><UserRound size={12} />{staffReport.assignedTo ? (filterLookup.people.get(staffReport.assignedTo) ?? 'Assigned responder') : 'No responder assigned'}</span>{teams.length > 0 && <span className="meta-chip"><Users size={12} />{staffReport.assignedTeamId ? (filterLookup.teams.get(staffReport.assignedTeamId) ?? 'Assigned team') : 'No team assigned'}</span>}</div>
+              <div className="meta-chips"><span className="meta-chip"><MapPin size={12} />{staffReport.barangay ? `Barangay ${staffReport.barangay}` : 'No barangay recorded'}</span></div>
               <p className="staff-location"><MapPin size={14} />{staffReport.location} <span>({staffReport.coordinates.map((coordinate) => coordinate.toFixed(5)).join(', ')})</span></p>
-              {staffPhotoUrl && <a className="staff-photo-link" href={staffPhotoUrl} target="_blank" rel="noreferrer"><img src={staffPhotoUrl} alt="Attached report evidence" />View report photo</a>}
-              <form className="workflow-form" onSubmit={saveWorkflow} key={`${staffReport.id}-${staffReport.status}-${staffReport.assignedTo ?? ''}-${staffReport.assignedTeamId ?? ''}-${staffReport.resolutionNote ?? ''}`}>
-                <label className="field-label">Status<select name="status" defaultValue={staffReport.status}>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select></label>
-                <label className="field-label">Assign responder<select name="assigned_to" defaultValue={staffReport.assignedTo ?? ''}><option value="">Unassigned</option>{staffUsers.map((user) => <option key={user.id} value={user.id}>{user.display_name || 'Unnamed staff member'} · {getRoleLabel(user.role)}</option>)}</select></label>
-                {teams.length > 0 && <label className="field-label workflow-wide">Assign team<select name="assigned_team_id" defaultValue={staffReport.assignedTeamId ?? ''}><option value="">No team</option>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label>}
-                <label className="field-label workflow-wide">Response details<textarea name="resolution_note" rows={2} maxLength={1000} defaultValue={staffReport.resolutionNote ?? ''} placeholder="Required for information requests and outcomes" /></label>
-                {workflowError && <p className={workflowError.startsWith('Saved') ? 'workflow-success' : 'form-error'} role="status">{workflowError}</p>}
-                <button className="primary-button" type="submit" disabled={savingWorkflow}>{savingWorkflow ? 'Saving…' : 'Save response update'}</button>
-              </form>
+              {session && (profile?.role === 'admin' || profile?.role === 'responder') && <StaffWorkflowPanel report={staffReport} role={profile.role} userId={session.user.id} staffUsers={staffUsers} teams={teams} allReports={reports} originalPhotoUrls={staffPhotoUrls.original} resolutionPhotoUrls={staffPhotoUrls.resolution} onSubmit={applyReportUpdate} />}
               <div className="event-history"><h4>Report history</h4>{reportEvents.length ? reportEvents.map((event) => <div className="event-item" key={event.id}><span className="event-mark" /><span><strong>{event.message}</strong><small>{formatCreatedAt(event.created_at)}</small></span></div>) : <p>No history entries yet.</p>}</div>
             </> : <div className="staff-detail-empty"><ClipboardCheck size={25} /><strong>Select a report</strong><span>Choose an open report to review and update its response.</span></div>}</div>
           </div>
@@ -1245,7 +1257,7 @@ function App() {
               <label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search reports" aria-label="Search reports" />{search && <button type="button" onClick={() => setSearch('')} aria-label="Clear search"><X size={13} /></button>}</label>
               <div className="filter-row">
                 <label className="select-wrap"><span className="sr-only">Filter by category</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>All categories</option>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={13} /></label>
-                <label className="select-wrap"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All statuses</option>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select><ChevronDown size={13} /></label>
+                <label className="select-wrap"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All statuses</option>{statusOptions.filter((status) => status !== 'Duplicate').map((status) => <option key={status}>{status}</option>)}</select><ChevronDown size={13} /></label>
               </div>
             </div>
             <div className="report-list">

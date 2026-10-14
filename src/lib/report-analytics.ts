@@ -94,6 +94,7 @@ export function buildReportAnalytics(reports: AnalyticsReport[], now = new Date(
     'Resolved',
     'Rejected',
     'Closed',
+    'Duplicate',
   ])
 
   return {

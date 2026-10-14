@@ -28,7 +28,7 @@ The Vite dev server includes server-side adapters for responder invitations and 
 6. Configure `SUPABASE_SERVICE_ROLE_KEY` as a server-only Vercel environment variable. Once the first admin is promoted, admins can create responder profiles from **Staff desk → Add responder**; the responder receives a Supabase invitation email to finish account setup. For bootstrap access before that endpoint is configured, an administrator can still promote an account using SQL. Never expose the service-role key in the browser or commit it to `.env.local`.
 7. Restart the Vite server after changing environment variables.
 
-Reports require a signed-in resident account. Submitted and under-review reports appear on the public map so they are shared across devices; rejected reports remain private. Reporter names are hidden until a report is verified, and photo paths are never exposed through the public map. Residents can view their own pending report history. Responders and administrators can review all reports, assign a responder, change status, and record resolution details. Admin-created responder accounts are invited by email and assigned the responder role server-side; other role changes remain in the Supabase SQL Editor. Users cannot promote themselves.
+Reports require a signed-in resident account. Submitted and under-review reports appear on the public map so they are shared across devices; rejected reports remain private. Reporter names are hidden until a report is verified, and photo paths are never exposed through the public map. Residents can view their own pending report history. Responders and administrators can review all reports, including photos and location. Only administrators verify reports (validate, reject, mark as duplicate, request more information, and correct category or urgency, with verification notes and a recorded verifier and timestamp), assign verified reports to a responder and/or team with a priority, due date and instructions, and review resolutions. Responders update only the tasks assigned to them (directly or through a team): they start work and submit a resolution with response notes and after-photos, which an administrator then approves, rejects, sends back for additional action, or closes. These rules are enforced by a database trigger, not just the interface. Admin-created responder accounts are invited by email and assigned the responder role server-side; other role changes remain in the Supabase SQL Editor. Users cannot promote themselves.
 
 Administrators can open the staff view for a live dashboard of total, pending, verified, assigned, in-progress, resolved, closed, rejected, and high-urgency reports, plus this-week and this-month intake. The dashboard charts reports by category, status, urgency, location, and day over the last 14 days; it also shows resolution rate and average resolution time for reports with recorded resolution timestamps. Use **Response desk** to switch to the existing report workflow.
 
@@ -72,7 +72,10 @@ The Supabase built-in email sender is rate-limited. For pilot signups, configure
 | View community map reports, including pending | Yes | Yes | Yes |
 | View all pending report details in staff desk | No | Yes | Yes |
 | View own pending report history | Yes | Yes | Yes |
-| Assign and update report status | No | Yes | Yes |
+| Verify, reject, or mark reports as duplicate | No | No | Yes |
+| Assign tasks (responder, team, priority, due date) | No | No | Yes |
+| Start work and submit a resolution on assigned tasks | No | Yes | Yes |
+| Approve, reject, or close resolutions | No | No | Yes |
 | Read private report photos | Own uploads | Yes | Yes |
 | Create responder accounts | No | No | Yes, with email invitation |
 | Change other account roles | No | No | SQL Editor only |

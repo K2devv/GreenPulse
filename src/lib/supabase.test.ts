@@ -42,6 +42,7 @@ describe('toReport', () => {
       assignedTo: 'responder-1',
       resolutionNote: undefined,
       resolvedAt: undefined,
+      resolutionPhotoPaths: [],
       reporterId: 'resident-1',
     })
   })
