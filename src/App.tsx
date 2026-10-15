@@ -20,6 +20,7 @@ import {
   LogIn,
   LogOut,
   MapPin,
+  MessageSquare,
   Moon,
   Plus,
   SlidersHorizontal,
@@ -41,6 +42,8 @@ import { divIcon, type LatLngExpression } from 'leaflet'
 import type { Session } from '@supabase/supabase-js'
 import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type NotificationRow, type Profile, type ReportEvent, type ReportRow, type Team } from './lib/supabase'
 import { StaffWorkflowPanel } from './StaffWorkflowPanel'
+import { EnvironmentalReports } from './EnvironmentalReports'
+import { ReportConversation, ReportTimeline, ResidentReportModal } from './ReportCommunication'
 import { isOpenStatus } from './lib/report-workflow'
 import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, countActiveFilters, defaultReportFilters, detectBarangay, filterReports, formatReportId, type ReportFilters } from './lib/report-filters'
 import { buildReportAnalytics, type ChartDatum } from './lib/report-analytics'
@@ -338,6 +341,7 @@ function App() {
   const [staffUsers, setStaffUsers] = useState<Profile[]>([])
   const [staffReportId, setStaffReportId] = useState<string>()
   const [reportEvents, setReportEvents] = useState<ReportEvent[]>([])
+  const [followUpId, setFollowUpId] = useState<string>()
   const [notifications, setNotifications] = useState<NotificationRow[]>([])
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false)
   const [readOverdueIds, setReadOverdueIds] = useState<string[]>(() => {
@@ -619,6 +623,9 @@ function App() {
 
   const selectedReport = mapReports.find((report) => report.id === selectedId)
   const staffReport = reports.find((report) => report.id === staffReportId)
+  const followUpReport = reports.find((report) => report.id === followUpId)
+  const selectedOwnReport = selectedReport && session && selectedReport.reporterId === session.user.id ? selectedReport : undefined
+  const staffOnTask = Boolean(staffReport && session && (staffReport.assignedTo === session.user.id || teams.find((team) => team.id === staffReport.assignedTeamId)?.memberIds.includes(session.user.id)))
   const openReports = reports.filter((report) => isOpenStatus(report.status)).length
   const verifiedReports = reports.filter((report) => report.status === 'Verified' || report.status === 'In progress').length
   const overdueNotifications: InboxNotification[] = profile?.role === 'admin'
@@ -966,6 +973,13 @@ function App() {
     setStaffFilters((current) => ({ ...current, ...changes }))
   }
 
+  async function refreshStaffEvents(reportId: string) {
+    if (!supabase || !session) return
+    const { data } = await supabase.from('report_events').select('id, event_type, message, created_at').eq('report_id', reportId).order('created_at', { ascending: false })
+    setReportEvents((data ?? []) as ReportEvent[])
+    void deliverNotificationEmails(reportId, session.access_token)
+  }
+
   async function applyReportUpdate(payload: Record<string, unknown>, options?: { resolutionFiles?: File[] }) {
     if (!supabase || !session || !staffReport) return 'You are not signed in.'
     const uploadedPaths: string[] = []
@@ -1163,6 +1177,7 @@ function App() {
               </div>
             </article>
           </div>
+          <EnvironmentalReports reports={reports} />
         </section>}
 
         {staffMode && (profile?.role === 'responder' || profile?.role === 'admin') && (!staffDashboardOpen || profile.role !== 'admin') && <section className="staff-workbench" aria-label="Staff report management">
@@ -1198,7 +1213,8 @@ function App() {
               <div className="meta-chips"><span className="meta-chip"><MapPin size={12} />{staffReport.barangay ? `Barangay ${staffReport.barangay}` : 'No barangay recorded'}</span></div>
               <p className="staff-location"><MapPin size={14} />{staffReport.location} <span>({staffReport.coordinates.map((coordinate) => coordinate.toFixed(5)).join(', ')})</span></p>
               {session && (profile?.role === 'admin' || profile?.role === 'responder') && <StaffWorkflowPanel report={staffReport} role={profile.role} userId={session.user.id} staffUsers={staffUsers} teams={teams} allReports={reports} originalPhotoUrls={staffPhotoUrls.original} resolutionPhotoUrls={staffPhotoUrls.resolution} onSubmit={applyReportUpdate} />}
-              <div className="event-history"><h4>Report history</h4>{reportEvents.length ? reportEvents.map((event) => <div className="event-item" key={event.id}><span className="event-mark" /><span><strong>{event.message}</strong><small>{formatCreatedAt(event.created_at)}</small></span></div>) : <p>No history entries yet.</p>}</div>
+              {session && profile && (profile.role === 'admin' || profile.role === 'responder') && <ReportConversation key={staffReport.id} reportId={staffReport.id} status={staffReport.status} viewerRole={profile.role} userId={session.user.id} isReporter={false} isOnTask={staffOnTask} onPosted={() => void refreshStaffEvents(staffReport.id)} />}
+              <ReportTimeline events={reportEvents} />
             </> : <div className="staff-detail-empty"><ClipboardCheck size={25} /><strong>Select a report</strong><span>Choose an open report to review and update its response.</span></div>}</div>
           </div>
         </section>}
@@ -1260,6 +1276,7 @@ function App() {
                 <label className="select-wrap"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All statuses</option>{statusOptions.filter((status) => status !== 'Duplicate').map((status) => <option key={status}>{status}</option>)}</select><ChevronDown size={13} /></label>
               </div>
             </div>
+            {selectedOwnReport && <div className="own-report-card"><span><strong>{selectedOwnReport.title}</strong><small>Your report · {selectedOwnReport.status}</small></span><button className="secondary-button" type="button" onClick={() => setFollowUpId(selectedOwnReport.id)}><MessageSquare size={14} /> Updates and replies</button></div>}
             <div className="report-list">
               {loadingReports ? <ReportListSkeleton /> : orderedReports.length === 0 ? <div className="empty-state"><Search size={21} /><strong>No matching reports</strong><span>Try changing a filter or search term.</span></div> : orderedReports.map((report) => {
                 const Icon = categoryIcon(report.category)
@@ -1276,6 +1293,8 @@ function App() {
 
         <footer className="page-footer"><span>GREENPULSE <i>·</i> COMMUNITY ENVIRONMENT MONITORING · DISTRICT 5</span>{!staffMode && <button type="button" onClick={startReport}><Plus size={14} /> Add a report</button>}</footer>
       </main>
+
+      {followUpReport && session && <ResidentReportModal report={followUpReport} userId={session.user.id} onClose={() => setFollowUpId(undefined)} onPosted={() => void deliverNotificationEmails(followUpReport.id, session.access_token)} />}
 
       {reporting && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReporting(false) }}>
         <section className="report-modal report-form-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
