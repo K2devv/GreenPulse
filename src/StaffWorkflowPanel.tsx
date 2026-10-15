@@ -1,6 +1,9 @@
 import { useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, CalendarDays, Camera, Check, ClipboardCheck, MapPin, ShieldCheck, UserRound, Users, X } from 'lucide-react'
 import type { Team } from './lib/supabase'
+import { formatDuration } from './lib/report-summary'
+import { elapsedMs, responseStages, type StageEvent } from './lib/report-response-times'
+import { needsImmediateAttention } from './lib/report-escalation'
 import { formatReportId } from './lib/report-filters'
 import {
   ASSIGNABLE_STATUSES,
@@ -39,6 +42,10 @@ export type PanelReport = {
   resolutionReviewNote?: string
   resolutionReviewedBy?: string
   resolutionReviewedAt?: string
+  createdAt?: string
+  startedAt?: string
+  resolvedAt?: string
+  escalatedAt?: string
 }
 
 type PanelUser = { id: string; display_name: string; role: string }
@@ -52,6 +59,7 @@ export type StaffWorkflowPanelProps = {
   allReports: readonly { id: string; title: string }[]
   originalPhotoUrls: string[]
   resolutionPhotoUrls: string[]
+  events?: StageEvent[]
   onSubmit: (payload: Record<string, unknown>, options?: { resolutionFiles?: File[] }) => Promise<string | undefined>
 }
 
@@ -60,6 +68,7 @@ const MAX_RESOLUTION_PHOTOS = 5
 const decisionLabels: Record<string, string> = { approved: 'Resolution approved', rejected: 'Resolution rejected', action_requested: 'Additional action requested' }
 
 const formatDate = (value?: string) => value ? new Date(value.length === 10 ? `${value}T00:00:00` : value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : ''
+const formatDateTime = (value: string) => new Date(value).toLocaleString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
 
 function WorkflowCard({ step, title, icon, badge, children }: { step: number; title: string; icon: ReactNode; badge?: ReactNode; children: ReactNode }) {
   return <section className="workflow-card" aria-label={title}>
@@ -73,7 +82,7 @@ function PhotoStrip({ urls, label }: { urls: string[]; label: string }) {
   return <div className="photo-strip" aria-label={label}>{urls.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer"><img src={url} alt={label} /></a>)}</div>
 }
 
-export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, allReports, originalPhotoUrls, resolutionPhotoUrls, onSubmit }: StaffWorkflowPanelProps) {
+export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, allReports, originalPhotoUrls, resolutionPhotoUrls, events, onSubmit }: StaffWorkflowPanelProps) {
   const isAdmin = role === 'admin'
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<{ card: string; text: string; ok: boolean }>()
@@ -159,7 +168,17 @@ export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, al
 
   const verificationBadge = <span className={`vstate vstate-${state.toLowerCase().replace(/ /g, '-')}`}>{state}</span>
 
+  const stages = report.createdAt ? responseStages({ ...report, createdAt: report.createdAt }, events) : []
+  const escalation = needsImmediateAttention({ ...report, escalatedAt: report.escalatedAt })
+
   return <div className="workflow-panels">
+    {escalation && <p className="escalation-banner" role="alert"><AlertTriangle size={14} /> Critical flooding: needs immediate attention. Verify, assign a response team, and track it to resolution.</p>}
+    {stages.length > 0 && <ol className="response-stages" aria-label="Response time tracking">
+      {stages.map((stage) => <li key={stage.key} className={stage.reached ? 'reached' : ''}>
+        <span>{stage.label}</span><small>{stage.at ? formatDateTime(stage.at) : stage.reached ? 'Time not recorded' : 'Pending'}</small>
+      </li>)}
+      {report.resolvedAt && report.createdAt && <li className="reached total"><span>Total</span><small>{formatDuration(elapsedMs(report.createdAt, report.resolvedAt))}</small></li>}
+    </ol>}
     <WorkflowCard step={1} title="Verification" icon={<ShieldCheck size={15} />} badge={verificationBadge}>
       {report.verifiedAt && <p className="workflow-meta"><Check size={12} /> Verified by {nameOf(report.verifiedBy) ?? 'staff'} · {formatDate(report.verifiedAt)}</p>}
       {report.status === 'Duplicate' && <p className="workflow-meta"><AlertTriangle size={12} /> Duplicate of {report.duplicateOf ? formatReportId(report.duplicateOf) : 'another report'}{duplicateOfReport ? ` · ${duplicateOfReport.title}` : ''}</p>}

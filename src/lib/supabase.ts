@@ -71,6 +71,8 @@ export type ReportRow = {
   reporter_id?: string
   resolution_note?: string | null
   resolved_at?: string | null
+  started_at?: string | null
+  escalated_at?: string | null
   reporter_display_name?: string | null
   reporter?: { display_name?: string | null } | null
 }
@@ -117,6 +119,8 @@ export function toReport(row: ReportRow) {
     resolutionReviewedAt: row.resolution_reviewed_at ?? undefined,
     resolutionNote: row.resolution_note ?? undefined,
     resolvedAt: row.resolved_at ?? undefined,
+    startedAt: row.started_at ?? undefined,
+    escalatedAt: row.escalated_at ?? undefined,
     reporterId: row.reporter_id,
     ...(reporterName ? { reporterName } : {}),
   }

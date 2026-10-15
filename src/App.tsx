@@ -46,6 +46,9 @@ import { EnvironmentalReports } from './EnvironmentalReports'
 import { ReportConversation, ReportTimeline, ResidentReportModal } from './ReportCommunication'
 import { isOpenStatus } from './lib/report-workflow'
 import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, countActiveFilters, defaultReportFilters, detectBarangay, filterReports, formatReportId, type ReportFilters } from './lib/report-filters'
+import { prioritizeEscalated, needsImmediateAttention } from './lib/report-escalation'
+import { formatDuration } from './lib/report-summary'
+import { buildResponseTimeMetrics } from './lib/report-response-times'
 import { buildReportAnalytics, type ChartDatum } from './lib/report-analytics'
 
 type Category = 'Waste' | 'Pollution' | 'Flooding' | 'Drainage' | 'Water pollution' | 'Air pollution'
@@ -92,6 +95,8 @@ type Report = {
   resolutionReviewedAt?: string
   resolutionNote?: string
   resolvedAt?: string
+  startedAt?: string
+  escalatedAt?: string
   reporterId?: string
   reporterName?: string
 }
@@ -616,10 +621,12 @@ function App() {
     people: new Map(staffUsers.map((user) => [user.id, user.display_name || 'Unnamed staff member'])),
     teams: new Map(teams.map((team) => [team.id, team.name])),
   }), [staffUsers, teams])
-  const staffMatches = useMemo(() => filterReports(reports, staffFilters, filterLookup), [reports, staffFilters, filterLookup])
+  const staffMatches = useMemo(() => prioritizeEscalated(filterReports(reports, staffFilters, filterLookup)), [reports, staffFilters, filterLookup])
   const staffQueue = useMemo(() => staffMatches.slice(0, staffVisibleCount), [staffMatches, staffVisibleCount])
   const activeFilterCount = countActiveFilters(staffFilters)
   const adminAnalytics = useMemo(() => buildReportAnalytics(reports), [reports])
+  const responseMetrics = useMemo(() => buildResponseTimeMetrics(reports), [reports])
+  const escalatedOpen = useMemo(() => reports.filter(needsImmediateAttention).length, [reports])
 
   const selectedReport = mapReports.find((report) => report.id === selectedId)
   const staffReport = reports.find((report) => report.id === staffReportId)
@@ -1143,6 +1150,10 @@ function App() {
               { label: 'Closed reports', value: adminAnalytics.closed, note: 'Closed without resolution', icon: <X size={15} /> },
               { label: 'Rejected reports', value: adminAnalytics.rejected, note: 'Rejected by staff', icon: <AlertTriangle size={15} /> },
               { label: 'Critical reports', value: adminAnalytics.critical, note: 'High urgency', icon: <AlertTriangle size={15} /> },
+              { label: 'Escalated reports', value: escalatedOpen, note: 'Open critical flooding', icon: <AlertTriangle size={15} /> },
+              { label: 'Avg. verification time', value: formatDuration(responseMetrics.averageVerificationMs), note: 'Submitted to verified', icon: <Check size={15} /> },
+              { label: 'Avg. response time', value: formatDuration(responseMetrics.averageResponseMs), note: 'Submitted to response started', icon: <ArrowDownUp size={15} /> },
+              { label: 'Avg. resolution time', value: formatDuration(responseMetrics.averageResolutionMs), note: 'Submitted to resolved', icon: <ShieldCheck size={15} /> },
               { label: 'Reports this week', value: adminAnalytics.thisWeek, note: 'Since Monday', icon: <CalendarDays size={15} /> },
               { label: 'Reports this month', value: adminAnalytics.thisMonth, note: 'Since the first of the month', icon: <CalendarDays size={15} /> },
             ].map((metric) => <article className="admin-metric" key={metric.label}>
@@ -1203,7 +1214,7 @@ function App() {
           <div className="staff-workbench-grid">
             <div className="staff-queue"><div className="queue-heading"><div><h3>Response queue</h3><span aria-live="polite">{staffMatches.length} of {reports.length} reports · {openReports} open</span></div></div>
               {loadingReports ? <ReportListSkeleton rows={5} variant="queue" /> : staffMatches.length === 0 ? <div className="staff-empty">No reports match {activeFilterCount > 0 ? 'these filters' : 'this queue'}.{activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => setStaffFilters(defaultReportFilters)}>Clear all filters</button>}</div> : <>
-                {staffQueue.map((report) => <button key={report.id} type="button" className={`queue-item ${staffReportId === report.id ? 'selected' : ''}`} onClick={() => setStaffReportId(report.id)}><span className="queue-item-title">{report.title}</span><span className="queue-item-meta">{formatReportId(report.id)} · {report.category}{report.barangay ? ` · ${report.barangay}` : ''} · {formatCreatedAt(report.createdAt)}</span><span className="queue-item-tags"><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span>{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></button>)}
+                {staffQueue.map((report) => <button key={report.id} type="button" className={`queue-item ${staffReportId === report.id ? 'selected' : ''}`} onClick={() => setStaffReportId(report.id)}><span className="queue-item-title">{report.title}</span><span className="queue-item-meta">{formatReportId(report.id)} · {report.category}{report.barangay ? ` · ${report.barangay}` : ''} · {formatCreatedAt(report.createdAt)}</span><span className="queue-item-tags"><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span>{needsImmediateAttention(report) && <span className="urgency-pill escalated-pill"><AlertTriangle size={11} />Escalated</span>}{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></button>)}
                 {staffMatches.length > staffQueue.length && <button className="show-more-button" type="button" onClick={() => setStaffVisibleCount((count) => count + STAFF_PAGE_SIZE)}>Show more ({staffMatches.length - staffQueue.length} remaining)</button>}
               </>}
             </div>
@@ -1212,7 +1223,7 @@ function App() {
               <p className="staff-description">{staffReport.description}</p>
               <div className="meta-chips"><span className="meta-chip"><MapPin size={12} />{staffReport.barangay ? `Barangay ${staffReport.barangay}` : 'No barangay recorded'}</span></div>
               <p className="staff-location"><MapPin size={14} />{staffReport.location} <span>({staffReport.coordinates.map((coordinate) => coordinate.toFixed(5)).join(', ')})</span></p>
-              {session && (profile?.role === 'admin' || profile?.role === 'responder') && <StaffWorkflowPanel report={staffReport} role={profile.role} userId={session.user.id} staffUsers={staffUsers} teams={teams} allReports={reports} originalPhotoUrls={staffPhotoUrls.original} resolutionPhotoUrls={staffPhotoUrls.resolution} onSubmit={applyReportUpdate} />}
+              {session && (profile?.role === 'admin' || profile?.role === 'responder') && <StaffWorkflowPanel report={staffReport} role={profile.role} userId={session.user.id} staffUsers={staffUsers} teams={teams} allReports={reports} originalPhotoUrls={staffPhotoUrls.original} resolutionPhotoUrls={staffPhotoUrls.resolution} events={reportEvents} onSubmit={applyReportUpdate} />}
               {session && profile && (profile.role === 'admin' || profile.role === 'responder') && <ReportConversation key={staffReport.id} reportId={staffReport.id} status={staffReport.status} viewerRole={profile.role} userId={session.user.id} isReporter={false} isOnTask={staffOnTask} onPosted={() => void refreshStaffEvents(staffReport.id)} />}
               <ReportTimeline events={reportEvents} />
             </> : <div className="staff-detail-empty"><ClipboardCheck size={25} /><strong>Select a report</strong><span>Choose an open report to review and update its response.</span></div>}</div>
