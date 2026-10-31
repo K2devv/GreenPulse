@@ -48,6 +48,8 @@ export type PanelReport = {
   escalatedAt?: string
 }
 
+type ResidentFeedback = { feedback: 'fixed' | 'still_there'; message: string | null; updated_at: string }
+
 type PanelUser = { id: string; display_name: string; role: string }
 
 export type StaffWorkflowPanelProps = {
@@ -60,6 +62,7 @@ export type StaffWorkflowPanelProps = {
   originalPhotoUrls: string[]
   resolutionPhotoUrls: string[]
   events?: StageEvent[]
+  residentFeedback?: ResidentFeedback | null
   onSubmit: (payload: Record<string, unknown>, options?: { resolutionFiles?: File[] }) => Promise<string | undefined>
 }
 
@@ -82,7 +85,7 @@ function PhotoStrip({ urls, label }: { urls: string[]; label: string }) {
   return <div className="photo-strip" aria-label={label}>{urls.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer"><img src={url} alt={label} /></a>)}</div>
 }
 
-export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, allReports, originalPhotoUrls, resolutionPhotoUrls, events, onSubmit }: StaffWorkflowPanelProps) {
+export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, allReports, originalPhotoUrls, resolutionPhotoUrls, events, residentFeedback, onSubmit }: StaffWorkflowPanelProps) {
   const isAdmin = role === 'admin'
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<{ card: string; text: string; ok: boolean }>()
@@ -179,6 +182,7 @@ export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, al
       </li>)}
       {report.resolvedAt && report.createdAt && <li className="reached total"><span>Total</span><small>{formatDuration(elapsedMs(report.createdAt, report.resolvedAt))}</small></li>}
     </ol>}
+    {residentFeedback && <section className={`resident-follow-up ${residentFeedback.feedback === 'still_there' ? 'needs-attention' : ''}`}><strong>Resident follow-up</strong><span>{residentFeedback.feedback === 'still_there' ? 'The resident says the issue is still happening.' : 'The resident confirmed the issue was fixed.'}</span>{residentFeedback.message && <p>{residentFeedback.message}</p>}{residentFeedback.feedback === 'still_there' && isAdmin && ['Resolved', 'Closed'].includes(report.status) && <button className="secondary-button" type="button" disabled={busy} onClick={() => void run('resolution', { payload: { status: 'In progress' } })}>Reopen for follow-up</button>}</section>}
     <WorkflowCard step={1} title="Verification" icon={<ShieldCheck size={15} />} badge={verificationBadge}>
       {report.verifiedAt && <p className="workflow-meta"><Check size={12} /> Verified by {nameOf(report.verifiedBy) ?? 'staff'} · {formatDate(report.verifiedAt)}</p>}
       {report.status === 'Duplicate' && <p className="workflow-meta"><AlertTriangle size={12} /> Duplicate of {report.duplicateOf ? formatReportId(report.duplicateOf) : 'another report'}{duplicateOfReport ? ` · ${duplicateOfReport.title}` : ''}</p>}

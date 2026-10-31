@@ -2,6 +2,8 @@ import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import createResponderHandler from './api/admin-create-responder'
 import sendNotificationEmailsHandler from './api/send-notification-emails'
+import guestReportsHandler from './api/guest-reports'
+import confirmReportHandler from './api/confirm-report'
 
 function responderApiPlugin(environment: Record<string, string | undefined>): Plugin {
   return {
@@ -18,7 +20,14 @@ function responderApiPlugin(environment: Record<string, string | undefined>): Pl
 
       server.middlewares.use(async (request, response, next) => {
         const requestUrl = new URL(request.url ?? '/', 'http://localhost')
-        if (requestUrl.pathname !== '/api/admin-create-responder' && requestUrl.pathname !== '/api/send-notification-emails') {
+        const handlers = new Map([
+          ['/api/admin-create-responder', createResponderHandler],
+          ['/api/send-notification-emails', sendNotificationEmailsHandler],
+          ['/api/guest-reports', guestReportsHandler],
+          ['/api/confirm-report', confirmReportHandler],
+        ])
+        const apiHandler = handlers.get(requestUrl.pathname)
+        if (!apiHandler) {
           next()
           return
         }
@@ -43,7 +52,6 @@ function responderApiPlugin(environment: Record<string, string | undefined>): Pl
             headers,
             body: request.method === 'GET' || request.method === 'HEAD' ? undefined : body,
           })
-          const apiHandler = requestUrl.pathname === '/api/send-notification-emails' ? sendNotificationEmailsHandler : createResponderHandler
           const apiResponse = await apiHandler(apiRequest)
           response.statusCode = apiResponse.status
           apiResponse.headers.forEach((value, name) => response.setHeader(name, value))
@@ -52,7 +60,7 @@ function responderApiPlugin(environment: Record<string, string | undefined>): Pl
           console.error('Local responder API failed:', error instanceof Error ? error.message : 'unknown error')
           response.statusCode = 500
           response.setHeader('Content-Type', 'application/json; charset=utf-8')
-          response.end(JSON.stringify({ error: 'Responder invitations are temporarily unavailable.' }))
+          response.end(JSON.stringify({ error: 'The request is temporarily unavailable.' }))
         }
       })
     },

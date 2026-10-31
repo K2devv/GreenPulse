@@ -5,3 +5,6 @@ dist/
 !.env.example
 *.tsbuildinfo
 .vercel
+test-results/
+output/playwright/
+storage-backups/

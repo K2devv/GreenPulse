@@ -1,0 +1,15 @@
+{
+  "name": "GreenPulse Community Environmental Reports",
+  "short_name": "GreenPulse",
+  "description": "Report and follow environmental concerns in District 5, Quezon City.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f6f1",
+  "theme_color": "#f5f7f2",
+  "lang": "en-PH",
+  "icons": [
+    { "src": "/icons/greenpulse.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

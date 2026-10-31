@@ -39,7 +39,7 @@ export type ReportRow = {
   id: string
   title: string
   category: 'Waste' | 'Pollution' | 'Flooding' | 'Drainage' | 'Water pollution' | 'Air pollution'
-  status: 'Submitted' | 'Under review' | 'Additional information requested' | 'Verified' | 'In progress' | 'Awaiting verification' | 'Resolved' | 'Rejected' | 'Closed'
+  status: 'Submitted' | 'Under review' | 'Additional information requested' | 'Verified' | 'In progress' | 'Awaiting verification' | 'Resolved' | 'Rejected' | 'Closed' | 'Duplicate'
   urgency: 'Low' | 'Medium' | 'High'
   description: string
   issue_type?: string
@@ -68,13 +68,38 @@ export type ReportRow = {
   resolution_review_note?: string | null
   resolution_reviewed_by?: string | null
   resolution_reviewed_at?: string | null
-  reporter_id?: string
+  reporter_id?: string | null
   resolution_note?: string | null
   resolved_at?: string | null
   started_at?: string | null
   escalated_at?: string | null
   reporter_display_name?: string | null
   reporter?: { display_name?: string | null } | null
+}
+
+export type ReportResolutionFeedback = {
+  report_id: string
+  feedback: 'fixed' | 'still_there'
+  message: string | null
+  updated_at: string
+}
+
+export type EnvironmentalFollowUp = {
+  id: string
+  title: string
+  category: 'Waste' | 'Pollution' | 'Flooding' | 'Drainage'
+  barangay: string | null
+  location_label: string
+  latitude: number
+  longitude: number
+  source_report_ids: string[]
+  status: 'Scheduled' | 'Completed' | 'Dismissed'
+  assigned_team_id: string | null
+  due_date: string | null
+  completion_note: string | null
+  created_by: string
+  created_at: string
+  completed_at: string | null
 }
 
 export type ReportEvent = {
@@ -85,7 +110,7 @@ export type ReportEvent = {
 }
 
 export function toReport(row: ReportRow) {
-  const reporterName = row.reporter_display_name || row.reporter?.display_name || undefined
+  const reporterName = row.reporter_display_name || row.reporter?.display_name || (row.reporter_id === null ? 'Guest reporter' : undefined)
   return {
     id: row.id,
     title: row.title,

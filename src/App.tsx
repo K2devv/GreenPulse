@@ -40,16 +40,21 @@ import MarkerClusterGroup from 'react-leaflet-cluster'
 import { Circle, MapContainer, Marker, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet'
 import { divIcon, type LatLngExpression } from 'leaflet'
 import type { Session } from '@supabase/supabase-js'
-import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type NotificationRow, type Profile, type ReportEvent, type ReportRow, type Team } from './lib/supabase'
+import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type EnvironmentalFollowUp, type NotificationRow, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
 import { StaffWorkflowPanel } from './StaffWorkflowPanel'
 import { EnvironmentalReports } from './EnvironmentalReports'
 import { ReportConversation, ReportTimeline, ResidentReportModal } from './ReportCommunication'
 import { isOpenStatus } from './lib/report-workflow'
-import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, countActiveFilters, defaultReportFilters, detectBarangay, filterReports, formatReportId, type ReportFilters } from './lib/report-filters'
-import { prioritizeEscalated, needsImmediateAttention } from './lib/report-escalation'
+import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, countActiveFilters, defaultReportFilters, detectBarangay, formatReportId, type ReportFilters } from './lib/report-filters'
+import { needsImmediateAttention } from './lib/report-escalation'
 import { formatDuration } from './lib/report-summary'
 import { buildResponseTimeMetrics } from './lib/report-response-times'
 import { buildReportAnalytics, type ChartDatum } from './lib/report-analytics'
+import { findRecurringHotspots, type RecurringHotspot } from './lib/report-recurrence'
+import { GuestReportTracking } from './GuestReportTracking'
+import { MAX_REPORT_PHOTOS, prepareReportPhoto } from './lib/report-photos'
+import { translate } from './lib/ui-copy'
+import { deleteLocalReportDraft, getLocalReportDraft, saveLocalReportDraft, type LocalReportDraft } from './lib/report-drafts'
 
 type Category = 'Waste' | 'Pollution' | 'Flooding' | 'Drainage' | 'Water pollution' | 'Air pollution'
 type Status = 'Submitted' | 'Under review' | 'Additional information requested' | 'Verified' | 'In progress' | 'Awaiting verification' | 'Resolved' | 'Rejected' | 'Closed' | 'Duplicate'
@@ -97,9 +102,11 @@ type Report = {
   resolvedAt?: string
   startedAt?: string
   escalatedAt?: string
-  reporterId?: string
+  reporterId?: string | null
   reporterName?: string
 }
+
+type ResidentFeedback = Pick<ReportResolutionFeedback, 'report_id' | 'feedback' | 'message' | 'updated_at'>
 
 type InboxNotification = {
   id: number | string
@@ -110,6 +117,11 @@ type InboxNotification = {
   created_at: string
   read_at: string | null
 }
+
+type ResponseSettings = { response_sla_hours: number; high_urgency_sla_hours: number; second_escalation_multiplier: number }
+type SlaEscalation = { report_id: string; stage: number; escalated_at: string; acknowledged_at: string | null; report?: { title: string; status: string; assigned_to: string | null; assigned_team_id: string | null } }
+type DeliveryFailure = { id: string; report_id: string; title: string; attempts: number; last_error: string | null; channel: string; status: 'Sent' | 'Failed' | 'Suppressed' | 'Pending'; attempted_at: string | null }
+type PilotOutcomes = { totalReports: number; reopenedReports: number; byBarangay: Array<{ label: string; reports: number; resolved: number; reopened: number; averageFirstResponseMs: number | null; averageResolutionMs: number | null }> }
 
 function getRoleLabel(role: Profile['role']) {
   return role === 'resident' ? 'User' : role === 'responder' ? 'Responder' : 'Admin'
@@ -235,6 +247,10 @@ function formatCreatedAt(value: string) {
   return created.toLocaleDateString()
 }
 
+function toLocalDateTimeInput(value: Date) {
+  return new Date(value.getTime() - value.getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
+}
+
 async function deliverNotificationEmails(reportId: string, accessToken: string) {
   try {
     await fetch('/api/send-notification-emails', {
@@ -322,6 +338,9 @@ function App() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [authReady, setAuthReady] = useState(!isSupabaseConfigured)
   const [loadingReports, setLoadingReports] = useState(isSupabaseConfigured)
+  const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null)
+  const [reportRefreshToken, setReportRefreshToken] = useState(0)
+  const [isOnline, setIsOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine)
   const [backendError, setBackendError] = useState('')
   const [authModal, setAuthModal] = useState<'sign-in' | 'sign-up' | null>(null)
   const [profileModal, setProfileModal] = useState(false)
@@ -337,17 +356,36 @@ function App() {
   const [staffDashboardOpen, setStaffDashboardOpen] = useState(true)
   const [staffFilters, setStaffFilters] = useState<ReportFilters>(defaultReportFilters)
   const [staffFiltersOpen, setStaffFiltersOpen] = useState(false)
-  const [staffVisibleCount, setStaffVisibleCount] = useState(STAFF_PAGE_SIZE)
+  const [staffQueue, setStaffQueue] = useState<Report[]>([])
+  const [staffQueueCount, setStaffQueueCount] = useState(0)
+  const [staffQueueLoading, setStaffQueueLoading] = useState(false)
+  const [staffQueueOffset, setStaffQueueOffset] = useState(0)
   const [teams, setTeams] = useState<Team[]>([])
   const [teamModalOpen, setTeamModalOpen] = useState(false)
   const [teamMessage, setTeamMessage] = useState('')
   const [teamBusy, setTeamBusy] = useState(false)
   const [reportBarangay, setReportBarangay] = useState('')
+  const [reportCategory, setReportCategory] = useState<Category>('Waste')
   const [staffUsers, setStaffUsers] = useState<Profile[]>([])
   const [staffReportId, setStaffReportId] = useState<string>()
   const [reportEvents, setReportEvents] = useState<ReportEvent[]>([])
+  const [staffResolutionFeedback, setStaffResolutionFeedback] = useState<ResidentFeedback | null>(null)
+  const [environmentalFollowups, setEnvironmentalFollowups] = useState<EnvironmentalFollowUp[]>([])
+  const [responseSettings, setResponseSettings] = useState<ResponseSettings>({ response_sla_hours: 48, high_urgency_sla_hours: 12, second_escalation_multiplier: 2 })
+  const [slaEscalations, setSlaEscalations] = useState<SlaEscalation[]>([])
+  const [pilotOutcomes, setPilotOutcomes] = useState<PilotOutcomes | null>(null)
+  const [pilotOutcomesMessage, setPilotOutcomesMessage] = useState('')
+  const [slaEscalationMessage, setSlaEscalationMessage] = useState('')
+  const [escalationRunBusy, setEscalationRunBusy] = useState(false)
+  const [responseSettingsBusy, setResponseSettingsBusy] = useState(false)
+  const [responseSettingsMessage, setResponseSettingsMessage] = useState('')
+  const [followupMessage, setFollowupMessage] = useState('')
+  const [followupBusy, setFollowupBusy] = useState(false)
   const [followUpId, setFollowUpId] = useState<string>()
   const [notifications, setNotifications] = useState<NotificationRow[]>([])
+  const [failedEmailNotifications, setFailedEmailNotifications] = useState<DeliveryFailure[]>([])
+  const [emailRetryBusy, setEmailRetryBusy] = useState(false)
+  const [emailRetryMessage, setEmailRetryMessage] = useState('')
   const [notificationPanelOpen, setNotificationPanelOpen] = useState(false)
   const [readOverdueIds, setReadOverdueIds] = useState<string[]>(() => {
     try {
@@ -372,9 +410,19 @@ function App() {
   const [gpsLocation, setGpsLocation] = useState<[number, number]>()
   const [mapLocationError, setMapLocationError] = useState('')
   const [reporting, setReporting] = useState(false)
-  const [photo, setPhoto] = useState<string>()
+  const reportFormRef = useRef<HTMLFormElement>(null)
+  const [reportSubmissionId, setReportSubmissionId] = useState<string>(() => crypto.randomUUID())
+  const [savedDraftAvailable, setSavedDraftAvailable] = useState(false)
+  const [queuedUploadId, setQueuedUploadId] = useState<string>()
+  const [draftMessage, setDraftMessage] = useState('')
+  const [pendingDraftRestore, setPendingDraftRestore] = useState<LocalReportDraft>()
+  const autoSubmitAfterRestore = useRef(false)
+  const [photoPreviews, setPhotoPreviews] = useState<string[]>([])
   const [formError, setFormError] = useState('')
-  const [photoFile, setPhotoFile] = useState<File>()
+  const [formNotice, setFormNotice] = useState('')
+  const [formStartedAt, setFormStartedAt] = useState(0)
+  const [photoFiles, setPhotoFiles] = useState<File[]>([])
+  const [observedAt, setObservedAt] = useState(() => toLocalDateTimeInput(new Date()))
   const [location, setLocation] = useState<[number, number]>(districtCenter)
   const [mapCenter, setMapCenter] = useState<[number, number]>(districtCenter)
   const [locationQuery, setLocationQuery] = useState('')
@@ -382,7 +430,16 @@ function App() {
   const [locationSearchBusy, setLocationSearchBusy] = useState(false)
   const [locationSearchMessage, setLocationSearchMessage] = useState('')
   const [locationConfirmed, setLocationConfirmed] = useState(false)
+  const [guestTrackingOpen, setGuestTrackingOpen] = useState(false)
+  const [guestTrackingToken, setGuestTrackingToken] = useState<string>()
+  const [guestTrackingEmailSent, setGuestTrackingEmailSent] = useState(false)
+  const [guestSubmitting, setGuestSubmitting] = useState(false)
+  const [residentFeedback, setResidentFeedback] = useState<Record<string, ResidentFeedback>>({})
+  const [feedbackNote, setFeedbackNote] = useState('')
+  const [feedbackBusy, setFeedbackBusy] = useState(false)
+  const [followedReportIds, setFollowedReportIds] = useState<string[]>([])
   const geocodeRequest = useRef(0)
+  const reportsLoaded = useRef(false)
   const [theme, setTheme] = useState<Theme>(() => {
     try {
       return localStorage.getItem('greenpulse-theme') === 'dark' ? 'dark' : 'light'
@@ -390,6 +447,7 @@ function App() {
       return 'light'
     }
   })
+  const t = (key: Parameters<typeof translate>[0]) => translate(key)
 
   useEffect(() => {
     if (!supabase) return
@@ -503,7 +561,7 @@ function App() {
   useEffect(() => {
     if (!supabase) return
     let active = true
-    setLoadingReports(true)
+    if (!reportsLoaded.current) setLoadingReports(true)
     async function loadReports() {
       const { data: communityRows, error: communityError } = await supabase!.from('community_reports').select('*').order('created_at', { ascending: false })
       if (communityError) {
@@ -513,7 +571,8 @@ function App() {
       }
       let privateRows: ReportRow[] = []
       if (session?.user) {
-        const query = profile?.role === 'responder' || profile?.role === 'admin'
+        const loadAllForAdminOverview = profile?.role === 'admin' && staffMode && staffDashboardOpen
+        const query = loadAllForAdminOverview
           ? supabase!.from('reports').select('*, reporter:profiles!reports_reporter_id_fkey(display_name)').order('created_at', { ascending: false })
           : supabase!.from('reports').select('*, reporter:profiles!reports_reporter_id_fkey(display_name)').eq('reporter_id', session.user.id).order('created_at', { ascending: false })
         const { data, error } = await query
@@ -527,11 +586,91 @@ function App() {
       for (const row of privateRows) combined.set(row.id, toReport(row))
       setReports([...combined.values()].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()))
       setBackendError('')
+      reportsLoaded.current = true
+      setLastSyncedAt(new Date())
       setLoadingReports(false)
     }
     void loadReports()
     return () => { active = false }
-  }, [profile?.role, session])
+  }, [profile?.role, session, staffMode, staffDashboardOpen, reportRefreshToken])
+
+  useEffect(() => {
+    if (!supabase) return
+    const channel = supabase.channel('greenpulse-report-updates')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, () => {
+        setReportRefreshToken((current) => current + 1)
+      })
+      .subscribe()
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && navigator.onLine) setReportRefreshToken((current) => current + 1)
+    }, 60_000)
+    const onOnline = () => {
+      setIsOnline(true)
+      setReportRefreshToken((current) => current + 1)
+    }
+    const onOffline = () => setIsOnline(false)
+    window.addEventListener('online', onOnline)
+    window.addEventListener('offline', onOffline)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener('online', onOnline)
+      window.removeEventListener('offline', onOffline)
+      void supabase!.removeChannel(channel)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!supabase || !session) {
+      setResidentFeedback({})
+      return
+    }
+    let active = true
+    const ownReportIds = reports.filter((report) => report.reporterId === session.user.id).map((report) => report.id)
+    if (!ownReportIds.length) {
+      setResidentFeedback({})
+      return
+    }
+    supabase.from('report_resolution_feedback').select('report_id, feedback, message, updated_at').in('report_id', ownReportIds).then(({ data }) => {
+      if (active) setResidentFeedback(Object.fromEntries((data ?? []).map((row) => [row.report_id, row as ResidentFeedback])))
+    })
+    return () => { active = false }
+  }, [reports, session])
+
+  useEffect(() => {
+    if (!supabase || !session) {
+      setFollowedReportIds([])
+      return
+    }
+    let active = true
+    supabase.from('report_followers').select('report_id').eq('profile_id', session.user.id).then(({ data }) => {
+      if (active) setFollowedReportIds((data ?? []).map((row) => row.report_id as string))
+    })
+    return () => { active = false }
+  }, [session])
+
+  useEffect(() => {
+    if (!supabase || (profile?.role !== 'admin' && profile?.role !== 'responder')) {
+      setEnvironmentalFollowups([])
+      return
+    }
+    let active = true
+    supabase.from('environmental_followups').select('*').order('due_date', { ascending: true }).then(({ data }) => {
+      if (active) setEnvironmentalFollowups((data ?? []) as EnvironmentalFollowUp[])
+    })
+    return () => { active = false }
+  }, [profile?.role])
+
+  useEffect(() => {
+    if (!supabase || !staffMode || !staffReportId || (profile?.role !== 'admin' && profile?.role !== 'responder')) {
+      setStaffResolutionFeedback(null)
+      return
+    }
+    let active = true
+    supabase.from('report_resolution_feedback').select('report_id, feedback, message, updated_at').eq('report_id', staffReportId).maybeSingle().then(({ data }) => {
+      if (active) setStaffResolutionFeedback(data as ResidentFeedback | null)
+    })
+    return () => { active = false }
+  }, [profile?.role, staffMode, staffReportId])
 
   useEffect(() => {
     if (!supabase || (profile?.role !== 'responder' && profile?.role !== 'admin')) {
@@ -561,7 +700,122 @@ function App() {
     void loadTeams()
   }, [profile?.role])
 
-  useEffect(() => setStaffVisibleCount(STAFF_PAGE_SIZE), [staffFilters])
+  useEffect(() => {
+    if (!supabase || profile?.role !== 'admin') return
+    let active = true
+    supabase.from('response_settings').select('response_sla_hours, high_urgency_sla_hours, second_escalation_multiplier').eq('singleton', true).maybeSingle().then(({ data, error }) => {
+      if (!active) return
+      if (error) {
+        setResponseSettingsMessage('Apply the response-settings migration to manage deadlines here.')
+        return
+      }
+      if (data) setResponseSettings(data as ResponseSettings)
+    })
+    return () => { active = false }
+  }, [profile?.role])
+
+  useEffect(() => {
+    if (!supabase || (profile?.role !== 'admin' && profile?.role !== 'responder')) {
+      setSlaEscalations([])
+      return
+    }
+    let active = true
+    supabase.from('report_sla_escalations')
+      .select('report_id, stage, escalated_at, acknowledged_at, report:reports!inner(title, status, assigned_to, assigned_team_id)')
+      .order('escalated_at', { ascending: false })
+      .limit(50)
+      .then(({ data, error }) => {
+        if (!active) return
+        if (error) {
+          setSlaEscalationMessage('Apply the escalation migration to enable shared escalation tracking.')
+          return
+        }
+        setSlaEscalations((data ?? []) as unknown as SlaEscalation[])
+        setSlaEscalationMessage('')
+      })
+    return () => { active = false }
+  }, [profile?.role, reportRefreshToken])
+
+  useEffect(() => {
+    if (!supabase || profile?.role !== 'admin') {
+      setFailedEmailNotifications([])
+      return
+    }
+    let active = true
+    supabase.rpc('admin_notification_delivery_history').then(({ data, error }) => {
+        if (!active) return
+        if (error) {
+          setEmailRetryMessage('Apply the notification-delivery migration to view failed email attempts.')
+          return
+        }
+        setFailedEmailNotifications((data ?? []) as DeliveryFailure[])
+        setEmailRetryMessage('')
+      })
+    return () => { active = false }
+  }, [profile?.role, reportRefreshToken])
+
+  useEffect(() => {
+    if (!supabase || profile?.role !== 'admin') {
+      setPilotOutcomes(null)
+      return
+    }
+    let active = true
+    supabase.rpc('admin_pilot_outcomes').then(({ data, error }) => {
+      if (!active) return
+      if (error) {
+        setPilotOutcomesMessage('Apply the pilot-outcomes migration to view reopened-report and barangay results.')
+        return
+      }
+      setPilotOutcomes(data as PilotOutcomes)
+      setPilotOutcomesMessage('')
+    })
+    return () => { active = false }
+  }, [profile?.role, reportRefreshToken])
+
+  useEffect(() => setStaffQueueOffset(0), [staffFilters, session, profile?.role, staffMode, staffDashboardOpen])
+
+  useEffect(() => {
+    const isStaffUser = profile?.role === 'admin' || profile?.role === 'responder'
+    const queueIsVisible = staffMode && isStaffUser && (profile?.role !== 'admin' || !staffDashboardOpen)
+    if (!supabase || !session || !queueIsVisible) {
+      setStaffQueue([])
+      setStaffQueueCount(0)
+      setStaffQueueLoading(false)
+      return
+    }
+    let active = true
+    setStaffQueueLoading(true)
+    supabase.rpc('staff_report_page', {
+      p_query: staffFilters.query,
+      p_status: staffFilters.status,
+      p_resolution: staffFilters.resolution,
+      p_category: staffFilters.category,
+      p_urgency: staffFilters.urgency,
+      p_barangay: staffFilters.barangay,
+      p_assignee: staffFilters.assignee,
+      p_team: staffFilters.team,
+      p_date_from: staffFilters.dateFrom || null,
+      p_date_to: staffFilters.dateTo || null,
+      p_page_size: STAFF_PAGE_SIZE,
+      p_page_offset: staffQueueOffset,
+    }).then(({ data, error }) => {
+      if (!active) return
+      if (error) {
+        setBackendError(`Could not load the staff queue: ${error.message}`)
+        if (staffQueueOffset === 0) setStaffQueue([])
+        setStaffQueueLoading(false)
+        return
+      }
+      const page = data as { totalCount?: number; items?: ReportRow[] } | null
+      const nextItems = (page?.items ?? []).map((row) => toReport(row) as Report)
+      setStaffQueue((current) => staffQueueOffset === 0
+        ? nextItems
+        : [...current, ...nextItems.filter((report) => !current.some((existing) => existing.id === report.id))])
+      setStaffQueueCount(Number(page?.totalCount ?? 0))
+      setStaffQueueLoading(false)
+    })
+    return () => { active = false }
+  }, [session, profile?.role, staffMode, staffDashboardOpen, staffFilters, staffQueueOffset])
 
   useEffect(() => {
     if (!supabase || !session) {
@@ -596,6 +850,47 @@ function App() {
     }
   }, [reports])
 
+  useEffect(() => {
+    let active = true
+    void getLocalReportDraft().then((draft) => {
+      if (!active || !draft) return
+      setSavedDraftAvailable(true)
+      if (draft.queued) setQueuedUploadId(draft.submissionId)
+    }).catch(() => {
+      if (active) setDraftMessage('This browser could not read the saved report draft.')
+    })
+    return () => { active = false }
+  }, [])
+
+  useEffect(() => {
+    if (!isOnline || !queuedUploadId || reporting) return
+    void restoreReportDraft(true)
+  }, [isOnline, queuedUploadId, reporting])
+
+  useEffect(() => {
+    if (!reporting || !pendingDraftRestore || !reportFormRef.current) return
+    const form = reportFormRef.current
+    for (const [name, value] of Object.entries(pendingDraftRestore.formValues)) {
+      const control = form.elements.namedItem(name)
+      if (control instanceof RadioNodeList) {
+        for (const item of Array.from(control)) if (item instanceof HTMLInputElement) item.checked = item.value === value
+      } else if (control instanceof HTMLInputElement && control.type === 'checkbox') {
+        control.checked = value === 'on'
+      } else if (control instanceof HTMLInputElement || control instanceof HTMLTextAreaElement || control instanceof HTMLSelectElement) {
+        if (name !== 'category' && name !== 'barangay' && name !== 'observed_at' && name !== 'location') control.value = value
+      }
+    }
+    setPendingDraftRestore(undefined)
+    if (autoSubmitAfterRestore.current) {
+      autoSubmitAfterRestore.current = false
+      setDraftMessage('Connection restored. Your queued report will be sent shortly.')
+      window.setTimeout(() => {
+        setFormStartedAt(Date.now() - 3_000)
+        form.requestSubmit()
+      }, 3_000)
+    }
+  }, [pendingDraftRestore, reporting])
+
   const visibleReports = useMemo(() => reports.filter((report) => {
     const matchesCategory = categoryFilter === 'All categories' || report.category === categoryFilter
     const matchesStatus = statusFilter === 'All statuses' || report.status === statusFilter
@@ -617,26 +912,35 @@ function App() {
     }
     return [...cells.values()]
   }, [orderedReports])
-  const filterLookup = useMemo(() => ({
-    people: new Map(staffUsers.map((user) => [user.id, user.display_name || 'Unnamed staff member'])),
-    teams: new Map(teams.map((team) => [team.id, team.name])),
-  }), [staffUsers, teams])
-  const staffMatches = useMemo(() => prioritizeEscalated(filterReports(reports, staffFilters, filterLookup)), [reports, staffFilters, filterLookup])
-  const staffQueue = useMemo(() => staffMatches.slice(0, staffVisibleCount), [staffMatches, staffVisibleCount])
   const activeFilterCount = countActiveFilters(staffFilters)
   const adminAnalytics = useMemo(() => buildReportAnalytics(reports), [reports])
   const responseMetrics = useMemo(() => buildResponseTimeMetrics(reports), [reports])
   const escalatedOpen = useMemo(() => reports.filter(needsImmediateAttention).length, [reports])
+  const nearbySuggestions = useMemo(() => {
+    if (!reporting || !locationConfirmed || !supabase) return []
+    const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000
+    return reports
+      .filter((report) => report.category === reportCategory && isOpenStatus(report.status)
+        && new Date(report.createdAt).getTime() >= cutoff
+        && distanceInMeters(report.coordinates, location) <= 350)
+      .sort((first, second) => distanceInMeters(first.coordinates, location) - distanceInMeters(second.coordinates, location))
+      .slice(0, 3)
+  }, [location, locationConfirmed, reportCategory, reports, reporting])
+  const recurringHotspots = useMemo(() => findRecurringHotspots(reports), [reports])
+  const unplannedHotspots = useMemo(() => recurringHotspots.filter((hotspot) => !environmentalFollowups.some((item) => item.status === 'Scheduled'
+    && item.category === hotspot.category && (item.barangay ?? '') === (hotspot.barangay ?? '')
+    && item.source_report_ids.filter((id) => hotspot.reportIds.includes(id)).length >= 2)), [environmentalFollowups, recurringHotspots])
 
   const selectedReport = mapReports.find((report) => report.id === selectedId)
-  const staffReport = reports.find((report) => report.id === staffReportId)
+  const staffReport = reports.find((report) => report.id === staffReportId) ?? staffQueue.find((report) => report.id === staffReportId)
   const followUpReport = reports.find((report) => report.id === followUpId)
   const selectedOwnReport = selectedReport && session && selectedReport.reporterId === session.user.id ? selectedReport : undefined
+  const selectedOwnFeedback = selectedOwnReport ? residentFeedback[selectedOwnReport.id] : undefined
   const staffOnTask = Boolean(staffReport && session && (staffReport.assignedTo === session.user.id || teams.find((team) => team.id === staffReport.assignedTeamId)?.memberIds.includes(session.user.id)))
   const openReports = reports.filter((report) => isOpenStatus(report.status)).length
   const verifiedReports = reports.filter((report) => report.status === 'Verified' || report.status === 'In progress').length
   const overdueNotifications: InboxNotification[] = profile?.role === 'admin'
-    ? reports.filter((report) => isOpenStatus(report.status) && Date.now() - new Date(report.createdAt).getTime() >= 48 * 60 * 60 * 1000)
+    ? reports.filter((report) => isOpenStatus(report.status) && Date.now() - new Date(report.createdAt).getTime() >= (report.urgency === 'High' ? responseSettings.high_urgency_sla_hours : responseSettings.response_sla_hours) * 60 * 60 * 1000)
       .map((report) => ({ id: `overdue:${report.id}`, report_id: report.id, event_type: 'overdue_task', title: 'Overdue task', message: `Open report needs attention: ${report.title}.`, created_at: report.createdAt, read_at: readOverdueIds.includes(report.id) ? report.createdAt : null }))
     : []
   const inboxNotifications: InboxNotification[] = [...notifications, ...overdueNotifications]
@@ -755,13 +1059,108 @@ function App() {
     setProfileModal(false)
   }
 
-  function startReport() {
+  async function toggleReportFollow(report: Report) {
+    if (!supabase || !session) return
     setFormError('')
-    if (isSupabaseConfigured && !session) {
-      setAuthModal('sign-in')
-      setAuthMessage('Sign in or create an account before submitting a report.')
+    setFormNotice('')
+    if (followedReportIds.includes(report.id)) {
+      const { error } = await supabase.from('report_followers').delete().eq('report_id', report.id).eq('profile_id', session.user.id)
+      if (error) return setFormError('Could not unfollow this report. Please try again.')
+      setFollowedReportIds((current) => current.filter((id) => id !== report.id))
+      setFormNotice('You will no longer receive updates for that report.')
       return
     }
+    const { error } = await supabase.from('report_followers').insert({ report_id: report.id, profile_id: session.user.id })
+    if (error) return setFormError(error.code === '23505' ? 'You are already following this report.' : 'Could not follow this report. Please try again.')
+    setFollowedReportIds((current) => [...current, report.id])
+    setFormNotice('You are following this report. Status and assignment changes will appear in your notifications.')
+  }
+
+  async function confirmNearbyReport(report: Report) {
+    setFormError('')
+    setFormNotice('')
+    try {
+      const response = await fetch('/api/confirm-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ reportId: report.id }),
+      })
+      const result = await response.json() as { error?: string }
+      if (!response.ok) throw new Error(result.error || 'Your confirmation could not be saved.')
+      setFormNotice('Thanks. The response team has been told that this issue is still present.')
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Your confirmation could not be saved.')
+    }
+  }
+
+  async function submitResidentFeedback(feedback: 'fixed' | 'still_there') {
+    if (!supabase || !session || !selectedOwnReport) return
+    setFeedbackBusy(true)
+    const { error } = await supabase.from('report_resolution_feedback').upsert({
+      report_id: selectedOwnReport.id,
+      feedback,
+      message: feedbackNote.trim() || null,
+    }, { onConflict: 'report_id' })
+    setFeedbackBusy(false)
+    if (error) {
+      setBackendError('Your resolution feedback could not be saved. Please try again.')
+      return
+    }
+    const saved = { report_id: selectedOwnReport.id, feedback, message: feedbackNote.trim() || null, updated_at: new Date().toISOString() } as ResidentFeedback
+    setResidentFeedback((current) => ({ ...current, [selectedOwnReport.id]: saved }))
+    setFeedbackNote('')
+    void deliverNotificationEmails(selectedOwnReport.id, session.access_token)
+  }
+
+  async function createEnvironmentalFollowup(hotspot: RecurringHotspot) {
+    if (!supabase || !session || profile?.role !== 'admin') return
+    setFollowupBusy(true)
+    setFollowupMessage('')
+    const area = hotspot.barangay ? `Barangay ${hotspot.barangay}` : 'District 5'
+    const { data, error } = await supabase.from('environmental_followups').insert({
+      title: `${hotspot.category} inspection · ${area}`,
+      category: hotspot.category,
+      barangay: hotspot.barangay ?? null,
+      location_label: hotspot.location,
+      latitude: hotspot.coordinates[0],
+      longitude: hotspot.coordinates[1],
+      source_report_ids: hotspot.reportIds,
+      assigned_team_id: null,
+      due_date: null,
+      created_by: session.user.id,
+    }).select('*').single()
+    setFollowupBusy(false)
+    if (error || !data) {
+      setFollowupMessage('The inspection task could not be created. Please try again.')
+      return
+    }
+    setEnvironmentalFollowups((current) => [...current, data as EnvironmentalFollowUp])
+    setFollowupMessage('Inspection task created. Assign a team and due date below.')
+  }
+
+  async function updateEnvironmentalFollowup(id: string, changes: Partial<EnvironmentalFollowUp>) {
+    if (!supabase) return
+    setFollowupBusy(true)
+    setFollowupMessage('')
+    const { data, error } = await supabase.from('environmental_followups').update(changes).eq('id', id).select('*').single()
+    setFollowupBusy(false)
+    if (error || !data) {
+      setFollowupMessage('The inspection task could not be updated. Please try again.')
+      return
+    }
+    setEnvironmentalFollowups((current) => current.map((item) => item.id === id ? data as EnvironmentalFollowUp : item))
+  }
+
+  function startReport() {
+    setFormError('')
+    setFormNotice('')
+    setFormStartedAt(Date.now())
+    setReportSubmissionId(crypto.randomUUID())
+    setReportCategory('Waste')
+    setReportBarangay('')
+    setPhotoPreviews([])
+    setPhotoFiles([])
+    setObservedAt(toLocalDateTimeInput(new Date()))
     setLocationQuery('')
     setLocationSuggestions([])
     setLocationSearchMessage('')
@@ -769,6 +1168,82 @@ function App() {
     setLocation(districtCenter)
     setMapCenter(districtCenter)
     setReporting(true)
+  }
+
+  async function saveReportDraft(queued = false) {
+    const form = reportFormRef.current
+    if (!form) return
+    if (queued && !form.reportValidity()) return
+    if (queued && (!locationConfirmed || !String(new FormData(form).get('location') ?? '').trim())) {
+      setFormError('Choose a map location before queueing this report for upload.')
+      return
+    }
+    const data = new FormData(form)
+    const formValues = Object.fromEntries([...data.entries()].map(([key, value]) => [key, typeof value === 'string' ? value : '']))
+    try {
+      await saveLocalReportDraft({
+        submissionId: reportSubmissionId,
+        savedAt: new Date().toISOString(),
+        queued,
+        formValues,
+        coordinates: location,
+        locationConfirmed,
+        photos: photoFiles,
+      })
+      setSavedDraftAvailable(true)
+      setDraftMessage(queued
+        ? 'Saved on this device. GreenPulse will submit it when the connection returns; keep this browser open.'
+        : 'Draft saved on this device. You can resume or delete it from this browser.')
+      if (queued) {
+        setQueuedUploadId(reportSubmissionId)
+        setReporting(false)
+      }
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'The draft could not be saved in this browser.')
+    }
+  }
+
+  async function restoreReportDraft(automatic = false) {
+    try {
+      const draft = await getLocalReportDraft()
+      if (!draft) {
+        setSavedDraftAvailable(false)
+        setQueuedUploadId(undefined)
+        setDraftMessage('No saved draft was found in this browser.')
+        return
+      }
+      setFormError('')
+      setFormNotice('')
+      setDraftMessage('')
+      setFormStartedAt(Date.now() - 3_000)
+      setReportSubmissionId(draft.submissionId)
+      setReportCategory((draft.formValues.category as Category) || 'Waste')
+      setReportBarangay(draft.formValues.barangay || '')
+      setObservedAt(draft.formValues.observed_at || toLocalDateTimeInput(new Date()))
+      setLocationQuery(draft.formValues.location || '')
+      setLocation(draft.coordinates)
+      setMapCenter(draft.coordinates)
+      setLocationConfirmed(draft.locationConfirmed)
+      const prepared = await Promise.all(draft.photos.map((photo) => prepareReportPhoto(photo, Boolean(isSupabaseConfigured && !session))))
+      setPhotoFiles(prepared.map((photo) => photo.file))
+      setPhotoPreviews(prepared.map((photo) => photo.preview))
+      autoSubmitAfterRestore.current = automatic
+      setPendingDraftRestore(draft)
+      setReporting(true)
+    } catch (error) {
+      setDraftMessage(error instanceof Error ? error.message : 'The saved draft could not be opened.')
+    }
+  }
+
+  async function deleteSavedDraft() {
+    try {
+      await deleteLocalReportDraft()
+      setSavedDraftAvailable(false)
+      setQueuedUploadId(undefined)
+      setDraftMessage('Saved report draft deleted from this browser.')
+    } catch {
+      setDraftMessage('The saved report draft could not be deleted.')
+    }
   }
 
   function requestLocation(showNearby = false) {
@@ -837,33 +1312,66 @@ function App() {
     })
   }
 
-  function handlePhoto(file?: File) {
-    if (!file) return
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-      setFormError('Choose a JPEG, PNG, or WebP image for the report photo.')
+  async function handlePhotos(fileList: FileList | null) {
+    const incoming = Array.from(fileList ?? [])
+    if (!incoming.length) return
+    const combined = [...photoFiles, ...incoming]
+    if (combined.length > MAX_REPORT_PHOTOS) {
+      setFormError(`Attach up to ${MAX_REPORT_PHOTOS} report photos.`)
       return
     }
-    if (file.size > 5 * 1024 * 1024) {
-      setFormError('Choose an image under 5 MB.')
-      return
+    const guest = isSupabaseConfigured && !session
+    const maxBytes = guest ? 2_500_000 : 5 * 1024 * 1024
+    for (const file of incoming) {
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+        setFormError('Choose JPEG, PNG, or WebP images for the report photos.')
+        return
+      }
+      if (file.size > maxBytes) {
+        setFormError(guest ? 'Guest report photos must be 2.5 MB or smaller each.' : 'Each report photo must be 5 MB or smaller.')
+        return
+      }
     }
-    const reader = new FileReader()
-    reader.onload = () => setPhoto(String(reader.result))
-    reader.readAsDataURL(file)
-    setPhotoFile(file)
-    setFormError('')
+    try {
+      const prepared = await Promise.all(incoming.map((file) => prepareReportPhoto(file, guest)))
+      setPhotoFiles((current) => [...current, ...prepared.map((photo) => photo.file)])
+      setPhotoPreviews((current) => [...current, ...prepared.map((photo) => photo.preview)])
+      setFormError('')
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'A photo could not be prepared.')
+    }
   }
 
   async function submitReport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = event.currentTarget
     const formData = new FormData(form)
+    if (isSupabaseConfigured && !isOnline) {
+      setFormError('You are offline. Reconnect before submitting this report.')
+      return
+    }
     const title = String(formData.get('title') ?? '').trim()
     const description = String(formData.get('description') ?? '').trim()
     const category = String(formData.get('category')) as Category
     const issueType = String(formData.get('issue_type') ?? '').trim() || 'Other issue'
+    const additionalInfo = String(formData.get('additional_info') ?? '').trim()
+    const observedValue = String(formData.get('observed_at') ?? '')
+    const observedDate = new Date(observedValue)
+    const consentGiven = formData.get('public_display_consent') === 'on'
     const locationLabel = String(formData.get('location') ?? '').trim()
     const barangay = String(formData.get('barangay') ?? '').trim()
+    if (!consentGiven) {
+      setFormError('Please review and accept the report visibility notice before submitting.')
+      return
+    }
+    if (!observedValue || Number.isNaN(observedDate.getTime()) || observedDate.getTime() > Date.now() + 5 * 60_000) {
+      setFormError('Choose a valid observation date and time. It cannot be in the future.')
+      return
+    }
+    if (additionalInfo.length > 2000) {
+      setFormError('Additional information must be 2,000 characters or fewer.')
+      return
+    }
     if (!locationConfirmed || !locationLabel) {
       setFormError('Choose a suggested place or use your current location before submitting.')
       return
@@ -873,40 +1381,118 @@ function App() {
       return
     }
     setFormError('')
+    setFormNotice('')
     let report: Report
+    let guestTrackingCode: string | undefined
+    let guestEmailSent = false
     if (supabase && session) {
-      let photoPath: string | null = null
-      if (photoFile) {
-        const extension = photoFile.type === 'image/jpeg' ? 'jpg' : photoFile.type.split('/')[1]
-        photoPath = `${session.user.id}/${crypto.randomUUID()}.${extension}`
-        const { error: uploadError } = await supabase.storage.from('report-photos').upload(photoPath, photoFile, { contentType: photoFile.type, upsert: false })
+      const photoPaths: string[] = []
+      for (const photoFile of photoFiles) {
+        const photoPath = `${session.user.id}/${crypto.randomUUID()}.jpg`
+        const { error: uploadError } = await supabase.storage.from('report-photos').upload(photoPath, photoFile, { contentType: 'image/jpeg', upsert: false })
         if (uploadError) {
+          if (photoPaths.length) await supabase.storage.from('report-photos').remove(photoPaths)
           setFormError(`Photo upload failed: ${uploadError.message}`)
           return
         }
+        photoPaths.push(photoPath)
       }
       const newReport = {
+        client_submission_id: reportSubmissionId,
         reporter_id: session.user.id,
         title,
         category,
         issue_type: issueType,
+        observed_at: observedDate.toISOString(),
+        additional_info: additionalInfo || null,
         urgency: String(formData.get('urgency')),
         description,
         location_label: locationLabel,
         latitude: location[0],
         longitude: location[1],
-        photo_path: photoPath,
-        photo_paths: photoPath ? [photoPath] : [],
+        photo_path: photoPaths[0] ?? null,
+        photo_paths: photoPaths,
+        consent_version: '2026-10-v2',
       }
       let { data, error } = await supabase.from('reports').insert({ ...newReport, barangay: barangay || null }).select('*').single()
       // Keep submissions working if the barangay migration has not been applied yet.
       if (error?.message.includes('barangay')) ({ data, error } = await supabase.from('reports').insert(newReport).select('*').single())
+      if (error?.code === '23505') {
+        const existing = await supabase.from('reports').select('*').eq('client_submission_id', reportSubmissionId).eq('reporter_id', session.user.id).maybeSingle()
+        if (existing.data) {
+          if (photoPaths.length) await supabase.storage.from('report-photos').remove(photoPaths)
+          data = existing.data
+          error = null
+        }
+      }
       if (error || !data) {
-        if (photoPath) await supabase.storage.from('report-photos').remove([photoPath])
+        if (photoPaths.length) await supabase.storage.from('report-photos').remove(photoPaths)
         setFormError(error?.message ?? 'The report could not be saved. Please try again.')
         return
       }
       report = toReport(data as ReportRow)
+    } else if (supabase) {
+      const email = String(formData.get('contact_email') ?? '').trim()
+      const website = String(formData.get('website') ?? '')
+      setGuestSubmitting(true)
+      const response = await fetch('/api/guest-reports', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'submit',
+          submissionId: reportSubmissionId,
+          title,
+          category,
+          issueType,
+          observedAt: observedDate.toISOString(),
+          additionalInfo,
+          urgency: String(formData.get('urgency')),
+          description,
+          locationLabel,
+          latitude: location[0],
+          longitude: location[1],
+          barangay,
+          email,
+          photoDataUrls: photoPreviews,
+          website,
+          startedAt: formStartedAt,
+          consentGiven,
+        }),
+      }).catch(() => undefined)
+      setGuestSubmitting(false)
+      if (!response) {
+        setFormError('Guest reporting is temporarily unavailable. Please try again.')
+        return
+      }
+      let result: { error?: string; reportId?: string; trackingCode?: string; emailSent?: boolean }
+      try { result = await response.json() as typeof result } catch {
+        setFormError('Guest reporting is temporarily unavailable. Please try again.')
+        return
+      }
+      if (!response.ok || !result.reportId || !result.trackingCode) {
+        setFormError(result.error ?? 'The report could not be submitted. Please try again.')
+        return
+      }
+      guestTrackingCode = result.trackingCode
+      guestEmailSent = Boolean(result.emailSent)
+      report = {
+        id: result.reportId,
+        title,
+        description,
+        category,
+        issueType,
+        observedAt: observedDate.toISOString(),
+        additionalInfo: additionalInfo || undefined,
+        urgency: String(formData.get('urgency')) as Urgency,
+        status: 'Submitted',
+        location: locationLabel,
+        coordinates: location,
+        barangay: barangay || undefined,
+        createdAt: new Date().toISOString(),
+        reporterName: 'Guest reporter',
+        image: photoPreviews[0],
+        photoPaths: [],
+      }
     } else {
       report = {
         id: `GP-NEW-${Date.now()}`,
@@ -914,24 +1500,42 @@ function App() {
         description,
         category,
         issueType,
+        observedAt: observedDate.toISOString(),
+        additionalInfo: additionalInfo || undefined,
         urgency: String(formData.get('urgency')) as Urgency,
         status: 'Submitted',
         location: locationLabel || 'Community location',
         coordinates: location,
         barangay: barangay || undefined,
         createdAt: new Date().toISOString(),
-        image: photo,
+        image: photoPreviews[0],
       }
     }
     if (supabase && session) void deliverNotificationEmails(report.id, session.access_token)
+    void getLocalReportDraft().then((savedDraft) => {
+      if (savedDraft?.submissionId === reportSubmissionId) {
+        return deleteLocalReportDraft().then(() => {
+          setSavedDraftAvailable(false)
+          setQueuedUploadId(undefined)
+        })
+      }
+      if (savedDraft) setDraftMessage('A different saved draft is still available in this browser.')
+    }).catch(() => undefined)
+    setDraftMessage('')
     setReports((current) => [report, ...current])
     setSelectedId(report.id)
     setReporting(false)
-    setPhoto(undefined)
-    setPhotoFile(undefined)
+    setFormNotice('')
+    setPhotoPreviews([])
+    setPhotoFiles([])
     setFormError('')
     setReportBarangay('')
     form.reset()
+    if (guestTrackingCode) {
+      setGuestTrackingToken(guestTrackingCode)
+      setGuestTrackingEmailSent(guestEmailSent)
+      setGuestTrackingOpen(true)
+    }
   }
 
   async function createTeam(event: FormEvent<HTMLFormElement>) {
@@ -976,8 +1580,95 @@ function App() {
     await loadTeams()
   }
 
+  async function saveResponseSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!supabase || profile?.role !== 'admin') return
+    const data = new FormData(event.currentTarget)
+    const next = {
+      response_sla_hours: Number(data.get('response_sla_hours')),
+      high_urgency_sla_hours: Number(data.get('high_urgency_sla_hours')),
+      second_escalation_multiplier: Number(data.get('second_escalation_multiplier')),
+    }
+    if (![next.response_sla_hours, next.high_urgency_sla_hours].every((value) => Number.isInteger(value) && value >= 1 && value <= 720)
+      || !Number.isInteger(next.second_escalation_multiplier) || next.second_escalation_multiplier < 2 || next.second_escalation_multiplier > 10) {
+      setResponseSettingsMessage('Choose deadlines from 1 to 720 hours and a second-escalation multiplier from 2 to 10.')
+      return
+    }
+    setResponseSettingsBusy(true)
+    setResponseSettingsMessage('')
+    const { error } = await supabase.from('response_settings').update(next).eq('singleton', true)
+    setResponseSettingsBusy(false)
+    if (error) {
+      setResponseSettingsMessage(`Deadlines could not be saved: ${error.message}`)
+      return
+    }
+    setResponseSettings(next)
+    setResponseSettingsMessage('Response deadlines and escalation windows saved.')
+  }
+
+  async function acknowledgeSlaEscalation(item: SlaEscalation) {
+    if (!supabase || !session) return
+    const acknowledgedAt = new Date().toISOString()
+    const { error } = await supabase.from('report_sla_escalations')
+      .update({ acknowledged_at: acknowledgedAt, acknowledged_by: session.user.id })
+      .eq('report_id', item.report_id).eq('stage', item.stage).is('acknowledged_at', null)
+    if (error) {
+      setSlaEscalationMessage(`The escalation could not be acknowledged: ${error.message}`)
+      return
+    }
+    setSlaEscalations((current) => current.map((entry) => entry.report_id === item.report_id && entry.stage === item.stage
+      ? { ...entry, acknowledged_at: acknowledgedAt }
+      : entry))
+    setSlaEscalationMessage('Escalation acknowledged. The acknowledgement is recorded in the staff database.')
+  }
+
+  async function runEscalationCheck() {
+    if (!session || profile?.role !== 'admin') return
+    setEscalationRunBusy(true)
+    setSlaEscalationMessage('Checking open reports against configured deadlines…')
+    try {
+      const response = await fetch('/api/process-escalations', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+      const result = await response.json() as { error?: string; stagesCreated?: number; emailFailures?: number }
+      if (!response.ok) throw new Error(result.error || 'Escalation check failed.')
+      setSlaEscalationMessage(`Escalation check complete. ${result.stagesCreated ?? 0} new escalation${result.stagesCreated === 1 ? '' : 's'} recorded.${result.emailFailures ? ` ${result.emailFailures} email batch${result.emailFailures === 1 ? '' : 'es'} need attention.` : ''}`)
+      setReportRefreshToken((current) => current + 1)
+    } catch (error) {
+      setSlaEscalationMessage(error instanceof Error ? error.message : 'Escalation check failed.')
+    } finally {
+      setEscalationRunBusy(false)
+    }
+  }
+
+  async function retryFailedEmails() {
+    const failedRows = failedEmailNotifications.filter((item) => item.status === 'Failed')
+    if (!supabase || !session || profile?.role !== 'admin' || !failedRows.length) return
+    setEmailRetryBusy(true)
+    setEmailRetryMessage('Retrying failed email deliveries…')
+    const reportIds = [...new Set(failedRows.map((item) => item.report_id))]
+    let failures = 0
+    for (const reportId of reportIds) {
+      try {
+        const response = await fetch('/api/send-notification-emails', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ reportId }),
+        })
+        if (!response.ok) failures += 1
+      } catch {
+        failures += 1
+      }
+    }
+    setEmailRetryBusy(false)
+    setReportRefreshToken((current) => current + 1)
+    setEmailRetryMessage(failures ? `${failures} report email batch${failures === 1 ? '' : 'es'} still need attention.` : 'Failed email deliveries were retried.')
+  }
+
   function updateStaffFilters(changes: Partial<ReportFilters>) {
     setStaffFilters((current) => ({ ...current, ...changes }))
+    setStaffQueueOffset(0)
   }
 
   async function refreshStaffEvents(reportId: string) {
@@ -1013,6 +1704,7 @@ function App() {
     const updatedReport = toReport(data as ReportRow)
     void deliverNotificationEmails(updatedReport.id, session.access_token)
     setReports((current) => current.map((report) => report.id === updatedReport.id ? { ...report, ...updatedReport } : report))
+    setStaffQueue((current) => current.map((report) => report.id === updatedReport.id ? { ...report, ...updatedReport } : report))
     const { data: events } = await supabase.from('report_events').select('id, event_type, message, created_at').eq('report_id', updatedReport.id).order('created_at', { ascending: false })
     setReportEvents((events ?? []) as ReportEvent[])
     return undefined
@@ -1027,7 +1719,7 @@ function App() {
     supabase.from('report_events').select('id, event_type, message, created_at').eq('report_id', staffReportId).order('created_at', { ascending: false }).then(({ data }) => {
       setReportEvents((data ?? []) as ReportEvent[])
     })
-    const selected = reports.find((report) => report.id === staffReportId)
+    const selected = reports.find((report) => report.id === staffReportId) ?? staffQueue.find((report) => report.id === staffReportId)
     const originalPaths = [...new Set([...(selected?.photoPaths ?? []), ...(selected?.photoPath ? [selected.photoPath] : [])])]
     const resolutionPaths = selected?.resolutionPhotoPaths ?? []
     let active = true
@@ -1040,7 +1732,7 @@ function App() {
       if (active) setStaffPhotoUrls({ original, resolution })
     })
     return () => { active = false }
-  }, [profile?.role, staffMode, staffReportId, reports])
+  }, [profile?.role, staffMode, staffReportId, reports, staffQueue])
 
   function markNotificationRead(notification: InboxNotification) {
     const readAt = new Date().toISOString()
@@ -1078,7 +1770,8 @@ function App() {
   }
 
   return (
-    <div className={`app-shell theme-${theme}`}>
+    <div className={`app-shell theme-${theme}`} lang="en">
+      <a className="skip-link" href="#home">Skip to main content</a>
       <header className="topbar">
         <a className="brand" href="#home" aria-label="GreenPulse home">
           <span className="brand-mark"><Leaf size={19} strokeWidth={2.2} /></span>
@@ -1087,7 +1780,9 @@ function App() {
         <div className="topbar-context"><span className="live-dot" /> Community watch <span className="context-divider">/</span> Environmental reports</div>
         <div className="topbar-actions">
           {!isSupabaseConfigured ? <span className="mode-badge">DEMO MODE</span> : null}
-          <button className="icon-button theme-toggle" type="button" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`} title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}</button>
+          {savedDraftAvailable && <button className="text-button resume-draft-button" type="button" onClick={() => void restoreReportDraft(false)}>Resume draft</button>}
+          <button className="icon-button theme-toggle" type="button" role="switch" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} aria-label="Dark mode" aria-checked={theme === 'dark'} title={`Turn dark mode ${theme === 'dark' ? 'off' : 'on'}`}><span className="theme-toggle-thumb" aria-hidden="true">{theme === 'dark' ? <Moon size={12} /> : <Sun size={12} />}</span></button>
+          {isSupabaseConfigured && <button className="secondary-button track-report-button" type="button" onClick={() => { setGuestTrackingToken(undefined); setGuestTrackingEmailSent(false); setGuestTrackingOpen(true) }}>Track report</button>}
           {session && <button className={`icon-button notification-toggle ${notificationPanelOpen ? 'active' : ''}`} type="button" onClick={() => setNotificationPanelOpen((open) => !open)} aria-label={`Notifications${unreadNotificationCount ? `, ${unreadNotificationCount} unread` : ''}`} aria-expanded={notificationPanelOpen} title="Notifications"><Bell size={16} />{unreadNotificationCount > 0 && <span className="notification-count">{unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}</span>}</button>}
           {session ? <>
             {(profile?.role === 'responder' || profile?.role === 'admin') && <button className={`text-button staff-toggle ${staffMode ? 'active' : ''}`} type="button" title={staffMode ? 'Return to community view' : 'Open staff desk'} aria-label={staffMode ? 'Return to community view' : 'Open staff desk'} onClick={() => { setStaffMode((current) => !current); setStaffDashboardOpen(true) }}><ClipboardCheck size={15} /><span>{staffMode ? 'Community view' : 'Staff desk'}</span></button>}
@@ -1109,17 +1804,19 @@ function App() {
         <div className="notification-panel-footer"><span>In-app alerts · email updates in profile</span><button type="button" onClick={markAllNotificationsRead} disabled={unreadNotificationCount === 0}><CheckCheck size={13} />Mark all read</button></div>
       </section>}
 
-      <main id="home" className="workspace">
+      <main id="home" className="workspace" tabIndex={-1}>
         <section className="page-heading">
           <div>
             <p className="eyebrow">COMMUNITY ENVIRONMENT DESK <span>•</span> DISTRICT 5, QUEZON CITY</p>
             <h1>{staffMode ? <>Coordinate the response. <em>Close the loop.</em></> : <>See it. Report it. <em>Restore it.</em></>}</h1>
-            <p className="page-subtitle">{staffMode ? 'A focused queue for reviewing reports and coordinating community response.' : 'A shared view of local environmental concerns and response across District 5.'}</p>
+            <p className="page-subtitle">{staffMode ? 'A focused queue for reviewing reports and coordinating community response.' : t('communitySubtitle')}</p>
           </div>
-          <button className="primary-button" type="button" onClick={startReport}><Plus size={17} /> Report an issue</button>
+          <div className="page-heading-actions"><button className="primary-button" type="button" onClick={startReport}><Plus size={17} /> {t('reportIssue')}</button></div>
         </section>
 
         {!isSupabaseConfigured && <div className="connection-banner demo-banner"><span className="mode-dot" /><span><strong>Demo data</strong> Reports stay in this browser. Add Supabase settings to enable shared reports and accounts.</span></div>}
+        {isSupabaseConfigured && !isOnline && <div className="connection-banner error-banner" role="status"><span><strong>You’re offline.</strong> Showing the last synced reports; you can save a report on this device and queue it for upload when you reconnect.{lastSyncedAt ? ` Last synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : ''}</span></div>}
+        {draftMessage && <div className="connection-banner" role="status"><span>{draftMessage}</span>{savedDraftAvailable && <button className="text-button" type="button" onClick={() => void deleteSavedDraft()}>Delete saved draft</button>}</div>}
         {backendError && <div className="connection-banner error-banner" role="alert"><AlertTriangle size={16} /><span>{backendError}</span><button type="button" onClick={() => setBackendError('')} aria-label="Dismiss message"><X size={14} /></button></div>}
 
         {staffMode ? <section className="stats-row staff-stats" aria-label="Staff response summary">
@@ -1131,7 +1828,7 @@ function App() {
           <div className="stat-item"><span className="stat-icon stat-leaf"><Leaf size={17} /></span><span className="stat-copy"><strong>{openReports}</strong><span>Open reports</span></span><span className="stat-note">needs attention</span></div>
           <div className="stat-item"><span className="stat-icon stat-verify"><ShieldCheck size={18} /></span><span className="stat-copy"><strong>{verifiedReports}</strong><span>Verified or assigned</span></span><span className="stat-note">being followed up</span></div>
           <div className="stat-item"><span className="stat-icon stat-clock"><Clock3 size={17} /></span><span className="stat-copy"><strong>{reports.length}</strong><span>Community reports</span></span><span className="stat-note">all time</span></div>
-          <div className="stat-updated"><span className="live-dot" /> Updated just now</div>
+          <div className="stat-updated" aria-live="polite">{isSupabaseConfigured ? <><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} />{lastSyncedAt ? `Synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Syncing reports…'}<button className="text-button" type="button" disabled={!isOnline || loadingReports} onClick={() => setReportRefreshToken((current) => current + 1)}>Refresh</button></> : 'Demo data is stored in this browser'}</div>
         </section>}
 
         {staffMode && profile?.role === 'admin' && staffDashboardOpen && <section className="admin-overview" aria-label="Admin dashboard" aria-busy={loadingReports}>
@@ -1189,10 +1886,77 @@ function App() {
             </article>
           </div>
           <EnvironmentalReports reports={reports} />
+          <section className="pilot-outcomes analytics-chart" aria-label="Pilot outcome results">
+            <div className="analytics-chart-heading"><div><strong>Pilot outcomes</strong><span>All-time response and recurrence measures for participating teams</span></div><BarChart3 size={17} /></div>
+            {pilotOutcomesMessage && <p className="workflow-hint" role="status">{pilotOutcomesMessage}</p>}
+            {pilotOutcomes && <>
+              <div className="pilot-outcome-metrics"><p><strong>{pilotOutcomes.totalReports}</strong><span>recorded reports</span></p><p><strong>{pilotOutcomes.reopenedReports}</strong><span>reopened reports</span></p></div>
+              <div className="pilot-outcome-table-wrap"><table className="pilot-outcome-table"><caption className="sr-only">Report outcomes by barangay</caption><thead><tr><th scope="col">Barangay</th><th scope="col">Reports</th><th scope="col">Resolved or closed</th><th scope="col">Reopened</th><th scope="col">Avg. first response</th><th scope="col">Avg. resolution</th></tr></thead><tbody>{pilotOutcomes.byBarangay.map((row) => <tr key={row.label}><th scope="row">{row.label}</th><td>{row.reports}</td><td>{row.resolved}</td><td>{row.reopened}</td><td>{formatDuration(row.averageFirstResponseMs ?? undefined)}</td><td>{formatDuration(row.averageResolutionMs ?? undefined)}</td></tr>)}</tbody></table></div>
+            </>}
+          </section>
+          <div className="admin-operations-grid">
+            <form className="admin-operation-card" onSubmit={(event) => void saveResponseSettings(event)}>
+              <div><p className="eyebrow">OPERATIONS</p><h3>Response deadlines</h3><p>These targets drive overdue alerts in the staff inbox.</p></div>
+              <label className="field-label">Standard urgency deadline (hours)<input name="response_sla_hours" type="number" min={1} max={720} step={1} value={responseSettings.response_sla_hours} onChange={(event) => setResponseSettings((current) => ({ ...current, response_sla_hours: Number(event.target.value) }))} required /></label>
+              <label className="field-label">High urgency deadline (hours)<input name="high_urgency_sla_hours" type="number" min={1} max={720} step={1} value={responseSettings.high_urgency_sla_hours} onChange={(event) => setResponseSettings((current) => ({ ...current, high_urgency_sla_hours: Number(event.target.value) }))} required /></label>
+              <label className="field-label">Second escalation window (multiple of first deadline)<input name="second_escalation_multiplier" type="number" min={2} max={10} step={1} value={responseSettings.second_escalation_multiplier} onChange={(event) => setResponseSettings((current) => ({ ...current, second_escalation_multiplier: Number(event.target.value) }))} required /><small>At the first deadline, notify admins and the assigned responder. At this multiple, notify admins again for supervisor review.</small></label>
+              {responseSettingsMessage && <p className="workflow-hint" role="status">{responseSettingsMessage}</p>}
+              <button className="secondary-button" type="submit" disabled={responseSettingsBusy}>{responseSettingsBusy ? 'Saving…' : 'Save deadlines'}</button>
+            </form>
+            <section className="admin-operation-card" aria-label="Escalation queue">
+              <div><p className="eyebrow">FOLLOW-UP CONTROL</p><h3>Escalations</h3><p>Stage 1 goes to admins and the assigned responder. Stage 2 asks admins to review the task plan. Staff can acknowledge the escalation.</p></div>
+              <button className="secondary-button" type="button" onClick={() => void runEscalationCheck()} disabled={escalationRunBusy}>{escalationRunBusy ? 'Checking…' : 'Check deadlines now'}</button>
+              {slaEscalationMessage && <p className="workflow-hint" role="status">{slaEscalationMessage}</p>}
+              <div className="workload-list escalation-list">{slaEscalations.length ? slaEscalations.slice(0, 8).map((item) => {
+                const report = Array.isArray(item.report) ? item.report[0] : item.report
+                const canAcknowledge = profile.role === 'admin' || report?.assigned_to === session?.user.id
+                  || Boolean(report?.assigned_team_id && teams.find((team) => team.id === report.assigned_team_id)?.memberIds.includes(session?.user.id ?? ''))
+                return <div className="workload-row escalation-row" key={`${item.report_id}-${item.stage}`}><span><strong>Stage {item.stage}: {report?.title ?? 'Report'}</strong><small>{formatCreatedAt(item.escalated_at)} · {item.acknowledged_at ? 'Acknowledged' : 'Needs acknowledgement'}</small></span>{!item.acknowledged_at && canAcknowledge && <button className="text-button" type="button" onClick={() => void acknowledgeSlaEscalation(item)}>Acknowledge</button>}</div>
+              }) : <span className="workflow-hint">No SLA escalations recorded.</span>}</div>
+            </section>
+            <section className="admin-operation-card" aria-label="Email notification delivery">
+              <div><p className="eyebrow">NOTIFICATION DELIVERY</p><h3>Email delivery history</h3><p>Recent sent and failed deliveries are recorded. Retries use stable idempotency keys.</p></div>
+              {emailRetryMessage && <p className="workflow-hint" role="status">{emailRetryMessage}</p>}
+              <div className="workload-list">{failedEmailNotifications.length ? failedEmailNotifications.slice(0, 8).map((item) => <div className="workload-row" key={item.id}><span><strong>{item.title} · {item.channel} · {item.status}</strong><small>{item.attempts} attempt{item.attempts === 1 ? '' : 's'} · {item.last_error ?? (item.attempted_at ? formatCreatedAt(item.attempted_at) : 'No failure detail')}</small></span></div>) : <span className="workflow-hint">No email delivery attempts are recorded.</span>}</div>
+              <button className="secondary-button" type="button" disabled={emailRetryBusy || !failedEmailNotifications.some((item) => item.status === 'Failed')} onClick={() => void retryFailedEmails()}>{emailRetryBusy ? 'Retrying…' : 'Retry failed email alerts'}</button>
+            </section>
+            <section className="admin-operation-card" aria-label="Responder workload">
+              <div><p className="eyebrow">TEAM CAPACITY</p><h3>Open task workload</h3><p>Counts include reports assigned directly or to a team.</p></div>
+              <div className="workload-list"><strong>Responders</strong>{staffUsers.filter((user) => user.role === 'responder').map((user) => <div className="workload-row" key={user.id}><span>{user.display_name || 'Unnamed responder'}</span><b>{reports.filter((report) => report.assignedTo === user.id && isOpenStatus(report.status)).length}</b></div>)}{staffUsers.filter((user) => user.role === 'responder').length === 0 && <span className="workflow-hint">No responders are configured.</span>}</div>
+              <div className="workload-list"><strong>Teams</strong>{teams.map((team) => <div className="workload-row" key={team.id}><span>{team.name}</span><b>{reports.filter((report) => report.assignedTeamId === team.id && isOpenStatus(report.status)).length}</b></div>)}{teams.length === 0 && <span className="workflow-hint">No teams are configured.</span>}</div>
+            </section>
+          </div>
         </section>}
 
         {staffMode && (profile?.role === 'responder' || profile?.role === 'admin') && (!staffDashboardOpen || profile.role !== 'admin') && <section className="staff-workbench" aria-label="Staff report management">
           <div className="staff-workbench-heading"><div><p className="eyebrow">RESPONSE MANAGEMENT</p><h2>Staff desk</h2><p>Review incoming reports, assign responders, and record outcomes.</p></div><div className="staff-workbench-actions">{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => { setTeamMessage(''); setTeamModalOpen(true) }}><Users size={14} /> Manage teams</button>}{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => setStaffDashboardOpen(true)}><BarChart3 size={14} /> Dashboard</button>}<span className="role-chip"><ShieldCheck size={14} />{profile.role}</span></div></div>
+          <section className="admin-operation-card staff-escalation-panel" aria-label="My deadline escalations">
+            <div><p className="eyebrow">FOLLOW-UP CONTROL</p><h3>Deadline escalations</h3><p>Review reports assigned to you or your team and acknowledge the follow-up.</p></div>
+            <div className="workload-list escalation-list">{slaEscalations.filter((item) => {
+              const report = Array.isArray(item.report) ? item.report[0] : item.report
+              return profile.role === 'admin' || report?.assigned_to === session?.user.id
+                || Boolean(report?.assigned_team_id && teams.find((team) => team.id === report.assigned_team_id)?.memberIds.includes(session?.user.id ?? ''))
+            }).slice(0, 10).map((item) => {
+              const report = Array.isArray(item.report) ? item.report[0] : item.report
+              return <div className="workload-row escalation-row" key={`${item.report_id}-${item.stage}`}><span><strong>Stage {item.stage}: {report?.title ?? 'Report'}</strong><small>{formatCreatedAt(item.escalated_at)} · {item.acknowledged_at ? 'Acknowledged' : 'Needs acknowledgement'}</small></span>{!item.acknowledged_at && <button className="text-button" type="button" onClick={() => void acknowledgeSlaEscalation(item)}>Acknowledge</button>}</div>
+            })}</div>
+            {!slaEscalations.some((item) => {
+              const report = Array.isArray(item.report) ? item.report[0] : item.report
+              return profile.role === 'admin' || report?.assigned_to === session?.user.id
+                || Boolean(report?.assigned_team_id && teams.find((team) => team.id === report.assigned_team_id)?.memberIds.includes(session?.user.id ?? ''))
+            }) && <span className="workflow-hint">No escalations are assigned to you or your team.</span>}
+            {slaEscalationMessage && <p className="workflow-hint" role="status">{slaEscalationMessage}</p>}
+          </section>
+          <section className="recurrence-panel" aria-label="Recurring issue inspections">
+            <div className="recurrence-heading"><div><p className="eyebrow">RECURRING ISSUES</p><h3>Inspections and maintenance follow-ups</h3><p>Patterns are based on reports from the last 90 days within 350 metres.</p></div><span className="count-badge">{profile.role === 'admin' ? unplannedHotspots.length : environmentalFollowups.filter((item) => item.status === 'Scheduled' && item.assigned_team_id && teams.find((team) => team.id === item.assigned_team_id)?.memberIds.includes(session?.user.id ?? '')).length}</span></div>
+            {profile.role === 'admin' && unplannedHotspots.length > 0 && <div className="recurrence-suggestions">{unplannedHotspots.map((hotspot) => <article className="recurrence-suggestion" key={hotspot.key}><div><strong>{hotspot.category} · {hotspot.barangay ? `Barangay ${hotspot.barangay}` : 'District 5'}</strong><span>{hotspot.count} reports near {hotspot.location}</span></div><button className="secondary-button" type="button" disabled={followupBusy} onClick={() => void createEnvironmentalFollowup(hotspot)}>Schedule inspection</button></article>)}</div>}
+            {profile.role === 'admin' && unplannedHotspots.length === 0 && <p className="workflow-hint">No new hotspot has reached three reports in the same area during the last 90 days.</p>}
+            {followupMessage && <p className="workflow-hint" role="status">{followupMessage}</p>}
+            <div className="environmental-followup-list">{environmentalFollowups.filter((item) => profile.role === 'admin' || (item.status === 'Scheduled' && Boolean(item.assigned_team_id && teams.find((team) => team.id === item.assigned_team_id)?.memberIds.includes(session?.user.id ?? '')))).map((item) => {
+              const isAssignedResponder = Boolean(item.status === 'Scheduled' && item.assigned_team_id && teams.find((team) => team.id === item.assigned_team_id)?.memberIds.includes(session?.user.id ?? ''))
+              return <article className="environmental-followup-item" key={item.id}><div className="followup-item-title"><strong>{item.title}</strong><span>{item.source_report_ids.length} source reports · {item.location_label}{item.barangay ? ` · ${item.barangay}` : ''}</span></div><span className={`followup-status followup-${item.status.toLowerCase()}`}>{item.status}</span>{profile.role === 'admin' && <div className="followup-controls"><label className="filter-field"><span>Team</span><select value={item.assigned_team_id ?? ''} disabled={followupBusy} onChange={(event) => void updateEnvironmentalFollowup(item.id, { assigned_team_id: event.target.value || null })}><option value="">Unassigned</option>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label><label className="filter-field"><span>Due date</span><input type="date" value={item.due_date ?? ''} disabled={followupBusy} onChange={(event) => void updateEnvironmentalFollowup(item.id, { due_date: event.target.value || null })} /></label>{item.status === 'Scheduled' && <><button className="text-button" type="button" disabled={followupBusy} onClick={() => void updateEnvironmentalFollowup(item.id, { status: 'Completed' })}>Mark complete</button><button className="text-button" type="button" disabled={followupBusy} onClick={() => void updateEnvironmentalFollowup(item.id, { status: 'Dismissed' })}>Dismiss</button></>}</div>}{profile.role === 'responder' && isAssignedResponder && <button className="secondary-button" type="button" disabled={followupBusy} onClick={() => void updateEnvironmentalFollowup(item.id, { status: 'Completed' })}>Mark inspection complete</button>}</article>
+            })}</div>
+          </section>
           <div className="staff-filters">
             <div className="staff-filters-bar">
               <label className="search-box staff-search"><Search size={15} /><input value={staffFilters.query} onChange={(event) => updateStaffFilters({ query: event.target.value })} placeholder="Search by ID, title, description, reporter, location, category, or assignee" aria-label="Search reports" />{staffFilters.query && <button type="button" onClick={() => updateStaffFilters({ query: '' })} aria-label="Clear search"><X size={14} /></button>}</label>
@@ -1212,18 +1976,20 @@ function App() {
             </div>}
           </div>
           <div className="staff-workbench-grid">
-            <div className="staff-queue"><div className="queue-heading"><div><h3>Response queue</h3><span aria-live="polite">{staffMatches.length} of {reports.length} reports · {openReports} open</span></div></div>
-              {loadingReports ? <ReportListSkeleton rows={5} variant="queue" /> : staffMatches.length === 0 ? <div className="staff-empty">No reports match {activeFilterCount > 0 ? 'these filters' : 'this queue'}.{activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => setStaffFilters(defaultReportFilters)}>Clear all filters</button>}</div> : <>
+            <div className="staff-queue"><div className="queue-heading"><div><h3>Response queue</h3><span aria-live="polite">{staffQueueCount} matching reports · sorted by escalation and newest</span></div></div>
+              {loadingReports || (staffQueueLoading && staffQueue.length === 0) ? <ReportListSkeleton rows={5} variant="queue" /> : staffQueueCount === 0 ? <div className="staff-empty">No reports match {activeFilterCount > 0 ? 'these filters' : 'this queue'}.{activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => { setStaffFilters(defaultReportFilters); setStaffQueueOffset(0) }}>Clear all filters</button>}</div> : <>
                 {staffQueue.map((report) => <button key={report.id} type="button" className={`queue-item ${staffReportId === report.id ? 'selected' : ''}`} onClick={() => setStaffReportId(report.id)}><span className="queue-item-title">{report.title}</span><span className="queue-item-meta">{formatReportId(report.id)} · {report.category}{report.barangay ? ` · ${report.barangay}` : ''} · {formatCreatedAt(report.createdAt)}</span><span className="queue-item-tags"><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span>{needsImmediateAttention(report) && <span className="urgency-pill escalated-pill"><AlertTriangle size={11} />Escalated</span>}{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></button>)}
-                {staffMatches.length > staffQueue.length && <button className="show-more-button" type="button" onClick={() => setStaffVisibleCount((count) => count + STAFF_PAGE_SIZE)}>Show more ({staffMatches.length - staffQueue.length} remaining)</button>}
+                {staffQueueCount > staffQueue.length && <button className="show-more-button" type="button" disabled={staffQueueLoading} onClick={() => setStaffQueueOffset(staffQueue.length)}>{staffQueueLoading ? 'Loading more…' : `Show next ${Math.min(STAFF_PAGE_SIZE, staffQueueCount - staffQueue.length)} (${staffQueueCount - staffQueue.length} remaining)`}</button>}
               </>}
             </div>
             <div className="staff-detail">{staffReport ? <>
               <div className="staff-report-heading"><div><span className="report-id">{staffReport.id.slice(0, 8).toUpperCase()}</span><h3>{staffReport.title}</h3><span className="section-caption">{staffReport.category} · {staffReport.urgency} urgency · {formatCreatedAt(staffReport.createdAt)}</span><span className="reporter-line"><UserRound size={12} /> Reported by {staffReport.reporterName || 'Community resident'}</span></div><MapPin size={18} /></div>
               <p className="staff-description">{staffReport.description}</p>
+              <p className="section-caption">Observed {staffReport.observedAt ? new Date(staffReport.observedAt).toLocaleString() : 'at submission'}</p>
+              {staffReport.additionalInfo && <p className="workflow-note-text"><strong>Additional information</strong>{staffReport.additionalInfo}</p>}
               <div className="meta-chips"><span className="meta-chip"><MapPin size={12} />{staffReport.barangay ? `Barangay ${staffReport.barangay}` : 'No barangay recorded'}</span></div>
               <p className="staff-location"><MapPin size={14} />{staffReport.location} <span>({staffReport.coordinates.map((coordinate) => coordinate.toFixed(5)).join(', ')})</span></p>
-              {session && (profile?.role === 'admin' || profile?.role === 'responder') && <StaffWorkflowPanel report={staffReport} role={profile.role} userId={session.user.id} staffUsers={staffUsers} teams={teams} allReports={reports} originalPhotoUrls={staffPhotoUrls.original} resolutionPhotoUrls={staffPhotoUrls.resolution} events={reportEvents} onSubmit={applyReportUpdate} />}
+              {session && (profile?.role === 'admin' || profile?.role === 'responder') && <StaffWorkflowPanel report={staffReport} role={profile.role} userId={session.user.id} staffUsers={staffUsers} teams={teams} allReports={[...reports, ...staffQueue]} originalPhotoUrls={staffPhotoUrls.original} resolutionPhotoUrls={staffPhotoUrls.resolution} events={reportEvents} residentFeedback={staffResolutionFeedback} onSubmit={applyReportUpdate} />}
               {session && profile && (profile.role === 'admin' || profile.role === 'responder') && <ReportConversation key={staffReport.id} reportId={staffReport.id} status={staffReport.status} viewerRole={profile.role} userId={session.user.id} isReporter={false} isOnTask={staffOnTask} onPosted={() => void refreshStaffEvents(staffReport.id)} />}
               <ReportTimeline events={reportEvents} />
             </> : <div className="staff-detail-empty"><ClipboardCheck size={25} /><strong>Select a report</strong><span>Choose an open report to review and update its response.</span></div>}</div>
@@ -1233,7 +1999,7 @@ function App() {
         {!staffMode && <section className="monitoring-layout">
           <div className="map-column">
             <div className="section-toolbar">
-              <div><h2>Incident map</h2><span className="section-caption">{nearbyOnly ? `${nearbyReports.length} reports within 1 km` : `${visibleReports.length} reports · filters apply to map markers`}</span></div>
+              <div><h2>{t('incidentMap')}</h2><span className="section-caption">{nearbyOnly ? `${nearbyReports.length} reports within 1 km` : `${visibleReports.length} reports · filters apply to map markers`}</span></div>
               <button className={`map-location-button ${nearbyOnly ? 'active' : ''}`} type="button" onClick={() => nearbyOnly ? setNearbyOnly(false) : requestLocation(true)} title={nearbyOnly ? 'Show all filtered reports' : 'Show reports near my current location'}><Crosshair size={15} /><span>{nearbyOnly ? 'All reports' : 'Nearby'}</span></button>
             </div>
             <div className="map-frame">
@@ -1277,17 +2043,18 @@ function App() {
 
           <aside className="reports-panel" aria-label="Recent environmental reports">
             <div className="reports-heading">
-              <div><div className="reports-title-line"><h2>{nearbyOnly ? 'Nearby reports' : 'Recent reports'}</h2><span className="count-badge">{mapReports.length}</span></div><span className="section-caption">Community-submitted concerns</span></div>
+              <div><div className="reports-title-line"><h2>{nearbyOnly ? t('nearbyReports') : t('recentReports')}</h2><span className="count-badge">{mapReports.length}</span></div><span className="section-caption">Community-submitted concerns</span></div>
               <button className="icon-button sort-button" title={`Sort ${newestFirst ? 'oldest' : 'newest'} first`} aria-label={`Sort ${newestFirst ? 'oldest' : 'newest'} first`} onClick={() => setNewestFirst((current) => !current)} type="button"><ArrowDownUp size={16} /></button>
             </div>
             <div className="report-controls">
-              <label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search reports" aria-label="Search reports" />{search && <button type="button" onClick={() => setSearch('')} aria-label="Clear search"><X size={13} /></button>}</label>
+              <label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('searchReports')} aria-label={t('searchReports')} />{search && <button type="button" onClick={() => setSearch('')} aria-label="Clear search"><X size={13} /></button>}</label>
               <div className="filter-row">
                 <label className="select-wrap"><span className="sr-only">Filter by category</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>All categories</option>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={13} /></label>
                 <label className="select-wrap"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All statuses</option>{statusOptions.filter((status) => status !== 'Duplicate').map((status) => <option key={status}>{status}</option>)}</select><ChevronDown size={13} /></label>
               </div>
             </div>
             {selectedOwnReport && <div className="own-report-card"><span><strong>{selectedOwnReport.title}</strong><small>Your report · {selectedOwnReport.status}</small></span><button className="secondary-button" type="button" onClick={() => setFollowUpId(selectedOwnReport.id)}><MessageSquare size={14} /> Updates and replies</button></div>}
+            {selectedOwnReport && session && ['Resolved', 'Closed'].includes(selectedOwnReport.status) && <section className="own-report-feedback"><div><strong>Was this issue fixed?</strong><small>Let the response team know if it is still happening.</small></div>{selectedOwnFeedback && <p className="workflow-hint">Your last response: {selectedOwnFeedback.feedback === 'fixed' ? 'You confirmed it was fixed.' : 'You said it still needs attention.'}</p>}<label className="field-label">Optional note<textarea rows={2} maxLength={500} value={feedbackNote} onChange={(event) => setFeedbackNote(event.target.value)} placeholder="Add a short update for the response team" /></label><div className="workflow-actions"><button className="primary-button" type="button" disabled={feedbackBusy} onClick={() => void submitResidentFeedback('fixed')}>{feedbackBusy ? 'Saving…' : 'It was fixed'}</button><button className="secondary-button" type="button" disabled={feedbackBusy} onClick={() => void submitResidentFeedback('still_there')}>Still needs attention</button></div></section>}
             <div className="report-list">
               {loadingReports ? <ReportListSkeleton /> : orderedReports.length === 0 ? <div className="empty-state"><Search size={21} /><strong>No matching reports</strong><span>Try changing a filter or search term.</span></div> : orderedReports.map((report) => {
                 const Icon = categoryIcon(report.category)
@@ -1298,7 +2065,7 @@ function App() {
                 </button>
               })}
             </div>
-            <div className="panel-footer"><span><span className="live-dot" /> Live community feed</span><button type="button" onClick={() => { setCategoryFilter('All categories'); setStatusFilter('All statuses'); setSearch('') }}>Reset filters</button></div>
+            <div className="panel-footer"><span><span className="live-dot" /> Live community feed</span><button type="button" onClick={() => { setCategoryFilter('All categories'); setStatusFilter('All statuses'); setSearch('') }}>{t('resetFilters')}</button></div>
           </aside>
         </section>}
 
@@ -1309,24 +2076,27 @@ function App() {
 
       {reporting && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReporting(false) }}>
         <section className="report-modal report-form-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-          <div className="modal-header"><div><p className="eyebrow">COMMUNITY REPORT</p><h2 id="modal-title">What did you notice?</h2><p>Help your community respond with a few details.</p></div><button className="icon-button" type="button" onClick={() => setReporting(false)} aria-label="Close report form"><X size={19} /></button></div>
-          <form className="report-form" onSubmit={submitReport}>
+          <div className="modal-header"><div><p className="eyebrow">COMMUNITY REPORT</p><h2 id="modal-title">{t('reportFormTitle')}</h2><p>{isSupabaseConfigured && !session ? t('guestFormSubtitle') : t('reportFormSubtitle')}</p></div><button className="icon-button" type="button" onClick={() => setReporting(false)} aria-label="Close report form"><X size={19} /></button></div>
+          <form className="report-form" ref={reportFormRef} onSubmit={submitReport}>
+            <label className="honeypot-field" aria-hidden="true">Website<input name="website" tabIndex={-1} autoComplete="off" /></label>
             <div className="report-form-grid">
               <div className="report-form-col">
                 <section className="form-section">
-                  <h3 className="form-section-title"><span>1</span>What happened</h3>
-                  <label className="field-label">Report title<input name="title" maxLength={90} placeholder="e.g. Waste piling up beside the road" required /></label>
-                  <fieldset className="choice-group"><legend>Category</legend><div className="choice-chips">{intakeCategories.map((category) => { const CategoryIcon = categoryIcon(category); return <label className="choice-chip" key={category}><input type="radio" name="category" value={category} defaultChecked={category === 'Waste'} /><span><CategoryIcon size={15} />{category}</span></label> })}</div></fieldset>
-                  <label className="field-label">Specific issue<input name="issue_type" maxLength={80} placeholder="e.g. Clogged drainage" required /></label>
-                  <fieldset className="choice-group"><legend>Urgency</legend><div className="segmented">{['Low', 'Medium', 'High'].map((urgency) => <label className={`segment segment-${urgency.toLowerCase()}`} key={urgency}><input type="radio" name="urgency" value={urgency} defaultChecked={urgency === 'Medium'} /><span>{urgency}</span></label>)}</div></fieldset>
-                  <label className="field-label">What is happening?<textarea name="description" rows={4} maxLength={500} placeholder="Describe what you observed and any immediate risks." required /></label>
+                   <h3 className="form-section-title"><span>1</span>{t('whatHappened')}</h3>
+                   <label className="field-label">{t('reportTitle')}<input name="title" maxLength={90} placeholder="e.g. Waste piling up beside the road" required /></label>
+                   <fieldset className="choice-group"><legend>{t('category')}</legend><div className="choice-chips">{intakeCategories.map((category) => { const CategoryIcon = categoryIcon(category); return <label className="choice-chip" key={category}><input type="radio" name="category" value={category} checked={reportCategory === category} onChange={() => setReportCategory(category)} /><span><CategoryIcon size={15} />{category}</span></label> })}</div></fieldset>
+                   <label className="field-label">{t('specificIssue')}<input name="issue_type" maxLength={80} placeholder="e.g. Clogged drainage" required /></label>
+                   <fieldset className="choice-group"><legend>{t('urgency')}</legend><div className="segmented">{['Low', 'Medium', 'High'].map((urgency) => <label className={`segment segment-${urgency.toLowerCase()}`} key={urgency}><input type="radio" name="urgency" value={urgency} defaultChecked={urgency === 'Medium'} /><span>{urgency}</span></label>)}</div></fieldset>
+                   <label className="field-label">{t('whenObserved')}<input name="observed_at" type="datetime-local" value={observedAt} max={toLocalDateTimeInput(new Date())} onChange={(event) => setObservedAt(event.target.value)} required /></label>
+                   <label className="field-label">{t('whatHappening')}<textarea name="description" rows={4} maxLength={500} placeholder={t('descriptionHint')} required /></label>
+                   <label className="field-label">{t('additionalInformation')} <span className="field-hint">{t('optionalContext')}</span><textarea name="additional_info" rows={3} maxLength={2000} placeholder="Add access details, recurring patterns, or other useful context." /></label>
                 </section>
               </div>
               <div className="report-form-col">
                 <section className="form-section">
-                  <h3 className="form-section-title"><span>2</span>Where</h3>
+                  <h3 className="form-section-title"><span>2</span>{t('where')}</h3>
             <div className="location-autocomplete-wrap">
-              <label className="field-label" htmlFor="report-location">Location <span className="field-hint">Search a street, landmark, barangay, or facility</span></label>
+              <label className="field-label" htmlFor="report-location">{t('location')} <span className="field-hint">Search a street, landmark, barangay, or facility</span></label>
               <div className={`location-autocomplete ${locationConfirmed ? 'location-confirmed' : ''}`}>
                 <MapPin size={16} />
                 <input id="report-location" name="location" value={locationQuery} onChange={(event) => { geocodeRequest.current += 1; setLocationQuery(event.target.value); setLocationConfirmed(false); setLocationSearchMessage('') }} placeholder="e.g. Batasan Hills, Quezon City" autoComplete="off" role="combobox" aria-autocomplete="list" aria-expanded={locationSuggestions.length > 0} aria-controls="location-suggestions" />
@@ -1339,8 +2109,8 @@ function App() {
               {!locationSearchBusy && locationQuery.trim().length >= 3 && !locationConfirmed && !locationSearchMessage && locationSuggestions.length === 0 && <p className="location-feedback" role="status">No matches yet. Try another nearby name or use your current location.</p>}
               <p className="location-attribution">Place suggestions by Photon · OpenStreetMap contributors</p>
             </div>
-<label className="field-label">Barangay<select name="barangay" value={reportBarangay} onChange={(event) => setReportBarangay(event.target.value)} required><option value="">Select barangay</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay}>{barangay}</option>)}</select></label>
-            <div className="location-picker-heading"><MapPin size={15} /><strong>Pin the exact spot</strong><span>Click or drag the map to adjust</span><button className="text-button" type="button" onClick={() => requestLocation()}><Crosshair size={14} /> Use my location</button></div>
+<label className="field-label">{t('barangay')}<select name="barangay" value={reportBarangay} onChange={(event) => setReportBarangay(event.target.value)} required><option value="">Select barangay</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay}>{barangay}</option>)}</select></label>
+            <div className="location-picker-heading"><MapPin size={15} /><strong>{t('pinExactSpot')}</strong><span>{t('clickDragMap')}</span><button className="text-button" type="button" onClick={() => requestLocation()}><Crosshair size={14} /> {t('useMyLocation')}</button></div>
             <div className="report-location-map">
               <MapContainer center={location as LatLngExpression} zoom={15} scrollWheelZoom className="leaflet-map">
                 <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
@@ -1355,20 +2125,26 @@ function App() {
               </MapContainer>
             </div>
             <div className="location-field"><div className="location-copy"><MapPin size={16} /><span><strong>{locationConfirmed ? 'Selected location' : 'Choose a map location'}</strong><small>{locationConfirmed ? `${location[0].toFixed(5)}, ${location[1].toFixed(5)}` : 'Pick a search suggestion or use GPS'}</small></span></div></div>
-            {isSupabaseConfigured && <p className="privacy-note">Your account identity stays private. The public map shows approximate report locations.</p>}
+            {isSupabaseConfigured && <p className="privacy-note">{session ? 'Your account identity stays private. The public map shows approximate report locations.' : 'Your optional email stays private. The public map shows approximate report locations.'}</p>}
+            {nearbySuggestions.length > 0 && <section className="nearby-suggestions" aria-label="Similar open reports nearby"><div><strong>Similar open reports nearby</strong><p>If one is the same issue, follow it or confirm it is still present.</p></div>{nearbySuggestions.map((candidate) => <article className="nearby-suggestion" key={candidate.id}><span><strong>{candidate.title}</strong><small>{candidate.status} · {candidate.barangay ? `Barangay ${candidate.barangay} · ` : ''}{Math.round(distanceInMeters(candidate.coordinates, location))} m away</small></span><div className="nearby-suggestion-actions"><button className="text-button" type="button" onClick={() => { setReporting(false); setStaffMode(false); setSelectedId(candidate.id); setMapCenter(candidate.coordinates) }}>View</button>{session && <button className="text-button" type="button" onClick={() => void toggleReportFollow(candidate)}>{followedReportIds.includes(candidate.id) ? 'Unfollow' : 'Follow'}</button>}<button className="text-button" type="button" onClick={() => void confirmNearbyReport(candidate)}>Confirm still present</button></div></article>)}</section>}
                 </section>
                 <section className="form-section">
-                  <h3 className="form-section-title"><span>3</span>Photo</h3>
-            <div className="photo-row"><label className="upload-button"><Camera size={15} />{photo ? 'Photo attached' : 'Add a photo'}<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => handlePhoto(event.target.files?.[0])} /></label>{photo && <button className="remove-photo" type="button" onClick={() => { setPhoto(undefined); setPhotoFile(undefined) }}><X size={13} /> Remove</button>}<span>Optional · JPEG, PNG, or WebP · max 5 MB</span></div>
-            {photo && <img className="photo-preview" src={photo} alt="Selected report attachment preview" />}
+            <h3 className="form-section-title"><span>3</span>{t('photo')}</h3>
+            <div className="photo-row"><label className="upload-button"><Camera size={15} />{photoFiles.length ? `${t('addPhotos')} (${photoFiles.length}/${MAX_REPORT_PHOTOS})` : t('addPhotos')}<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => { void handlePhotos(event.target.files); event.currentTarget.value = '' }} /></label><span>Optional · up to {MAX_REPORT_PHOTOS} JPEG, PNG, or WebP photos · max {isSupabaseConfigured && !session ? '2.5 MB each for guests' : '5 MB each'} · compressed before upload</span></div>
+            {photoPreviews.length > 0 && <div className="report-photo-previews">{photoPreviews.map((preview, index) => <div className="report-photo-preview" key={`${index}-${preview.slice(-24)}`}><img className="photo-preview" src={preview} alt={`Selected report attachment ${index + 1}`} /><button className="remove-photo" type="button" aria-label={`Remove report photo ${index + 1}`} onClick={() => { setPhotoPreviews((current) => current.filter((_, photoIndex) => photoIndex !== index)); setPhotoFiles((current) => current.filter((_, photoIndex) => photoIndex !== index)) }}><X size={13} /> Remove</button></div>)}</div>}
                 </section>
+                {isSupabaseConfigured && !session && <section className="form-section guest-contact-section"><h3 className="form-section-title"><span>4</span>{t('followUp')}</h3><label className="field-label">{t('emailAddress')} <span className="field-hint">{t('optionalTracking')}</span><input name="contact_email" type="email" autoComplete="email" maxLength={254} placeholder="you@example.com" /></label><p className="workflow-hint">Your email is kept private. You can still track the report with the code shown after submission.</p></section>}
               </div>
             </div>
+            <label className="privacy-consent"><input type="checkbox" name="public_display_consent" required /><span>{t('publicConsent')} <small>{t('retentionNotice')}</small></span></label>
             {formError && <p className="form-error" role="alert">{formError}</p>}
-            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setReporting(false)}>Cancel</button><button className="primary-button" type="submit" disabled={loadingReports}>{loadingReports ? 'Connecting…' : <><Check size={16} /> Submit report</>}</button></div>
+            {formNotice && <p className="workflow-success" role="status">{formNotice}</p>}
+            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => void saveReportDraft(false)}>Save draft</button>{isSupabaseConfigured && !isOnline && <button className="secondary-button" type="button" onClick={() => void saveReportDraft(true)}>Queue for upload</button>}<button className="secondary-button" type="button" onClick={() => setReporting(false)}>{t('cancel')}</button><button className="primary-button" type="submit" disabled={loadingReports || guestSubmitting || (isSupabaseConfigured && !isOnline)}>{guestSubmitting ? 'Submitting…' : loadingReports ? 'Connecting…' : <><Check size={16} /> {t('submitReport')}</>}</button></div>
           </form>
         </section>
       </div>}
+
+      {guestTrackingOpen && <GuestReportTracking initialToken={guestTrackingToken} emailSent={guestTrackingEmailSent} onClose={() => { setGuestTrackingOpen(false); setGuestTrackingToken(undefined); setGuestTrackingEmailSent(false) }} />}
 
       {teamModalOpen && profile?.role === 'admin' && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTeamModalOpen(false) }}>
         <section className="report-modal team-modal" role="dialog" aria-modal="true" aria-labelledby="team-title">
@@ -1384,7 +2160,7 @@ function App() {
 
       {authModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setAuthModal(null) }}>
         <section className="report-modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
-          <div className="modal-header"><div><p className="eyebrow">DISTRICT 5 COMMUNITY ACCOUNT</p><h2 id="auth-title">{confirmationEmail && authModal === 'sign-up' ? 'Confirm your email' : authModal === 'sign-up' ? 'Create your account' : 'Welcome back'}</h2><p>{confirmationEmail && authModal === 'sign-up' ? `Follow the confirmation link sent to ${confirmationEmail}.` : 'Sign in to submit reports and follow their progress.'}</p></div><button className="icon-button" type="button" onClick={() => { setAuthModal(null); setConfirmationEmail('') }} aria-label="Close sign-in form"><X size={19} /></button></div>
+          <div className="modal-header"><div><p className="eyebrow">DISTRICT 5 COMMUNITY ACCOUNT</p><h2 id="auth-title">{confirmationEmail && authModal === 'sign-up' ? 'Confirm your email' : authModal === 'sign-up' ? 'Create your account' : 'Welcome back'}</h2><p>{confirmationEmail && authModal === 'sign-up' ? `Follow the confirmation link sent to ${confirmationEmail}.` : 'Sign in to manage your reports and follow community updates. You can also submit a guest report with a tracking code.'}</p></div><button className="icon-button" type="button" onClick={() => { setAuthModal(null); setConfirmationEmail('') }} aria-label="Close sign-in form"><X size={19} /></button></div>
           <form onSubmit={submitAuth}>
             {authModal === 'sign-up' && <label className="field-label">Name<input name="display_name" autoComplete="name" maxLength={80} required /></label>}
             <label className="field-label">Email<input name="email" type="email" autoComplete="email" defaultValue={confirmationEmail} required /></label>
