@@ -8,14 +8,61 @@
     <meta name="application-name" content="GreenPulse" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Newsreader:ital,wght@1,500&display=swap" />
     <link rel="manifest" href="/site.webmanifest" />
     <link rel="icon" type="image/svg+xml" href="/icons/greenpulse.svg" />
     <title>GreenPulse | Community environmental reports</title>
+    <!-- Shared by the boot splash below and the in-app view loader (src/ViewLoader.tsx); inline so it paints before any JS or CSS bundle loads. -->
+    <style>
+      .gp-loader { position: fixed; inset: 0; z-index: 9999; display: grid; place-items: center; background: #f5f7f2; color: #1f2a22; font-family: Inter, system-ui, sans-serif; opacity: 1; visibility: visible; transition: opacity .18s ease, visibility 0s linear 0s; }
+      .gp-loader.is-hidden { opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .35s ease, visibility 0s linear .35s; }
+      .gp-loader.gp-dark { background: #161d18; color: #e6efe7; }
+      .gp-loader-inner { display: grid; justify-items: center; gap: 18px; width: min(260px, 72vw); }
+      .gp-loader-mark { position: relative; display: grid; place-items: center; width: 64px; height: 64px; border-radius: 18px; background: linear-gradient(145deg, #3f8a52, #2c6b3f); color: #fff; box-shadow: 0 10px 28px rgba(44, 107, 63, .32); animation: gp-loader-float 1.8s ease-in-out infinite; }
+      .gp-loader-mark::before, .gp-loader-mark::after { content: ""; position: absolute; inset: 0; border-radius: inherit; border: 2px solid #4a9a5e; opacity: 0; animation: gp-loader-ring 1.8s ease-out infinite; }
+      .gp-loader-mark::after { animation-delay: .6s; }
+      .gp-loader-mark svg { width: 30px; height: 30px; }
+      .gp-loader-name { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.01em; }
+      .gp-loader-name span { color: #3f8a52; }
+      .gp-loader-bar { position: relative; width: 100%; height: 4px; overflow: hidden; border-radius: 4px; background: rgba(63, 138, 82, .18); }
+      .gp-loader-bar::after { content: ""; position: absolute; top: 0; bottom: 0; left: 0; width: 40%; border-radius: inherit; background: linear-gradient(90deg, #4a9a5e, #7cc48c); animation: gp-loader-slide 1.2s ease-in-out infinite; }
+      .gp-loader-label { margin: -6px 0 0; font-size: 13px; color: #5d6b61; }
+      .gp-loader.gp-dark .gp-loader-label { color: #a9b8ac; }
+      .gp-loader.gp-dark .gp-loader-name span { color: #7cc48c; }
+      @keyframes gp-loader-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+      @keyframes gp-loader-ring { 0% { transform: scale(1); opacity: .55; } 100% { transform: scale(1.7); opacity: 0; } }
+      @keyframes gp-loader-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(250%); } }
+      @media (prefers-reduced-motion: reduce) {
+        .gp-loader, .gp-loader.is-hidden { transition: none; }
+        .gp-loader-mark, .gp-loader-mark::before, .gp-loader-mark::after { animation: none; }
+        .gp-loader-mark::before, .gp-loader-mark::after { display: none; }
+        .gp-loader-bar::after { width: 100%; animation: none; opacity: .7; }
+      }
+      html[data-motion="reduced"] .gp-loader, html[data-motion="reduced"] .gp-loader.is-hidden { transition: none; }
+      html[data-motion="reduced"] .gp-loader-mark, html[data-motion="reduced"] .gp-loader-mark::before, html[data-motion="reduced"] .gp-loader-mark::after { animation: none; }
+      html[data-motion="reduced"] .gp-loader-mark::before, html[data-motion="reduced"] .gp-loader-mark::after { display: none; }
+      html[data-motion="reduced"] .gp-loader-bar::after { width: 100%; animation: none; opacity: .7; }
+    </style>
   </head>
   <body>
+    <div id="boot-splash" class="gp-loader" role="status" aria-live="polite" aria-label="Loading GreenPulse">
+      <div class="gp-loader-inner">
+        <span class="gp-loader-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z"/><path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12"/></svg>
+        </span>
+        <p class="gp-loader-name">green<span>pulse</span></p>
+        <div class="gp-loader-bar" aria-hidden="true"></div>
+        <p class="gp-loader-label">Loading GreenPulse…</p>
+      </div>
+    </div>
+    <script>
+      try { if (localStorage.getItem('greenpulse-theme') === 'dark') document.getElementById('boot-splash').classList.add('gp-dark') } catch (e) {}
+      try {
+        var p = JSON.parse(localStorage.getItem('greenpulse-display') || '{}'), d = document.documentElement
+        d.dataset.motion = p.reduceMotion ? 'reduced' : 'full'
+        d.dataset.contrast = p.highContrast ? 'high' : 'normal'
+        d.dataset.density = p.compact ? 'compact' : 'comfortable'
+      } catch (e) {}
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -87,6 +87,57 @@ export function countActiveFilters(filters: ReportFilters) {
   return Object.values(rest).filter(Boolean).length + (status !== defaultReportFilters.status ? 1 : 0) + (query.trim() ? 1 : 0)
 }
 
+export type FilterChip = { key: keyof ReportFilters; label: string }
+
+const RESOLUTION_LABELS: Record<string, string> = { unresolved: 'Unresolved', awaiting: 'Awaiting verification', resolved: 'Resolved', closed: 'Closed' }
+
+export function describeActiveFilters(filters: ReportFilters, lookup: FilterLookup): FilterChip[] {
+  const chips: FilterChip[] = []
+  const query = filters.query.trim()
+  if (query) chips.push({ key: 'query', label: `Search: “${query}”` })
+  if (filters.status !== defaultReportFilters.status) chips.push({ key: 'status', label: `Status: ${filters.status === 'all' ? 'All reports' : filters.status}` })
+  if (filters.resolution) chips.push({ key: 'resolution', label: `Resolution: ${RESOLUTION_LABELS[filters.resolution] ?? filters.resolution}` })
+  if (filters.category) chips.push({ key: 'category', label: `Category: ${filters.category}` })
+  if (filters.urgency) chips.push({ key: 'urgency', label: `Urgency: ${filters.urgency}` })
+  if (filters.barangay) chips.push({ key: 'barangay', label: `Barangay: ${filters.barangay === NO_BARANGAY ? 'None recorded' : filters.barangay}` })
+  if (filters.assignee) chips.push({ key: 'assignee', label: `Assigned to: ${filters.assignee === UNASSIGNED ? 'Unassigned' : lookup.people.get(filters.assignee) ?? 'Unknown'}` })
+  if (filters.team) chips.push({ key: 'team', label: `Team: ${filters.team === UNASSIGNED ? 'No team' : lookup.teams.get(filters.team) ?? 'Unknown'}` })
+  if (filters.dateFrom) chips.push({ key: 'dateFrom', label: `From ${filters.dateFrom}` })
+  if (filters.dateTo) chips.push({ key: 'dateTo', label: `To ${filters.dateTo}` })
+  return chips
+}
+
+export function clearFilter(filters: ReportFilters, key: keyof ReportFilters): ReportFilters {
+  return { ...filters, [key]: defaultReportFilters[key] }
+}
+
+type FilterStorage = Pick<Storage, 'getItem' | 'setItem'>
+
+const savedFilterKey = (userId: string) => `greenpulse-staff-filters:${userId}`
+
+// The search text is intentionally not restored, so staff always start with an empty search box.
+export function loadSavedFilters(userId: string, storage: FilterStorage = localStorage): ReportFilters {
+  try {
+    const parsed = JSON.parse(storage.getItem(savedFilterKey(userId)) ?? '{}') as Record<string, unknown>
+    const restored = { ...defaultReportFilters }
+    for (const key of Object.keys(defaultReportFilters) as (keyof ReportFilters)[]) {
+      if (key !== 'query' && typeof parsed[key] === 'string') restored[key] = parsed[key]
+    }
+    return restored
+  } catch {
+    return { ...defaultReportFilters }
+  }
+}
+
+export function saveFilters(userId: string, filters: ReportFilters, storage: FilterStorage = localStorage) {
+  try {
+    const { query: _query, ...persisted } = filters
+    storage.setItem(savedFilterKey(userId), JSON.stringify(persisted))
+  } catch {
+    // Storage can be unavailable (private mode); filters just won't persist.
+  }
+}
+
 function startOfDay(value: string) {
   const date = new Date(`${value}T00:00:00`)
   return Number.isNaN(date.getTime()) ? undefined : date.getTime()

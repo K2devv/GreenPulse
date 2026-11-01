@@ -274,6 +274,7 @@ h2 { margin: 0 0 3px; font-size: 15px; font-weight: 600; }
 .map-location-button.active { border-color: #9cbd9d; color: #3f7347; background: #f0f7ee; }
 .map-frame { height: 516px; position: relative; overflow: hidden; border: 1px solid #e1e7dd; border-radius: 7px; background: #e8ece3; box-shadow: 0 4px 15px #263c2108; }
 .leaflet-map { width: 100%; height: 100%; z-index: 1; }
+.leaflet-map .district-mask { fill: var(--surface, #e8ece3); pointer-events: none; }
 .map-frame .leaflet-top.leaflet-left { top: auto; bottom: 8px; }
 .map-search-wrap { position: absolute; z-index: 700; top: 12px; left: 12px; width: min(315px, calc(100% - 150px)); }
 .map-search-box { height: 36px; display: flex; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid #e2e8df; border-radius: 5px; color: #839083; background: rgba(255,255,255,.97); box-shadow: 0 2px 8px #192d1b14; }

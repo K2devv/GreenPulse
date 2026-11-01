@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { countActiveFilters, detectBarangay, defaultReportFilters, filterReports, formatReportId, NO_BARANGAY, UNASSIGNED, type FilterableReport, type ReportFilters } from './report-filters'
+import { clearFilter, countActiveFilters, describeActiveFilters, detectBarangay, defaultReportFilters, filterReports, formatReportId, loadSavedFilters, NO_BARANGAY, saveFilters, UNASSIGNED, type FilterableReport, type ReportFilters } from './report-filters'
 
 const lookup = {
   people: new Map([['u1', 'Ramon Cruz']]),
@@ -89,5 +89,30 @@ describe('helpers', () => {
   it('detects the most specific barangay mentioned in a place label', () => {
     expect(detectBarangay('Gulod Elementary School, North Fairview, Quezon City')).toBe('North Fairview')
     expect(detectBarangay('Commonwealth Ave, Quezon City')).toBeUndefined()
+  })
+
+  it('describes active filters as chips and clears one at a time', () => {
+    const filters = { ...defaultReportFilters, query: 'drain', status: 'all', assignee: 'u1', team: UNASSIGNED, urgency: 'High' }
+    const chips = describeActiveFilters(filters, lookup)
+
+    expect(chips.map((chip) => chip.label)).toEqual(['Search: “drain”', 'Status: All reports', 'Urgency: High', 'Assigned to: Ramon Cruz', 'Team: No team'])
+    expect(chips).toHaveLength(countActiveFilters(filters))
+    expect(describeActiveFilters(defaultReportFilters, lookup)).toEqual([])
+    expect(clearFilter(filters, 'status').status).toBe('open')
+    expect(clearFilter(filters, 'urgency').urgency).toBe('')
+  })
+
+  it('saves filters per user without the search text and ignores bad data', () => {
+    const store = new Map<string, string>()
+    const storage = { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => void store.set(key, value) }
+
+    saveFilters('u1', { ...defaultReportFilters, query: 'secret', urgency: 'High', status: 'all' }, storage)
+
+    expect(loadSavedFilters('u1', storage)).toEqual({ ...defaultReportFilters, urgency: 'High', status: 'all' })
+    expect(loadSavedFilters('u2', storage)).toEqual(defaultReportFilters)
+    store.set('greenpulse-staff-filters:u3', JSON.stringify({ urgency: 7, category: 'Waste' }))
+    expect(loadSavedFilters('u3', storage)).toEqual({ ...defaultReportFilters, category: 'Waste' })
+    store.set('greenpulse-staff-filters:u4', '{oops')
+    expect(loadSavedFilters('u4', storage)).toEqual(defaultReportFilters)
   })
 })

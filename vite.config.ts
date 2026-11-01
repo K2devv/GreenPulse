@@ -4,6 +4,7 @@ import createResponderHandler from './api/admin-create-responder'
 import sendNotificationEmailsHandler from './api/send-notification-emails'
 import guestReportsHandler from './api/guest-reports'
 import confirmReportHandler from './api/confirm-report'
+import processEscalationsHandler from './api/process-escalations'
 
 function responderApiPlugin(environment: Record<string, string | undefined>): Plugin {
   return {
@@ -25,6 +26,7 @@ function responderApiPlugin(environment: Record<string, string | undefined>): Pl
           ['/api/send-notification-emails', sendNotificationEmailsHandler],
           ['/api/guest-reports', guestReportsHandler],
           ['/api/confirm-report', confirmReportHandler],
+          ['/api/process-escalations', processEscalationsHandler],
         ])
         const apiHandler = handlers.get(requestUrl.pathname)
         if (!apiHandler) {

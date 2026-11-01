@@ -1,6 +1,7 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type CSSProperties } from 'react'
 import { FileSpreadsheet, FileText, TrendingUp } from 'lucide-react'
 import { buildSummaryCsv, buildSummaryHtml } from './lib/report-export'
+import { ChartEmpty } from './AdminCharts'
 import { DESCRIPTIVE_NOTE, FOCUS_LABELS, buildEnvironmentalSummary, formatDuration, localDateInput, resolveRange, type Count, type SummaryFocus, type SummaryPeriod, type SummaryReport } from './lib/report-summary'
 
 const PERIODS: { value: SummaryPeriod; label: string }[] = [
@@ -12,9 +13,10 @@ const PERIODS: { value: SummaryPeriod; label: string }[] = [
 
 function BreakdownTable({ title, entries }: { title: string; entries: Count[] }) {
   const max = Math.max(1, ...entries.map((entry) => entry.value))
+  const hasData = entries.some((entry) => entry.value > 0)
   return <article className="analytics-chart summary-table">
     <div className="analytics-chart-heading"><div><strong>{title}</strong></div></div>
-    <ul>{entries.map((entry) => <li key={entry.label}><span>{entry.label}</span><i><b style={{ width: `${(entry.value / max) * 100}%` }} /></i><strong>{entry.value}</strong></li>)}</ul>
+    {hasData ? <ul>{entries.map((entry, index) => <li key={entry.label} style={{ '--i': index } as CSSProperties}><span>{entry.label}</span><i><b style={{ width: `${(entry.value / max) * 100}%` }} /></i><strong>{entry.value}</strong></li>)}</ul> : <ChartEmpty title="No data" hint="Nothing recorded for this period." />}
   </article>
 }
 
@@ -52,7 +54,7 @@ export function EnvironmentalReports({ reports }: { reports: readonly SummaryRep
 
   const exportName = `greenpulse-${focus}-${localDateInput(new Date())}`
 
-  return <section className="env-reports" aria-label="Environmental reports">
+  return <section className="env-reports" id="admin-summary" aria-label="Environmental reports">
     <div className="analytics-heading">
       <div><p className="eyebrow">ENVIRONMENTAL REPORTS</p><h2>Generate a summary report</h2></div>
       <div className="analytics-heading-actions">
@@ -80,15 +82,15 @@ export function EnvironmentalReports({ reports }: { reports: readonly SummaryRep
       </div>
       <article className="analytics-chart env-trends">
         <div className="analytics-chart-heading"><div><strong>Trends</strong><span>{DESCRIPTIVE_NOTE}</span></div><TrendingUp size={17} /></div>
-        <ul>{summary.trends.map((trend) => <li key={trend}>{trend}</li>)}</ul>
+        {summary.total === 0 ? <ChartEmpty icon={<TrendingUp size={20} aria-hidden="true" />} title="No reports were submitted in this period" hint="Try a longer period or a custom range." /> : <ul>{summary.trends.map((trend) => <li key={trend}>{trend}</li>)}</ul>}
       </article>
-      <div className="env-tables">
+      {summary.total === 0 ? <ChartEmpty title="Nothing to break down yet" hint="Category, barangay, status and location tables appear once the period has reports." /> : <div className="env-tables">
         <BreakdownTable title="Categories" entries={summary.byCategory} />
         <BreakdownTable title="Barangays" entries={summary.byBarangay} />
         <BreakdownTable title="Status" entries={summary.byStatus.filter((entry) => entry.value > 0)} />
         <BreakdownTable title="Urgency" entries={summary.byUrgency} />
         <BreakdownTable title="Top locations" entries={summary.byLocation} />
-      </div>
+      </div>}
     </>}
   </section>
 }

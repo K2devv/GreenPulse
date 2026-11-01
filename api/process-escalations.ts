@@ -45,6 +45,9 @@ export default async function handler(request: Request): Promise<Response> {
     admin.from('response_settings').select('response_sla_hours, high_urgency_sla_hours, second_escalation_multiplier').eq('singleton', true).single(),
     admin.from('reports').select('id, title, status, urgency, created_at, started_at, assigned_to, assigned_team_id').not('status', 'in', '(Resolved,Rejected,Closed,Duplicate)'),
   ])
+  if (settingsError || reportsError || !settings) {
+    console.error('Escalation data load failed:', settingsError?.message ?? reportsError?.message ?? 'missing settings row')
+  }
   if (settingsError || reportsError || !settings) return jsonResponse({ error: 'Escalation data could not be loaded.' }, 500)
 
   let stagesCreated = 0

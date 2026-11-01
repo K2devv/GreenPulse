@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildReportAnalytics, type AnalyticsReport } from './report-analytics'
+import { buildReportAnalytics, DAILY_HISTORY_DAYS, type AnalyticsReport } from './report-analytics'
 
 const now = new Date(2026, 9, 7, 12)
 
@@ -72,5 +72,29 @@ describe('buildReportAnalytics', () => {
     expect(analytics.averageResolutionMs).toBeUndefined()
     expect(analytics.overTime).toHaveLength(14)
     expect(analytics.overTime.every(({ value }) => value === 0)).toBe(true)
+  })
+
+  it('builds the 14 days before the current window for comparison', () => {
+    const analytics = buildReportAnalytics([
+      report({ createdAt: new Date(2026, 9, 6, 9).toISOString() }),
+      report({ createdAt: new Date(2026, 8, 20, 9).toISOString() }),
+      report({ createdAt: new Date(2026, 8, 20, 15).toISOString() }),
+    ], now)
+
+    expect(analytics.previousOverTime).toHaveLength(14)
+    expect(analytics.overTime.reduce((sum, day) => sum + day.value, 0)).toBe(1)
+    expect(analytics.previousOverTime.reduce((sum, day) => sum + day.value, 0)).toBe(2)
+    expect(analytics.previousOverTime[13]?.date).toBe('2026-09-23')
+  })
+
+  it('exposes a long daily history that ends with the current window', () => {
+    const analytics = buildReportAnalytics([
+      report({ createdAt: new Date(2026, 9, 6, 9).toISOString() }),
+      report({ createdAt: new Date(2026, 6, 1, 9).toISOString() }),
+    ], now)
+
+    expect(analytics.daily).toHaveLength(DAILY_HISTORY_DAYS)
+    expect(analytics.daily.slice(-14)).toEqual(analytics.overTime)
+    expect(analytics.daily.reduce((sum, day) => sum + day.value, 0)).toBe(2)
   })
 })

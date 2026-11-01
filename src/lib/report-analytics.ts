@@ -39,6 +39,8 @@ function countBy<T>(items: T[], labelFor: (item: T) => string, labels: string[])
   return labels.map((label) => ({ label, value: counts.get(label) ?? 0 }))
 }
 
+export const DAILY_HISTORY_DAYS = 180
+
 export function buildReportAnalytics(reports: AnalyticsReport[], now = new Date()) {
   const weekStart = new Date(now)
   weekStart.setHours(0, 0, 0, 0)
@@ -50,16 +52,27 @@ export function buildReportAnalytics(reports: AnalyticsReport[], now = new Date(
     return createdAt ? [{ report, createdAt }] : []
   })
 
-  const dates = Array.from({ length: 14 }, (_, index) => {
+  const dayWindow = (endOffset: number) => Array.from({ length: 14 }, (_, index) => {
     const date = new Date(now)
     date.setHours(0, 0, 0, 0)
-    date.setDate(date.getDate() - (13 - index))
+    date.setDate(date.getDate() - (13 - index) - endOffset)
     const key = localDateKey(date)
     return {
       label: date.toLocaleDateString(undefined, { weekday: 'short' }),
       value: datedReports.filter(({ createdAt }) => localDateKey(createdAt) === key).length,
       date: key,
     }
+  })
+  const dates = dayWindow(0)
+  const previousDates = dayWindow(14)
+  const counts = new Map<string, number>()
+  for (const { createdAt } of datedReports) counts.set(localDateKey(createdAt), (counts.get(localDateKey(createdAt)) ?? 0) + 1)
+  const daily = Array.from({ length: DAILY_HISTORY_DAYS }, (_, index) => {
+    const date = new Date(now)
+    date.setHours(0, 0, 0, 0)
+    date.setDate(date.getDate() - (DAILY_HISTORY_DAYS - 1 - index))
+    const key = localDateKey(date)
+    return { label: date.toLocaleDateString(undefined, { weekday: 'short' }), value: counts.get(key) ?? 0, date: key }
   })
 
   const resolvedDurations = reports.flatMap((report) => {
@@ -113,6 +126,8 @@ export function buildReportAnalytics(reports: AnalyticsReport[], now = new Date(
     byStatus: statusCounts,
     byUrgency: countBy(reports, (report) => report.urgency, ['High', 'Medium', 'Low']),
     overTime: dates,
+    previousOverTime: previousDates,
+    daily,
     byLocation: topLocations,
     resolutionRate: reports.length ? (reports.filter((report) => report.status === 'Resolved').length / reports.length) * 100 : 0,
     averageResolutionMs: resolvedDurations.length

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 import {
   AlertTriangle,
   ArrowDownUp,
+  ArrowLeft,
   BarChart3,
   Bell,
   CalendarDays,
@@ -12,6 +13,7 @@ import {
   Clock3,
   ClipboardCheck,
   Crosshair,
+  LocateFixed,
   Droplets,
   Filter,
   Flame,
@@ -37,19 +39,37 @@ import {
 } from 'lucide-react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import MarkerClusterGroup from 'react-leaflet-cluster'
-import { Circle, MapContainer, Marker, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet'
-import { divIcon, type LatLngExpression } from 'leaflet'
+import { Circle, MapContainer, Marker, Polygon, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet'
+import { divIcon, latLngBounds, type LatLngExpression } from 'leaflet'
 import type { Session } from '@supabase/supabase-js'
 import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type EnvironmentalFollowUp, type NotificationRow, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
 import { StaffWorkflowPanel } from './StaffWorkflowPanel'
+import { AnimatedNumber, StatNumber } from './AnimatedNumber'
+import { AdminBarChart, AdminTrendChart, ChartEmpty, ChartSkeleton } from './AdminCharts'
+import { AdminSectionNav, type AdminSection } from './AdminSectionNav'
+import { FilterChips } from './FilterChips'
+import { ToastViewport, toneForMessage, useToasts } from './Toaster'
+import { ViewLoader, useViewTransition } from './ViewLoader'
+import { useDisplayPrefs } from './display-prefs'
+import { DisplaySettings } from './DisplaySettings'
+import { SyncStatus } from './SyncStatus'
+import { resolveSyncState } from './lib/sync-status'
+import { CommandPalette } from './CommandPalette'
+import type { PaletteCommand } from './lib/command-palette'
+import { SuccessBurst } from './SuccessBurst'
+import { WelcomeTour } from './WelcomeTour'
+import { EmptyIllustration } from './EmptyIllustration'
+import { useFlip } from './useFlip'
+import { useStatusChanges } from './useStatusChanges'
 import { EnvironmentalReports } from './EnvironmentalReports'
 import { ReportConversation, ReportTimeline, ResidentReportModal } from './ReportCommunication'
 import { isOpenStatus } from './lib/report-workflow'
-import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, countActiveFilters, defaultReportFilters, detectBarangay, formatReportId, type ReportFilters } from './lib/report-filters'
+import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, clearFilter, countActiveFilters, defaultReportFilters, describeActiveFilters, detectBarangay, formatReportId, loadSavedFilters, saveFilters, type ReportFilters } from './lib/report-filters'
 import { needsImmediateAttention } from './lib/report-escalation'
+import { reportDeadline } from './lib/report-deadline'
 import { formatDuration } from './lib/report-summary'
 import { buildResponseTimeMetrics } from './lib/report-response-times'
-import { buildReportAnalytics, type ChartDatum } from './lib/report-analytics'
+import { buildReportAnalytics } from './lib/report-analytics'
 import { findRecurringHotspots, type RecurringHotspot } from './lib/report-recurrence'
 import { GuestReportTracking } from './GuestReportTracking'
 import { MAX_REPORT_PHOTOS, prepareReportPhoto } from './lib/report-photos'
@@ -165,6 +185,12 @@ const categoryColors: Record<Category, string> = {
 }
 
 const districtCenter: [number, number] = [14.7222, 121.0545]
+// Padded bounding box around Quezon City District 5 (south-west, north-east).
+const districtBounds: [[number, number], [number, number]] = [[14.675, 121.005], [14.775, 121.105]]
+const districtMapProps = { maxBounds: districtBounds, maxBoundsViscosity: 1, zoomSnap: 0.25, maxZoom: 19 }
+const isInsideDistrict = ([latitude, longitude]: [number, number]) =>
+  latitude >= districtBounds[0][0] && latitude <= districtBounds[1][0] && longitude >= districtBounds[0][1] && longitude <= districtBounds[1][1]
+const outsideDistrictMessage = 'That location is outside District 5, Quezon City.'
 const categoryOptions: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage', 'Water pollution', 'Air pollution']
 const intakeCategories: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage']
 const STAFF_PAGE_SIZE = 50
@@ -205,6 +231,7 @@ async function searchPlaces(query: string, center: [number, number], signal: Abo
     lon: String(center[1]),
     limit: '6',
     lang: 'en',
+    bbox: `${districtBounds[0][1]},${districtBounds[0][0]},${districtBounds[1][1]},${districtBounds[1][0]}`,
   })
   const response = await fetch(`https://photon.komoot.io/api/?${parameters}`, { signal })
   if (!response.ok) throw new Error('Place search is temporarily unavailable.')
@@ -218,7 +245,8 @@ async function searchPlaces(query: string, center: [number, number], signal: Abo
     const parts = [properties.name, properties.street, properties.district, properties.city, properties.state, properties.country]
       .filter((part): part is string => Boolean(part))
       .filter((part, index, allParts) => allParts.indexOf(part) === index)
-    return parts.length ? [{ label: parts.join(', '), coordinates: [coordinates[1], coordinates[0]] as [number, number] }] : []
+    const point: [number, number] = [coordinates[1], coordinates[0]]
+    return parts.length && isInsideDistrict(point) ? [{ label: parts.join(', '), coordinates: point }] : []
   })
 }
 
@@ -274,7 +302,7 @@ const categoryIcon = (category: Category) => {
 function MapFocus({ report, center }: { report: Report | undefined; center: [number, number] }) {
   const map = useMap()
   useEffect(() => {
-    map.flyTo(report ? approximateCoordinates(report.coordinates) : center, report ? 16 : map.getZoom(), { duration: 0.65 })
+    map.flyTo(report ? approximateCoordinates(report.coordinates) : center, report ? Math.max(map.getZoom(), 16) : map.getZoom(), { duration: 0.65 })
   }, [center, map, report])
   return null
 }
@@ -285,6 +313,31 @@ function LocationPickerFocus({ center }: { center: [number, number] }) {
     map.flyTo(center, Math.max(map.getZoom(), 16), { duration: 0.35 })
   }, [center, map])
   return null
+}
+
+type DistrictRing = [number, number][]
+const worldRing: DistrictRing = [[-90, -180], [-90, 180], [90, 180], [90, -180]]
+const fallbackDistrictRing: DistrictRing = [
+  districtBounds[0], [districtBounds[0][0], districtBounds[1][1]], districtBounds[1], [districtBounds[1][0], districtBounds[0][1]],
+]
+
+// Dims everything outside District 5, outlines the district, and keeps the map from leaving it.
+function DistrictBoundary({ rings }: { rings: DistrictRing[] | null }) {
+  const map = useMap()
+  const districtRings = useMemo(() => rings?.length ? rings : [fallbackDistrictRing], [rings])
+  const bounds = useMemo(() => latLngBounds(districtRings.flat()), [districtRings])
+  useEffect(() => {
+    const lockMinZoom = () => map.setMinZoom(map.getBoundsZoom(bounds, false))
+    map.setMaxBounds(bounds)
+    map.fitBounds(bounds, { animate: false })
+    lockMinZoom()
+    map.on('resize', lockMinZoom)
+    return () => { map.off('resize', lockMinZoom) }
+  }, [bounds, map])
+  return <>
+    <Polygon positions={[worldRing, ...districtRings]} interactive={false} className="district-mask" pathOptions={{ stroke: false, fillOpacity: 0.97, fillRule: 'evenodd' }} />
+    {districtRings.map((ring, index) => <Polygon key={index} positions={ring} interactive={false} className="district-outline" pathOptions={{ fill: false, color: '#3f9d63', weight: 2.5, opacity: 0.95 }} />)}
+  </>
 }
 
 function LocationPickerEvents({ onSelect }: { onSelect: (coordinates: [number, number]) => void }) {
@@ -309,19 +362,13 @@ function FilterSelect({ label, value, onChange, children }: { label: string; val
   return <label className="filter-field"><span>{label}</span><span className="select-wrap"><select value={value} onChange={(event) => onChange(event.target.value)}>{children}</select><ChevronDown size={13} /></span></label>
 }
 
-function AdminBarChart({ title, description, data }: { title: string; description: string; data: ChartDatum[] }) {
-  const maximum = Math.max(1, ...data.map((item) => item.value))
-  return <article className="analytics-chart">
-    <div className="analytics-chart-heading"><div><strong>{title}</strong><span>{description}</span></div><span className="analytics-total"><b>{data.reduce((sum, item) => sum + item.value, 0)}</b> reports</span></div>
-    {data.length ? <div className="category-bars" role="list" aria-label={title}>
-      {data.map((item) => <div className="category-row" role="listitem" key={item.label} aria-label={`${item.label}: ${item.value} reports`}>
-        <span title={item.label}>{item.label}</span>
-        <i><b style={{ width: `${(item.value / maximum) * 100}%` }} /></i>
-        <strong>{item.value}</strong>
-      </div>)}
-    </div> : <p className="admin-chart-empty">No report data yet.</p>}
-  </article>
-}
+const ADMIN_SECTIONS: readonly AdminSection[] = [
+  { id: 'admin-overview-metrics', label: 'Overview' },
+  { id: 'admin-charts', label: 'Charts' },
+  { id: 'admin-summary', label: 'Report summary' },
+  { id: 'admin-pilot', label: 'Pilot outcomes' },
+  { id: 'admin-operations', label: 'Operations' },
+]
 
 function readSavedReports(): Report[] {
   try {
@@ -338,6 +385,8 @@ function App() {
   const [profile, setProfile] = useState<Profile | null>(null)
   const [authReady, setAuthReady] = useState(!isSupabaseConfigured)
   const [loadingReports, setLoadingReports] = useState(isSupabaseConfigured)
+  const [reportsSyncing, setReportsSyncing] = useState(false)
+  const [reportsFailed, setReportsFailed] = useState(false)
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null)
   const [reportRefreshToken, setReportRefreshToken] = useState(0)
   const [isOnline, setIsOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine)
@@ -408,6 +457,18 @@ function App() {
   const [legendOpen, setLegendOpen] = useState(false)
   const [nearbyOnly, setNearbyOnly] = useState(false)
   const [gpsLocation, setGpsLocation] = useState<[number, number]>()
+  const [districtRings, setDistrictRings] = useState<DistrictRing[] | null>(null)
+  useEffect(() => {
+    if (!supabase) return
+    void supabase.from('district5_barangay_boundaries').select('geometry_geojson').then(({ data }) => {
+      const rings: DistrictRing[] = []
+      for (const row of data ?? []) {
+        const polygons = (row.geometry_geojson as { coordinates?: number[][][][] } | null)?.coordinates ?? []
+        for (const polygon of polygons) if (polygon[0]?.length) rings.push(polygon[0].map(([longitude, latitude]) => [latitude, longitude] as [number, number]))
+      }
+      if (rings.length) setDistrictRings(rings)
+    })
+  }, [])
   const [mapLocationError, setMapLocationError] = useState('')
   const [reporting, setReporting] = useState(false)
   const reportFormRef = useRef<HTMLFormElement>(null)
@@ -448,6 +509,93 @@ function App() {
     }
   })
   const t = (key: Parameters<typeof translate>[0]) => translate(key)
+  const { toasts, push: pushToast, dismiss: dismissToast } = useToasts()
+  const [clock, setClock] = useState(() => Date.now())
+  const { prefs: displayPrefs, update: updateDisplayPrefs } = useDisplayPrefs()
+  const [scrolledPastHeading, setScrolledPastHeading] = useState(false)
+  useEffect(() => {
+    const onScroll = () => setScrolledPastHeading(window.scrollY > 160)
+    onScroll()
+    window.addEventListener('scroll', onScroll, { passive: true })
+    return () => window.removeEventListener('scroll', onScroll)
+  }, [])
+  const pendingFilters = useRef<ReportFilters | null>(null)
+  const filtersUserId = useRef<string | undefined>(undefined)
+
+  useEffect(() => { if (formNotice) pushToast({ message: formNotice, tone: toneForMessage(formNotice) }) }, [formNotice, pushToast])
+  useEffect(() => { if (responseSettingsMessage) pushToast({ message: responseSettingsMessage, tone: toneForMessage(responseSettingsMessage) }) }, [responseSettingsMessage, pushToast])
+  useEffect(() => { if (slaEscalationMessage && !slaEscalationMessage.endsWith('…')) pushToast({ message: slaEscalationMessage, tone: toneForMessage(slaEscalationMessage) }) }, [slaEscalationMessage, pushToast])
+  useEffect(() => { if (emailRetryMessage && !emailRetryMessage.endsWith('…')) pushToast({ message: emailRetryMessage, tone: toneForMessage(emailRetryMessage) }) }, [emailRetryMessage, pushToast])
+  useEffect(() => { if (followupMessage) pushToast({ message: followupMessage, tone: toneForMessage(followupMessage) }) }, [followupMessage, pushToast])
+
+  const signedInUserId = session?.user.id
+  useEffect(() => {
+    if (!signedInUserId) {
+      filtersUserId.current = undefined
+      return
+    }
+    if (filtersUserId.current === signedInUserId) return
+    filtersUserId.current = signedInUserId
+    const restored = loadSavedFilters(signedInUserId)
+    pendingFilters.current = restored
+    setStaffFilters(restored)
+    setStaffQueueOffset(0)
+  }, [signedInUserId])
+  useEffect(() => {
+    if (!signedInUserId || filtersUserId.current !== signedInUserId) return
+    if (pendingFilters.current) {
+      if (pendingFilters.current !== staffFilters) return
+      pendingFilters.current = null
+    }
+    saveFilters(signedInUserId, staffFilters)
+  }, [signedInUserId, staffFilters])
+
+  useEffect(() => {
+    if (!staffMode) return
+    const timer = window.setInterval(() => setClock(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [staffMode])
+
+  const queueShortcutsActive = staffMode && (profile?.role === 'responder' || (profile?.role === 'admin' && !staffDashboardOpen)) && !teamModalOpen && !profileModal && !authModal && !reporting
+  useEffect(() => {
+    if (!queueShortcutsActive) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey || event.defaultPrevented) return
+      const target = event.target as HTMLElement | null
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return
+      const key = event.key.toLowerCase()
+      if (key === 'j' || key === 'k') {
+        if (!staffQueue.length) return
+        event.preventDefault()
+        const index = staffQueue.findIndex((report) => report.id === staffReportId)
+        const next = key === 'j' ? Math.min(staffQueue.length - 1, index + 1) : Math.max(0, index - 1)
+        setStaffReportId(staffQueue[next].id)
+        window.requestAnimationFrame(() => document.querySelector('.queue-item.selected')?.scrollIntoView({ block: 'nearest' }))
+      } else if (key === 'a') {
+        event.preventDefault()
+        const select = document.querySelector<HTMLSelectElement>('.staff-detail select[name="assigned_to"]')
+        if (select && !select.disabled) {
+          select.scrollIntoView({ block: 'center' })
+          select.focus()
+        } else {
+          pushToast({ tone: 'info', message: staffReportId ? 'Only admins can assign responders on this report.' : 'Select a report first to assign it.' })
+        }
+      } else if (key === '/') {
+        const search = document.querySelector<HTMLInputElement>('.staff-search input')
+        if (search) {
+          event.preventDefault()
+          search.focus()
+        }
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [queueShortcutsActive, staffQueue, staffReportId, pushToast])
+
+  useEffect(() => {
+    if (!staffReportId || !window.matchMedia('(max-width: 900px)').matches) return
+    document.querySelector('.staff-detail')?.scrollIntoView({ block: 'start' })
+  }, [staffReportId])
 
   useEffect(() => {
     if (!supabase) return
@@ -562,11 +710,12 @@ function App() {
     if (!supabase) return
     let active = true
     if (!reportsLoaded.current) setLoadingReports(true)
+    setReportsSyncing(true)
     async function loadReports() {
       const { data: communityRows, error: communityError } = await supabase!.from('community_reports').select('*').order('created_at', { ascending: false })
       if (communityError) {
         if (active) setBackendError(`Could not load community reports: ${communityError.message}`)
-        if (active) setLoadingReports(false)
+        if (active) { setLoadingReports(false); setReportsSyncing(false); setReportsFailed(true) }
         return
       }
       let privateRows: ReportRow[] = []
@@ -589,6 +738,8 @@ function App() {
       reportsLoaded.current = true
       setLastSyncedAt(new Date())
       setLoadingReports(false)
+      setReportsSyncing(false)
+      setReportsFailed(false)
     }
     void loadReports()
     return () => { active = false }
@@ -913,9 +1064,43 @@ function App() {
     return [...cells.values()]
   }, [orderedReports])
   const activeFilterCount = countActiveFilters(staffFilters)
+  const staffFilterChips = describeActiveFilters(staffFilters, { people: new Map(staffUsers.map((user) => [user.id, user.display_name || 'Unnamed staff member'])), teams: new Map(teams.map((team) => [team.id, team.name])) })
   const adminAnalytics = useMemo(() => buildReportAnalytics(reports), [reports])
   const responseMetrics = useMemo(() => buildResponseTimeMetrics(reports), [reports])
   const escalatedOpen = useMemo(() => reports.filter(needsImmediateAttention).length, [reports])
+  const reportListRef = useRef<HTMLDivElement>(null)
+  const staffQueueRef = useRef<HTMLDivElement>(null)
+  useFlip(reportListRef, orderedReports.map((report) => report.id).join('|'))
+  useFlip(staffQueueRef, staffQueue.map((report) => report.id).join('|'))
+  const allKnownReports = useMemo(() => [...reports, ...staffQueue], [reports, staffQueue])
+  const changedStatuses = useStatusChanges(allKnownReports)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [celebrating, setCelebrating] = useState(false)
+  const [tourOpen, setTourOpen] = useState(() => {
+    try { return localStorage.getItem('greenpulse-tour-seen') !== '1' } catch { return false }
+  })
+  const [mobileMap, setMobileMap] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 760px)').matches)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia('(max-width: 760px)')
+    const onChange = () => setMobileMap(query.matches)
+    query.addEventListener('change', onChange)
+    return () => query.removeEventListener('change', onChange)
+  }, [])
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        setPaletteOpen((open) => !open)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+  function dismissTour() {
+    setTourOpen(false)
+    try { localStorage.setItem('greenpulse-tour-seen', '1') } catch { /* the tour simply shows again next visit */ }
+  }
   const nearbySuggestions = useMemo(() => {
     if (!reporting || !locationConfirmed || !supabase) return []
     const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000
@@ -1064,15 +1249,21 @@ function App() {
     setFormError('')
     setFormNotice('')
     if (followedReportIds.includes(report.id)) {
-      const { error } = await supabase.from('report_followers').delete().eq('report_id', report.id).eq('profile_id', session.user.id)
-      if (error) return setFormError('Could not unfollow this report. Please try again.')
       setFollowedReportIds((current) => current.filter((id) => id !== report.id))
+      const { error } = await supabase.from('report_followers').delete().eq('report_id', report.id).eq('profile_id', session.user.id)
+      if (error) {
+        setFollowedReportIds((current) => current.includes(report.id) ? current : [...current, report.id])
+        return setFormError('Could not unfollow this report. Please try again.')
+      }
       setFormNotice('You will no longer receive updates for that report.')
       return
     }
-    const { error } = await supabase.from('report_followers').insert({ report_id: report.id, profile_id: session.user.id })
-    if (error) return setFormError(error.code === '23505' ? 'You are already following this report.' : 'Could not follow this report. Please try again.')
     setFollowedReportIds((current) => [...current, report.id])
+    const { error } = await supabase.from('report_followers').insert({ report_id: report.id, profile_id: session.user.id })
+    if (error) {
+      if (error.code !== '23505') setFollowedReportIds((current) => current.filter((id) => id !== report.id))
+      return setFormError(error.code === '23505' ? 'You are already following this report.' : 'Could not follow this report. Please try again.')
+    }
     setFormNotice('You are following this report. Status and assignment changes will appear in your notifications.')
   }
 
@@ -1256,6 +1447,11 @@ function App() {
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
         const currentLocation: [number, number] = [coords.latitude, coords.longitude]
+        if (!isInsideDistrict(currentLocation)) {
+          setMapLocationError(outsideDistrictMessage)
+          if (reporting) setFormError(outsideDistrictMessage)
+          return
+        }
         setGpsLocation(currentLocation)
         setLocation(currentLocation)
         setMapCenter(currentLocation)
@@ -1291,6 +1487,10 @@ function App() {
 
   function selectMapLocation(coordinates: [number, number]) {
     const preciseCoordinates: [number, number] = [Number(coordinates[0].toFixed(6)), Number(coordinates[1].toFixed(6))]
+    if (!isInsideDistrict(preciseCoordinates)) {
+      setFormError(outsideDistrictMessage)
+      return
+    }
     setLocation(preciseCoordinates)
     setMapCenter(preciseCoordinates)
     setLocationConfirmed(true)
@@ -1525,6 +1725,7 @@ function App() {
     setReports((current) => [report, ...current])
     setSelectedId(report.id)
     setReporting(false)
+    setCelebrating(true)
     setFormNotice('')
     setPhotoPreviews([])
     setPhotoFiles([])
@@ -1631,7 +1832,8 @@ function App() {
         method: 'POST',
         headers: { Authorization: `Bearer ${session.access_token}` },
       })
-      const result = await response.json() as { error?: string; stagesCreated?: number; emailFailures?: number }
+      const result = await response.json().catch(() => null) as { error?: string; stagesCreated?: number; emailFailures?: number } | null
+      if (!result) throw new Error('The escalation service is unavailable. Restart the app server and try again.')
       if (!response.ok) throw new Error(result.error || 'Escalation check failed.')
       setSlaEscalationMessage(`Escalation check complete. ${result.stagesCreated ?? 0} new escalation${result.stagesCreated === 1 ? '' : 's'} recorded.${result.emailFailures ? ` ${result.emailFailures} email batch${result.emailFailures === 1 ? '' : 'es'} need attention.` : ''}`)
       setReportRefreshToken((current) => current + 1)
@@ -1643,12 +1845,13 @@ function App() {
   }
 
   async function retryFailedEmails() {
-    const failedRows = failedEmailNotifications.filter((item) => item.status === 'Failed')
+    const failedRows = failedEmailNotifications.filter((item) => item.status === 'Failed' || item.status === 'Pending')
     if (!supabase || !session || profile?.role !== 'admin' || !failedRows.length) return
     setEmailRetryBusy(true)
     setEmailRetryMessage('Retrying failed email deliveries…')
     const reportIds = [...new Set(failedRows.map((item) => item.report_id))]
     let failures = 0
+    let firstError = ''
     for (const reportId of reportIds) {
       try {
         const response = await fetch('/api/send-notification-emails', {
@@ -1656,14 +1859,17 @@ function App() {
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
           body: JSON.stringify({ reportId }),
         })
-        if (!response.ok) failures += 1
+        if (!response.ok) {
+          failures += 1
+          firstError ||= (await response.json().catch(() => null) as { error?: string } | null)?.error ?? ''
+        }
       } catch {
         failures += 1
       }
     }
     setEmailRetryBusy(false)
     setReportRefreshToken((current) => current + 1)
-    setEmailRetryMessage(failures ? `${failures} report email batch${failures === 1 ? '' : 'es'} still need attention.` : 'Failed email deliveries were retried.')
+    setEmailRetryMessage(failures ? `${failures} report email batch${failures === 1 ? '' : 'es'} still need attention.${firstError ? ` ${firstError}` : ''}` : 'Pending and failed email deliveries were retried.')
   }
 
   function updateStaffFilters(changes: Partial<ReportFilters>) {
@@ -1696,6 +1902,11 @@ function App() {
       uploadedPaths.push(path)
     }
     if (uploadedPaths.length) update.resolution_photo_paths = [...(staffReport.resolutionPhotoPaths ?? []), ...uploadedPaths]
+    let previous: Record<string, unknown> | undefined
+    if (!uploadedPaths.length) {
+      const { data: before } = await supabase.from('reports').select(Object.keys(update).join(',')).eq('id', staffReport.id).single()
+      previous = (before as unknown as Record<string, unknown> | null) ?? undefined
+    }
     const { data, error } = await supabase.from('reports').update(update).eq('id', staffReport.id).select('*').single()
     if (error || !data) {
       if (uploadedPaths.length) await supabase.storage.from('report-photos').remove(uploadedPaths)
@@ -1707,7 +1918,26 @@ function App() {
     setStaffQueue((current) => current.map((report) => report.id === updatedReport.id ? { ...report, ...updatedReport } : report))
     const { data: events } = await supabase.from('report_events').select('id, event_type, message, created_at').eq('report_id', updatedReport.id).order('created_at', { ascending: false })
     setReportEvents((events ?? []) as ReportEvent[])
+    const restore = previous
+    pushToast({
+      message: typeof update.status === 'string' ? `${formatReportId(updatedReport.id)} marked ${update.status}.` : 'assigned_to' in update || 'assigned_team_id' in update ? `Assignment updated for ${formatReportId(updatedReport.id)}.` : `${formatReportId(updatedReport.id)} updated.`,
+      action: restore ? { label: 'Undo', run: () => void undoReportUpdate(updatedReport.id, restore) } : undefined,
+    })
     return undefined
+  }
+
+  async function undoReportUpdate(reportId: string, previous: Record<string, unknown>) {
+    if (!supabase || !session) return
+    const { data, error } = await supabase.from('reports').update(previous).eq('id', reportId).select('*').single()
+    if (error || !data) {
+      pushToast({ tone: 'error', message: `The change could not be undone${error ? `: ${error.message}` : '.'}` })
+      return
+    }
+    const restored = toReport(data as ReportRow)
+    setReports((current) => current.map((report) => report.id === restored.id ? { ...report, ...restored } : report))
+    setStaffQueue((current) => current.map((report) => report.id === restored.id ? { ...report, ...restored } : report))
+    void refreshStaffEvents(restored.id)
+    pushToast({ tone: 'info', message: `Change to ${formatReportId(restored.id)} undone.` })
   }
 
   useEffect(() => {
@@ -1769,6 +1999,38 @@ function App() {
     }
   }
 
+  const activeViewKey = !staffMode ? 'community' : profile?.role === 'admin' && staffDashboardOpen ? 'dashboard' : 'desk'
+  const activeViewLabel = activeViewKey === 'community' ? 'Opening community view…' : activeViewKey === 'dashboard' ? 'Opening admin dashboard…' : 'Opening staff desk…'
+  const viewTransition = useViewTransition(activeViewKey, reportsSyncing || staffQueueLoading)
+  const syncState = resolveSyncState({ configured: isSupabaseConfigured, online: isOnline, syncing: reportsSyncing || staffQueueLoading, queued: Boolean(queuedUploadId), failed: reportsFailed })
+  const urgentOpenCount = reports.filter((report) => report.urgency === 'High' && isOpenStatus(report.status)).length
+  const contextTitle = activeViewKey === 'community' ? 'Community map' : activeViewKey === 'dashboard' ? 'Admin dashboard' : 'Staff desk'
+  const isStaffRole = profile?.role === 'admin' || profile?.role === 'responder'
+  const paletteCommands: PaletteCommand[] = [
+    { id: 'go-community', group: 'Go to', label: 'Community map', keywords: 'home public view', run: () => { setStaffMode(false); setStaffDashboardOpen(true) } },
+    ...(isStaffRole ? [{ id: 'go-desk', group: 'Go to', label: 'Staff desk', keywords: 'queue responder', run: () => { setStaffMode(true); setStaffDashboardOpen(false) } }] : []),
+    ...(profile?.role === 'admin' ? [{ id: 'go-dashboard', group: 'Go to', label: 'Admin dashboard', keywords: 'analytics overview charts', run: () => { setStaffMode(true); setStaffDashboardOpen(true) } }] : []),
+    { id: 'act-report', group: 'Actions', label: 'Report an issue', keywords: 'new submit add', run: startReport },
+    { id: 'act-location', group: 'Actions', label: 'Use my location', keywords: 'gps nearby locate', run: () => { setStaffMode(false); requestLocation(false) } },
+    ...(isSupabaseConfigured ? [{ id: 'act-refresh', group: 'Actions', label: 'Refresh reports', keywords: 'sync reload', run: () => setReportRefreshToken((current) => current + 1) }] : []),
+    { id: 'act-tour', group: 'Actions', label: 'Show the introduction again', keywords: 'help how works tour', run: () => { setStaffMode(false); setTourOpen(true); window.scrollTo({ top: 0 }) } },
+    { id: 'disp-theme', group: 'Display', label: `Turn dark mode ${theme === 'dark' ? 'off' : 'on'}`, keywords: 'theme light', run: () => setTheme((current) => current === 'dark' ? 'light' : 'dark') },
+    { id: 'disp-motion', group: 'Display', label: `${displayPrefs.reduceMotion ? 'Allow' : 'Reduce'} motion`, keywords: 'animation', run: () => updateDisplayPrefs({ reduceMotion: !displayPrefs.reduceMotion }) },
+    { id: 'disp-contrast', group: 'Display', label: `Turn high contrast ${displayPrefs.highContrast ? 'off' : 'on'}`, keywords: 'accessibility', run: () => updateDisplayPrefs({ highContrast: !displayPrefs.highContrast }) },
+    { id: 'disp-compact', group: 'Display', label: `Use ${displayPrefs.compact ? 'comfortable' : 'compact'} lists`, keywords: 'density rows', run: () => updateDisplayPrefs({ compact: !displayPrefs.compact }) },
+    ...allKnownReports.filter((report, index, list) => list.findIndex((other) => other.id === report.id) === index).slice(0, 40).map((report) => ({
+      id: `report-${report.id}`,
+      group: 'Reports',
+      label: report.title,
+      hint: `${formatReportId(report.id)} · ${report.status}`,
+      keywords: `${report.category} ${report.location} ${report.barangay ?? ''} ${report.id}`,
+      run: () => {
+        if (isStaffRole && staffMode) { setStaffDashboardOpen(false); setStaffReportId(report.id) }
+        else { setStaffMode(false); setSelectedId(report.id) }
+      },
+    })),
+  ]
+
   return (
     <div className={`app-shell theme-${theme}`} lang="en">
       <a className="skip-link" href="#home">Skip to main content</a>
@@ -1778,7 +2040,10 @@ function App() {
           <span className="brand-name">green<span>pulse</span></span>
         </a>
         <div className="topbar-context"><span className="live-dot" /> Community watch <span className="context-divider">/</span> Environmental reports</div>
+        <div className={`topbar-chip ${scrolledPastHeading ? 'is-visible' : ''}`} aria-hidden={!scrolledPastHeading}><strong>{contextTitle}</strong><span>{openReports} open</span>{urgentOpenCount > 0 && <span className="is-urgent">{urgentOpenCount} urgent</span>}</div>
         <div className="topbar-actions">
+          <SyncStatus state={syncState} detail={lastSyncedAt ? `Last synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : undefined} onRetry={() => setReportRefreshToken((current) => current + 1)} />
+          <DisplaySettings prefs={displayPrefs} onChange={updateDisplayPrefs} />
           {!isSupabaseConfigured ? <span className="mode-badge">DEMO MODE</span> : null}
           {savedDraftAvailable && <button className="text-button resume-draft-button" type="button" onClick={() => void restoreReportDraft(false)}>Resume draft</button>}
           <button className="icon-button theme-toggle" type="button" role="switch" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} aria-label="Dark mode" aria-checked={theme === 'dark'} title={`Turn dark mode ${theme === 'dark' ? 'off' : 'on'}`}><span className="theme-toggle-thumb" aria-hidden="true">{theme === 'dark' ? <Moon size={12} /> : <Sun size={12} />}</span></button>
@@ -1804,7 +2069,7 @@ function App() {
         <div className="notification-panel-footer"><span>In-app alerts · email updates in profile</span><button type="button" onClick={markAllNotificationsRead} disabled={unreadNotificationCount === 0}><CheckCheck size={13} />Mark all read</button></div>
       </section>}
 
-      <main id="home" className="workspace" tabIndex={-1}>
+      <main id="home" className={`workspace ${viewTransition.entering ? 'view-entering' : ''}`} tabIndex={-1}>
         <section className="page-heading">
           <div>
             <p className="eyebrow">COMMUNITY ENVIRONMENT DESK <span>•</span> DISTRICT 5, QUEZON CITY</p>
@@ -1819,15 +2084,17 @@ function App() {
         {draftMessage && <div className="connection-banner" role="status"><span>{draftMessage}</span>{savedDraftAvailable && <button className="text-button" type="button" onClick={() => void deleteSavedDraft()}>Delete saved draft</button>}</div>}
         {backendError && <div className="connection-banner error-banner" role="alert"><AlertTriangle size={16} /><span>{backendError}</span><button type="button" onClick={() => setBackendError('')} aria-label="Dismiss message"><X size={14} /></button></div>}
 
+        {!staffMode && tourOpen && <WelcomeTour onDismiss={dismissTour} onStart={() => { dismissTour(); startReport() }} />}
+
         {staffMode ? <section className="stats-row staff-stats" aria-label="Staff response summary">
-          <div className="stat-item"><span className="stat-icon stat-leaf"><ClipboardCheck size={17} /></span><span className="stat-copy"><strong>{openReports}</strong><span>Open queue</span></span></div>
-          <div className="stat-item"><span className="stat-icon stat-clock"><AlertTriangle size={17} /></span><span className="stat-copy"><strong>{reports.filter((report) => report.urgency === 'High' && report.status !== 'Resolved' && report.status !== 'Rejected').length}</strong><span>Urgent</span></span></div>
-          <div className="stat-item"><span className="stat-icon stat-verify"><Clock3 size={17} /></span><span className="stat-copy"><strong>{reports.filter((report) => report.status === 'In progress').length}</strong><span>In progress</span></span></div>
-          <div className="stat-item"><span className="stat-icon stat-leaf"><Check size={17} /></span><span className="stat-copy"><strong>{reports.filter((report) => report.status === 'Resolved').length}</strong><span>Resolved</span></span></div>
+          <div className="stat-item"><span className="stat-icon stat-leaf"><ClipboardCheck size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={openReports} /></strong><span>Open queue</span></span></div>
+          <div className="stat-item"><span className="stat-icon stat-clock"><AlertTriangle size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={reports.filter((report) => report.urgency === 'High' && report.status !== 'Resolved' && report.status !== 'Rejected').length} /></strong><span>Urgent</span></span></div>
+          <div className="stat-item"><span className="stat-icon stat-verify"><Clock3 size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={reports.filter((report) => report.status === 'In progress').length} /></strong><span>In progress</span></span></div>
+          <div className="stat-item"><span className="stat-icon stat-leaf"><Check size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={reports.filter((report) => report.status === 'Resolved').length} /></strong><span>Resolved</span></span></div>
         </section> : <section className="stats-row" aria-label="Community report summary">
-          <div className="stat-item"><span className="stat-icon stat-leaf"><Leaf size={17} /></span><span className="stat-copy"><strong>{openReports}</strong><span>Open reports</span></span><span className="stat-note">needs attention</span></div>
-          <div className="stat-item"><span className="stat-icon stat-verify"><ShieldCheck size={18} /></span><span className="stat-copy"><strong>{verifiedReports}</strong><span>Verified or assigned</span></span><span className="stat-note">being followed up</span></div>
-          <div className="stat-item"><span className="stat-icon stat-clock"><Clock3 size={17} /></span><span className="stat-copy"><strong>{reports.length}</strong><span>Community reports</span></span><span className="stat-note">all time</span></div>
+          <div className="stat-item"><span className="stat-icon stat-leaf"><Leaf size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={openReports} /></strong><span>Open reports</span></span><span className="stat-note">needs attention</span></div>
+          <div className="stat-item"><span className="stat-icon stat-verify"><ShieldCheck size={18} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={verifiedReports} /></strong><span>Verified or assigned</span></span><span className="stat-note">being followed up</span></div>
+          <div className="stat-item"><span className="stat-icon stat-clock"><Clock3 size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={reports.length} /></strong><span>Community reports</span></span><span className="stat-note">all time</span></div>
           <div className="stat-updated" aria-live="polite">{isSupabaseConfigured ? <><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} />{lastSyncedAt ? `Synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Syncing reports…'}<button className="text-button" type="button" disabled={!isOnline || loadingReports} onClick={() => setReportRefreshToken((current) => current + 1)}>Refresh</button></> : 'Demo data is stored in this browser'}</div>
         </section>}
 
@@ -1836,7 +2103,8 @@ function App() {
             <div><p className="eyebrow">ADMIN DASHBOARD</p><h2>Environmental report overview</h2></div>
             <div className="analytics-heading-actions"><span className="analytics-period">{loadingReports ? 'Loading reports…' : 'All reports'}<i />Current data</span><button className="secondary-button admin-dashboard-action" type="button" onClick={() => setStaffDashboardOpen(false)}><ClipboardCheck size={14} /> Response desk</button></div>
           </div>
-          <div className="admin-metrics-grid">
+          <AdminSectionNav sections={ADMIN_SECTIONS} />
+          <div className="admin-metrics-grid" id="admin-overview-metrics">
             {[
               { label: 'Total reports', value: adminAnalytics.total, note: 'All recorded reports', icon: <Leaf size={15} /> },
               { label: 'Pending reports', value: adminAnalytics.pending, note: 'Awaiting review or follow-up', icon: <Clock3 size={15} /> },
@@ -1853,27 +2121,20 @@ function App() {
               { label: 'Avg. resolution time', value: formatDuration(responseMetrics.averageResolutionMs), note: 'Submitted to resolved', icon: <ShieldCheck size={15} /> },
               { label: 'Reports this week', value: adminAnalytics.thisWeek, note: 'Since Monday', icon: <CalendarDays size={15} /> },
               { label: 'Reports this month', value: adminAnalytics.thisMonth, note: 'Since the first of the month', icon: <CalendarDays size={15} /> },
-            ].map((metric) => <article className="admin-metric" key={metric.label}>
-              <span className="admin-metric-icon">{metric.icon}</span><strong>{metric.value}</strong><span>{metric.label}</span><small>{metric.note}</small>
+            ].map((metric, index) => <article className="admin-metric" key={metric.label} style={{ '--i': index } as CSSProperties}>
+              <span className="admin-metric-icon">{metric.icon}</span><strong>{loadingReports ? <><span className="skeleton skeleton-stat" aria-hidden="true" /><span className="sr-only">Loading</span></> : typeof metric.value === 'number' ? <AnimatedNumber value={metric.value} /> : metric.value}</strong><span>{metric.label}</span><small>{metric.note}</small>
             </article>)}
           </div>
-          <div className="admin-chart-grid">
-            <AdminBarChart title="Reports by category" description="Environmental concern type" data={adminAnalytics.byCategory} />
-            <AdminBarChart title="Reports by status" description="Current response stage" data={adminAnalytics.byStatus} />
-            <AdminBarChart title="Reports by urgency" description="Reported urgency level" data={adminAnalytics.byUrgency} />
-            <AdminBarChart title="Reports by location" description="Most reported locations" data={adminAnalytics.byLocation} />
-            <article className="analytics-chart admin-trend-chart">
-              <div className="analytics-chart-heading"><div><strong>Reports over time</strong><span>Daily submissions over the last 14 days</span></div><span className="analytics-total"><b>{adminAnalytics.overTime.reduce((sum, day) => sum + day.value, 0)}</b> reports</span></div>
-              <div className="admin-trend-bars" role="list" aria-label="Reports submitted per day over the last 14 days">
-                {adminAnalytics.overTime.map((day) => <div className="admin-trend-day" role="listitem" key={day.date} aria-label={`${day.date}: ${day.value} reports`} title={`${day.date}: ${day.value} reports`}>
-                  <small>{day.value || ''}</small><span className="admin-trend-track"><b style={{ height: `${Math.max(day.value ? 4 : 0, (day.value / Math.max(1, ...adminAnalytics.overTime.map((entry) => entry.value))) * 100)}%` }} /></span><small>{day.label}</small>
-                </div>)}
-              </div>
-            </article>
+          <div className="admin-chart-grid" id="admin-charts">
+            <AdminBarChart title="Reports by category" description="Environmental concern type" data={adminAnalytics.byCategory} loading={loadingReports} />
+            <AdminBarChart title="Reports by status" description="Current response stage" data={adminAnalytics.byStatus} loading={loadingReports} />
+            <AdminBarChart title="Reports by urgency" description="Reported urgency level" data={adminAnalytics.byUrgency} loading={loadingReports} />
+            <AdminBarChart title="Reports by location" description="Most reported locations" data={adminAnalytics.byLocation} loading={loadingReports} />
+            <AdminTrendChart daily={adminAnalytics.daily} loading={loadingReports} />
             <article className="analytics-chart admin-outcome-chart">
               <div className="analytics-chart-heading"><div><strong>Resolution performance</strong><span>Resolved reports as a share of all reports</span></div><ShieldCheck size={17} /></div>
               <div className="resolution-content">
-                <div className="resolution-ring" role="img" aria-label={`Resolution rate ${Math.round(adminAnalytics.resolutionRate)} percent`} style={{ background: `conic-gradient(#548a78 ${adminAnalytics.resolutionRate}%, #edf2eb 0)` }}><span>{Math.round(adminAnalytics.resolutionRate)}<small>%</small></span></div>
+                <div className="resolution-ring" role="img" aria-label={`Resolution rate ${Math.round(adminAnalytics.resolutionRate)} percent`} style={{ '--ring': `${adminAnalytics.resolutionRate}%` } as CSSProperties}><span><AnimatedNumber value={Math.round(adminAnalytics.resolutionRate)} /><small>%</small></span></div>
                 <p><strong>{adminAnalytics.resolved} of {adminAnalytics.total}</strong><small>reports resolved</small></p>
               </div>
               <div className="average-resolution">
@@ -1886,15 +2147,16 @@ function App() {
             </article>
           </div>
           <EnvironmentalReports reports={reports} />
-          <section className="pilot-outcomes analytics-chart" aria-label="Pilot outcome results">
+          <section className="pilot-outcomes analytics-chart" id="admin-pilot" aria-label="Pilot outcome results">
             <div className="analytics-chart-heading"><div><strong>Pilot outcomes</strong><span>All-time response and recurrence measures for participating teams</span></div><BarChart3 size={17} /></div>
             {pilotOutcomesMessage && <p className="workflow-hint" role="status">{pilotOutcomesMessage}</p>}
+            {!pilotOutcomes && !pilotOutcomesMessage && (loadingReports ? <ChartSkeleton rows={3} /> : <ChartEmpty title="No pilot outcomes yet" hint="Response and recurrence measures appear after reports have been handled." />)}
             {pilotOutcomes && <>
               <div className="pilot-outcome-metrics"><p><strong>{pilotOutcomes.totalReports}</strong><span>recorded reports</span></p><p><strong>{pilotOutcomes.reopenedReports}</strong><span>reopened reports</span></p></div>
               <div className="pilot-outcome-table-wrap"><table className="pilot-outcome-table"><caption className="sr-only">Report outcomes by barangay</caption><thead><tr><th scope="col">Barangay</th><th scope="col">Reports</th><th scope="col">Resolved or closed</th><th scope="col">Reopened</th><th scope="col">Avg. first response</th><th scope="col">Avg. resolution</th></tr></thead><tbody>{pilotOutcomes.byBarangay.map((row) => <tr key={row.label}><th scope="row">{row.label}</th><td>{row.reports}</td><td>{row.resolved}</td><td>{row.reopened}</td><td>{formatDuration(row.averageFirstResponseMs ?? undefined)}</td><td>{formatDuration(row.averageResolutionMs ?? undefined)}</td></tr>)}</tbody></table></div>
             </>}
           </section>
-          <div className="admin-operations-grid">
+          <div className="admin-operations-grid" id="admin-operations">
             <form className="admin-operation-card" onSubmit={(event) => void saveResponseSettings(event)}>
               <div><p className="eyebrow">OPERATIONS</p><h3>Response deadlines</h3><p>These targets drive overdue alerts in the staff inbox.</p></div>
               <label className="field-label">Standard urgency deadline (hours)<input name="response_sla_hours" type="number" min={1} max={720} step={1} value={responseSettings.response_sla_hours} onChange={(event) => setResponseSettings((current) => ({ ...current, response_sla_hours: Number(event.target.value) }))} required /></label>
@@ -1918,7 +2180,7 @@ function App() {
               <div><p className="eyebrow">NOTIFICATION DELIVERY</p><h3>Email delivery history</h3><p>Recent sent and failed deliveries are recorded. Retries use stable idempotency keys.</p></div>
               {emailRetryMessage && <p className="workflow-hint" role="status">{emailRetryMessage}</p>}
               <div className="workload-list">{failedEmailNotifications.length ? failedEmailNotifications.slice(0, 8).map((item) => <div className="workload-row" key={item.id}><span><strong>{item.title} · {item.channel} · {item.status}</strong><small>{item.attempts} attempt{item.attempts === 1 ? '' : 's'} · {item.last_error ?? (item.attempted_at ? formatCreatedAt(item.attempted_at) : 'No failure detail')}</small></span></div>) : <span className="workflow-hint">No email delivery attempts are recorded.</span>}</div>
-              <button className="secondary-button" type="button" disabled={emailRetryBusy || !failedEmailNotifications.some((item) => item.status === 'Failed')} onClick={() => void retryFailedEmails()}>{emailRetryBusy ? 'Retrying…' : 'Retry failed email alerts'}</button>
+              <button className="secondary-button" type="button" disabled={emailRetryBusy || !failedEmailNotifications.some((item) => item.status === 'Failed' || item.status === 'Pending')} onClick={() => void retryFailedEmails()}>{emailRetryBusy ? 'Retrying…' : 'Retry failed email alerts'}</button>
             </section>
             <section className="admin-operation-card" aria-label="Responder workload">
               <div><p className="eyebrow">TEAM CAPACITY</p><h3>Open task workload</h3><p>Counts include reports assigned directly or to a team.</p></div>
@@ -1974,15 +2236,20 @@ function App() {
               <label className="filter-field"><span>Submitted from</span><input type="date" value={staffFilters.dateFrom} max={staffFilters.dateTo || undefined} onChange={(event) => updateStaffFilters({ dateFrom: event.target.value })} /></label>
               <label className="filter-field"><span>Submitted to</span><input type="date" value={staffFilters.dateTo} min={staffFilters.dateFrom || undefined} onChange={(event) => updateStaffFilters({ dateTo: event.target.value })} /></label>
             </div>}
+            <FilterChips chips={staffFilterChips} onRemove={(key) => { setStaffFilters((current) => clearFilter(current, key)); setStaffQueueOffset(0) }} />
           </div>
-          <div className="staff-workbench-grid">
-            <div className="staff-queue"><div className="queue-heading"><div><h3>Response queue</h3><span aria-live="polite">{staffQueueCount} matching reports · sorted by escalation and newest</span></div></div>
-              {loadingReports || (staffQueueLoading && staffQueue.length === 0) ? <ReportListSkeleton rows={5} variant="queue" /> : staffQueueCount === 0 ? <div className="staff-empty">No reports match {activeFilterCount > 0 ? 'these filters' : 'this queue'}.{activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => { setStaffFilters(defaultReportFilters); setStaffQueueOffset(0) }}>Clear all filters</button>}</div> : <>
-                {staffQueue.map((report) => <button key={report.id} type="button" className={`queue-item ${staffReportId === report.id ? 'selected' : ''}`} onClick={() => setStaffReportId(report.id)}><span className="queue-item-title">{report.title}</span><span className="queue-item-meta">{formatReportId(report.id)} · {report.category}{report.barangay ? ` · ${report.barangay}` : ''} · {formatCreatedAt(report.createdAt)}</span><span className="queue-item-tags"><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span>{needsImmediateAttention(report) && <span className="urgency-pill escalated-pill"><AlertTriangle size={11} />Escalated</span>}{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></button>)}
+          <div className={`staff-workbench-grid ${staffReport ? 'has-selection' : ''}`}>
+            <div className="staff-queue" ref={staffQueueRef}><div className="queue-heading"><div><h3>Response queue</h3><span aria-live="polite">{staffQueueCount} matching reports · sorted by escalation and newest</span></div><span className="queue-shortcuts" aria-label="Keyboard shortcuts"><kbd>J</kbd><kbd>K</kbd> move <kbd>A</kbd> assign <kbd>/</kbd> search</span></div>
+              {loadingReports || (staffQueueLoading && staffQueue.length === 0) ? <ReportListSkeleton rows={5} variant="queue" /> : staffQueueCount === 0 ? <div className="staff-empty"><EmptyIllustration variant={activeFilterCount > 0 ? 'search' : 'queue'} /><span>No reports match {activeFilterCount > 0 ? 'these filters' : 'this queue'}.</span>{activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => { setStaffFilters(defaultReportFilters); setStaffQueueOffset(0) }}>Clear all filters</button>}</div> : <>
+                {staffQueue.map((report) => {
+                  const deadline = reportDeadline(report, responseSettings, clock)
+                  return <button key={report.id} data-flip-id={report.id} type="button" className={`queue-item queue-urgency-${report.urgency.toLowerCase()} ${staffReportId === report.id ? 'selected' : ''}`} onClick={() => setStaffReportId(report.id)}><span className="queue-item-title">{report.title}</span><span className="queue-item-meta">{formatReportId(report.id)} · {report.category}{report.barangay ? ` · ${report.barangay}` : ''} · {formatCreatedAt(report.createdAt)}</span><span className="queue-item-tags"><span key={report.status} className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')} ${changedStatuses.has(report.id) ? 'pill-changed' : ''}`}><i />{report.status}</span>{needsImmediateAttention(report) && <span className="urgency-pill escalated-pill"><AlertTriangle size={11} />Escalated</span>}{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}{deadline && <span className={`deadline-chip ${deadline.overdue ? 'is-overdue' : deadline.soon ? 'is-soon' : ''}`}><Clock3 size={11} />{deadline.label}</span>}</span></button>
+                })}
                 {staffQueueCount > staffQueue.length && <button className="show-more-button" type="button" disabled={staffQueueLoading} onClick={() => setStaffQueueOffset(staffQueue.length)}>{staffQueueLoading ? 'Loading more…' : `Show next ${Math.min(STAFF_PAGE_SIZE, staffQueueCount - staffQueue.length)} (${staffQueueCount - staffQueue.length} remaining)`}</button>}
               </>}
             </div>
-            <div className="staff-detail">{staffReport ? <>
+            <div className="staff-detail" key={staffReport?.id ?? 'none'}>{staffReport ? <>
+              <button className="staff-back-button" type="button" onClick={() => setStaffReportId(undefined)}><ArrowLeft size={14} /> Back to queue</button>
               <div className="staff-report-heading"><div><span className="report-id">{staffReport.id.slice(0, 8).toUpperCase()}</span><h3>{staffReport.title}</h3><span className="section-caption">{staffReport.category} · {staffReport.urgency} urgency · {formatCreatedAt(staffReport.createdAt)}</span><span className="reporter-line"><UserRound size={12} /> Reported by {staffReport.reporterName || 'Community resident'}</span></div><MapPin size={18} /></div>
               <p className="staff-description">{staffReport.description}</p>
               <p className="section-caption">Observed {staffReport.observedAt ? new Date(staffReport.observedAt).toLocaleString() : 'at submission'}</p>
@@ -2003,28 +2270,36 @@ function App() {
               <button className={`map-location-button ${nearbyOnly ? 'active' : ''}`} type="button" onClick={() => nearbyOnly ? setNearbyOnly(false) : requestLocation(true)} title={nearbyOnly ? 'Show all filtered reports' : 'Show reports near my current location'}><Crosshair size={15} /><span>{nearbyOnly ? 'All reports' : 'Nearby'}</span></button>
             </div>
             <div className="map-frame">
-              <MapContainer center={mapCenter as LatLngExpression} zoom={15} scrollWheelZoom className="leaflet-map">
-                <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-                <MapFocus report={selectedReport} center={mapCenter} />
+              <MapContainer center={mapCenter as LatLngExpression} zoom={13} scrollWheelZoom className="leaflet-map" {...districtMapProps} zoomSnap={0}>
+                              <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                              <DistrictBoundary rings={districtRings} />
+                              <MapFocus report={selectedReport} center={mapCenter} />
                 {heatmapEnabled && heatmapCells.map((cell) => {
                   const density = cell.count >= 6 ? 'high' : cell.count >= 3 ? 'moderate' : 'low'
                   const color = density === 'high' ? '#c94c3c' : density === 'moderate' ? '#df9638' : '#65a36e'
                   return <Circle key={cell.coordinates.join(',')} center={cell.coordinates} radius={cell.count >= 6 ? 190 : cell.count >= 3 ? 140 : 95} pathOptions={{ color, fillColor: color, fillOpacity: 0.22, opacity: 0.38, weight: 1 }} />
                 })}
                 <MarkerClusterGroup chunkedLoading spiderfyOnMaxZoom showCoverageOnHover={false}>
-                  {orderedReports.map((report) => (
+                  {orderedReports.filter((report) => isInsideDistrict(report.coordinates)).map((report) => (
                     <Marker
                       key={report.id}
                       position={approximateCoordinates(report.coordinates)}
                       icon={createReportMarker(report, selectedId === report.id)}
                       eventHandlers={{ click: () => setSelectedId(report.id) }}
                     >
-                      <Popup className="report-map-popup"><div><span>{report.category} · {report.status}</span><strong>{report.title}</strong><small className="popup-reporter"><UserRound size={12} />Reported by {report.reporterName || 'Community resident'}</small><small><MapPin size={12} />Approx. {approximateCoordinates(report.coordinates).map((coordinate) => coordinate.toFixed(3)).join(', ')}</small><p>{report.description}</p></div></Popup>
+                      {!mobileMap && <Popup className="report-map-popup"><div><span>{report.category} · {report.status}</span><strong>{report.title}</strong><small className="popup-reporter"><UserRound size={12} />Reported by {report.reporterName || 'Community resident'}</small><small><MapPin size={12} />Approx. {approximateCoordinates(report.coordinates).map((coordinate) => coordinate.toFixed(3)).join(', ')}</small><p>{report.description}</p></div></Popup>}
                     </Marker>
                   ))}
                 </MarkerClusterGroup>
                 {gpsLocation && <Circle center={gpsLocation} radius={55} pathOptions={{ color: '#3979bd', fillColor: '#4388cc', fillOpacity: 0.28, weight: 2 }} />}
               </MapContainer>
+              {mobileMap && selectedReport && <div className="map-sheet" role="dialog" aria-label="Selected report" key={selectedReport.id}>
+                <button className="icon-button map-sheet-close" type="button" onClick={() => setSelectedId(undefined)} aria-label="Close report preview"><X size={15} /></button>
+                <span className="map-sheet-meta">{selectedReport.category} · {selectedReport.status}</span>
+                <strong>{selectedReport.title}</strong>
+                <small><MapPin size={12} />Approx. {approximateCoordinates(selectedReport.coordinates).map((coordinate) => coordinate.toFixed(3)).join(', ')} · {formatCreatedAt(selectedReport.createdAt)}</small>
+                <p>{selectedReport.description}</p>
+              </div>}
               <div className="map-search-wrap">
                 <label className="map-search-box"><Search size={15} /><input value={mapSearchQuery} onChange={(event) => { setMapSearchQuery(event.target.value); setMapSearchMessage('') }} placeholder="Search a place or address" aria-label="Search the map by place or address" autoComplete="off" />{mapSearchBusy && <span className="search-spinner" aria-label="Searching places" />}{mapSearchQuery && <button type="button" onClick={() => { setMapSearchQuery(''); setMapSearchSuggestions([]); setMapSearchMessage('') }} aria-label="Clear map search"><X size={13} /></button>}</label>
                 {mapSearchSuggestions.length > 0 && <ul className="map-search-suggestions" role="listbox" aria-label="Map place suggestions">{mapSearchSuggestions.map((suggestion) => <li key={`${suggestion.label}-${suggestion.coordinates.join(',')}`}><button type="button" role="option" onClick={() => { setMapCenter(suggestion.coordinates); setMapSearchQuery(''); setMapSearchSuggestions([]); setMapSearchMessage(''); setNearbyOnly(false); setSelectedId(undefined) }}><MapPin size={14} /><span>{suggestion.label}<small>{suggestion.coordinates[0].toFixed(5)}, {suggestion.coordinates[1].toFixed(5)}</small></span></button></li>)}</ul>}
@@ -2033,9 +2308,10 @@ function App() {
               </div>
               <div className="map-actions">
                 <button className={`map-action-button ${heatmapEnabled ? 'active' : ''}`} type="button" aria-pressed={heatmapEnabled} onClick={() => setHeatmapEnabled((enabled) => !enabled)}><Flame size={14} />{heatmapEnabled ? 'Hide density' : 'Heatmap'}</button>
-              </div>
+                                <button className="map-action-button" type="button" onClick={() => requestLocation(false)} title="Center the map on my current location"><LocateFixed size={14} />My location</button>
+                              </div>
               <div className="map-label"><MapPin size={13} /> District 5, Quezon City</div>
-              <div className={`map-legend ${legendOpen ? 'is-open' : 'is-collapsed'}`}><button className="legend-toggle" type="button" aria-expanded={legendOpen} onClick={() => setLegendOpen((open) => !open)}><Layers size={13} />Legend<ChevronDown size={12} className="legend-chevron" /></button>{legendOpen && <div className="legend-body"><span className="legend-title">CATEGORY</span>{categoryOptions.map((category) => <span className="legend-item" key={category}><i style={{ backgroundColor: categoryColors[category] }} />{category}</span>)}<span className="legend-divider" /><span className="legend-title">STATUS DOT</span><span className="legend-item"><i className="status-dot status-submitted" />Submitted</span><span className="legend-item"><i className="status-dot status-under-review" />Under review</span><span className="legend-item"><i className="status-dot status-in-progress" />In progress</span><span className="legend-item"><i className="status-dot status-resolved" />Resolved</span><span className="legend-divider" /><span className="legend-title">REPORT DENSITY</span><span className="legend-item"><i className="density-low" />Low · 1–2</span><span className="legend-item"><i className="density-moderate" />Moderate · 3–5</span><span className="legend-item"><i className="density-high" />High · 6+</span></div>}</div>
+              <div className={`map-legend ${legendOpen ? 'is-open' : 'is-collapsed'}`}><button className="legend-toggle" type="button" aria-expanded={legendOpen} onClick={() => setLegendOpen((open) => !open)}><Layers size={13} />Legend<ChevronDown size={12} className="legend-chevron" /></button>{legendOpen && <div className="legend-body"><span className="legend-title">CATEGORY</span>{categoryOptions.map((category) => <button type="button" className={`legend-item legend-filter ${categoryFilter === category ? 'is-active' : ''}`} key={category} aria-pressed={categoryFilter === category} title={categoryFilter === category ? 'Show all categories' : `Show only ${category}`} onClick={() => setCategoryFilter(categoryFilter === category ? 'All categories' : category)}><i style={{ backgroundColor: categoryColors[category] }} />{category}</button>)}<span className="legend-divider" /><span className="legend-title">STATUS DOT</span><span className="legend-item"><i className="status-dot status-submitted" />Submitted</span><span className="legend-item"><i className="status-dot status-under-review" />Under review</span><span className="legend-item"><i className="status-dot status-in-progress" />In progress</span><span className="legend-item"><i className="status-dot status-resolved" />Resolved</span><span className="legend-divider" /><span className="legend-title">REPORT DENSITY</span><span className="legend-item"><i className="density-low" />Low · 1–2</span><span className="legend-item"><i className="density-moderate" />Moderate · 3–5</span><span className="legend-item"><i className="density-high" />High · 6+</span></div>}</div>
               {mapLocationError && <p className="map-search-feedback map-search-error map-location-error" role="status">{mapLocationError}</p>}
             </div>
             <div className="map-footnote"><MapPin size={13} /> Pins are approximate locations · Status dots match report progress <span>·</span> Select a pin for details</div>
@@ -2055,12 +2331,12 @@ function App() {
             </div>
             {selectedOwnReport && <div className="own-report-card"><span><strong>{selectedOwnReport.title}</strong><small>Your report · {selectedOwnReport.status}</small></span><button className="secondary-button" type="button" onClick={() => setFollowUpId(selectedOwnReport.id)}><MessageSquare size={14} /> Updates and replies</button></div>}
             {selectedOwnReport && session && ['Resolved', 'Closed'].includes(selectedOwnReport.status) && <section className="own-report-feedback"><div><strong>Was this issue fixed?</strong><small>Let the response team know if it is still happening.</small></div>{selectedOwnFeedback && <p className="workflow-hint">Your last response: {selectedOwnFeedback.feedback === 'fixed' ? 'You confirmed it was fixed.' : 'You said it still needs attention.'}</p>}<label className="field-label">Optional note<textarea rows={2} maxLength={500} value={feedbackNote} onChange={(event) => setFeedbackNote(event.target.value)} placeholder="Add a short update for the response team" /></label><div className="workflow-actions"><button className="primary-button" type="button" disabled={feedbackBusy} onClick={() => void submitResidentFeedback('fixed')}>{feedbackBusy ? 'Saving…' : 'It was fixed'}</button><button className="secondary-button" type="button" disabled={feedbackBusy} onClick={() => void submitResidentFeedback('still_there')}>Still needs attention</button></div></section>}
-            <div className="report-list">
-              {loadingReports ? <ReportListSkeleton /> : orderedReports.length === 0 ? <div className="empty-state"><Search size={21} /><strong>No matching reports</strong><span>Try changing a filter or search term.</span></div> : orderedReports.map((report) => {
+            <div className="report-list" ref={reportListRef}>
+              {loadingReports ? <ReportListSkeleton /> : orderedReports.length === 0 ? <div className="empty-state"><EmptyIllustration variant={isSupabaseConfigured && !isOnline ? 'offline' : 'search'} /><strong>{isSupabaseConfigured && !isOnline ? 'You are offline' : 'No matching reports'}</strong><span>{isSupabaseConfigured && !isOnline ? 'Reconnect to load the latest reports.' : 'Try changing a filter or search term.'}</span></div> : orderedReports.map((report) => {
                 const Icon = categoryIcon(report.category)
-                return <button type="button" className={`report-item ${selectedId === report.id ? 'is-selected' : ''}`} key={report.id} onClick={() => setSelectedId(report.id)}>
+                return <button type="button" data-flip-id={report.id} className={`report-item ${selectedId === report.id ? 'is-selected' : ''}`} key={report.id} onClick={() => setSelectedId(report.id)}>
                   <span className="report-category-icon" style={{ color: categoryColors[report.category], backgroundColor: `${categoryColors[report.category]}14` }}><Icon size={17} /></span>
-                  <span className="report-main"><span className="report-title">{report.title}</span><span className="report-meta"><MapPin size={12} />Approx. {approximateCoordinates(report.coordinates).map((coordinate) => coordinate.toFixed(3)).join(', ')}<span>·</span>{formatCreatedAt(report.createdAt)}</span><span className="report-tags"><span className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')}`}><i />{report.status}</span>{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></span>
+                  <span className="report-main"><span className="report-title">{report.title}</span><span className="report-meta"><MapPin size={12} />Approx. {approximateCoordinates(report.coordinates).map((coordinate) => coordinate.toFixed(3)).join(', ')}<span>·</span>{formatCreatedAt(report.createdAt)}</span><span className="report-tags"><span key={report.status} className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')} ${changedStatuses.has(report.id) ? 'pill-changed' : ''}`}><i />{report.status}</span>{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></span>
                   <span className="report-id">{formatReportId(report.id)}</span>
                 </button>
               })}
@@ -2071,6 +2347,11 @@ function App() {
 
         <footer className="page-footer"><span>GREENPULSE <i>·</i> COMMUNITY ENVIRONMENT MONITORING · DISTRICT 5</span>{!staffMode && <button type="button" onClick={startReport}><Plus size={14} /> Add a report</button>}</footer>
       </main>
+
+      <ToastViewport toasts={toasts} onDismiss={dismissToast} />
+      <CommandPalette open={paletteOpen} commands={paletteCommands} onClose={() => setPaletteOpen(false)} />
+      {celebrating && <SuccessBurst message="Report submitted. Thank you!" onDone={() => setCelebrating(false)} />}
+      <ViewLoader visible={viewTransition.loaderVisible} label={activeViewLabel} dark={theme === 'dark'} />
 
       {followUpReport && session && <ResidentReportModal report={followUpReport} userId={session.user.id} onClose={() => setFollowUpId(undefined)} onPosted={() => void deliverNotificationEmails(followUpReport.id, session.access_token)} />}
 
@@ -2112,8 +2393,9 @@ function App() {
 <label className="field-label">{t('barangay')}<select name="barangay" value={reportBarangay} onChange={(event) => setReportBarangay(event.target.value)} required><option value="">Select barangay</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay}>{barangay}</option>)}</select></label>
             <div className="location-picker-heading"><MapPin size={15} /><strong>{t('pinExactSpot')}</strong><span>{t('clickDragMap')}</span><button className="text-button" type="button" onClick={() => requestLocation()}><Crosshair size={14} /> {t('useMyLocation')}</button></div>
             <div className="report-location-map">
-              <MapContainer center={location as LatLngExpression} zoom={15} scrollWheelZoom className="leaflet-map">
+              <MapContainer center={location as LatLngExpression} zoom={15} scrollWheelZoom className="leaflet-map" {...districtMapProps}>
                 <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                <DistrictBoundary rings={districtRings} />
                 <LocationPickerFocus center={location} />
                 <LocationPickerEvents onSelect={selectMapLocation} />
                 <Marker
