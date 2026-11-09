@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { withAppCors } from '../server/app-cors'
 
 declare const process: { env: Record<string, string | undefined> }
 
@@ -18,7 +19,7 @@ async function isValidCronToken(request: Request, expected: string) {
   return difference === 0
 }
 
-export default async function handler(request: Request): Promise<Response> {
+async function handler(request: Request): Promise<Response> {
   if (!['GET', 'POST'].includes(request.method)) return jsonResponse({ error: 'Method not allowed.' }, 405)
   const supabaseUrl = process.env.VITE_SUPABASE_URL
   const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY
@@ -87,3 +88,5 @@ export default async function handler(request: Request): Promise<Response> {
   }
   return jsonResponse({ processed: (reports ?? []).length, stagesCreated, emailFailures, checkedAt: new Date(now).toISOString() })
 }
+
+export default withAppCors(handler)

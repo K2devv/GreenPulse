@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { withAppCors } from '../server/app-cors'
 
 declare const process: { env: Record<string, string | undefined> }
 
@@ -28,7 +29,7 @@ function getInviteRedirectUrl(request: Request) {
   }
 }
 
-export default async function handler(request: Request): Promise<Response> {
+async function handler(request: Request): Promise<Response> {
   if (request.method !== 'POST') return jsonResponse({ error: 'Method not allowed.' }, 405)
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL
@@ -106,3 +107,5 @@ export default async function handler(request: Request): Promise<Response> {
     return jsonResponse({ error: 'Responder invitations are temporarily unavailable.' }, 500)
   }
 }
+
+export default withAppCors(handler)

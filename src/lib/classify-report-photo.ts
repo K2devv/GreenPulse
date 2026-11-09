@@ -1,16 +1,14 @@
-export const reportCategories = ['Waste', 'Pollution', 'Flooding', 'Drainage'] as const
+import { apiUrl } from './api-url'
+import { isReportCategory, type ReportCategory } from './report-categories'
 
-export type ReportCategory = typeof reportCategories[number]
+export { isReportCategory, reportCategories } from './report-categories'
+export type { ReportCategory } from './report-categories'
 
 export const issueTypesByCategory: Record<ReportCategory, readonly string[]> = {
   Waste: ['Illegal dumping', 'Uncollected garbage', 'Overflowing trash bins', 'Improper waste segregation', 'Plastic waste', 'Hazardous waste', 'Other waste issue'],
   Pollution: ['Air pollution', 'Water pollution', 'Smoke', 'Foul odor', 'Chemical contamination', 'Noise pollution', 'Other pollution'],
   Flooding: ['Flooded road', 'Flooded residential area', 'Rising water', 'Drainage overflow', 'Flash flood', 'Other flooding issue'],
   Drainage: ['Clogged drainage', 'Damaged drainage', 'Blocked canal', 'Overflowing canal', 'Poor drainage', 'Other drainage issue'],
-}
-
-export function isReportCategory(value: unknown): value is ReportCategory {
-  return typeof value === 'string' && reportCategories.includes(value as ReportCategory)
 }
 
 export async function classifyReportPhoto(file: File, accessToken?: string): Promise<ReportCategory | undefined> {
@@ -31,7 +29,7 @@ export async function classifyReportPhoto(file: File, accessToken?: string): Pro
     const imageData = canvas.toDataURL('image/jpeg', 0.78).split(',')[1]
     if (!imageData) throw new Error('The photo could not be prepared for analysis.')
 
-    const response = await fetch('/api/classify-photo', {
+    const response = await fetch(apiUrl('/api/classify-photo'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

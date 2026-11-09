@@ -9,9 +9,6 @@ import '@fontsource/inter/latin-600.css'
 import '@fontsource/inter/latin-700.css'
 import '@fontsource/newsreader/latin-500-italic.css'
 import './styles.css'
-import './polish.css'
-import './motion.css'
-import './experience.css'
 import App from './App'
 
 const isProductionBuild = Boolean((import.meta as ImportMeta & { env?: { PROD?: boolean } }).env?.PROD)

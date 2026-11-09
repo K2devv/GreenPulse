@@ -5,6 +5,7 @@ import sendNotificationEmailsHandler from './api/send-notification-emails'
 import guestReportsHandler from './api/guest-reports'
 import confirmReportHandler from './api/confirm-report'
 import processEscalationsHandler from './api/process-escalations'
+import classifyPhotoHandler from './api/classify-photo'
 
 function responderApiPlugin(environment: Record<string, string | undefined>): Plugin {
   return {
@@ -14,7 +15,7 @@ function responderApiPlugin(environment: Record<string, string | undefined>): Pl
         process?: { env: Record<string, string | undefined> }
       }).process
       if (runtimeProcess) {
-        for (const key of ['VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'VITE_APP_URL', 'RESEND_API_KEY', 'NOTIFICATION_FROM_EMAIL']) {
+        for (const key of ['VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'VITE_APP_URL', 'RESEND_API_KEY', 'NOTIFICATION_FROM_EMAIL', 'GUEST_TRACKING_SECRET', 'GEMINI_API_KEY', 'CRON_SECRET']) {
           if (environment[key]) runtimeProcess.env[key] = environment[key]
         }
       }
@@ -27,6 +28,7 @@ function responderApiPlugin(environment: Record<string, string | undefined>): Pl
           ['/api/guest-reports', guestReportsHandler],
           ['/api/confirm-report', confirmReportHandler],
           ['/api/process-escalations', processEscalationsHandler],
+          ['/api/classify-photo', classifyPhotoHandler],
         ])
         const apiHandler = handlers.get(requestUrl.pathname)
         if (!apiHandler) {

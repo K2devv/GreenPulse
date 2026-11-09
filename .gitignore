@@ -1,8 +1,11 @@
 node_modules/
 dist/
+out/
+out/make-results/
 .vercel/
 .env*
 !.env.example
+!.env.mobile.example
 *.tsbuildinfo
 .vercel
 test-results/

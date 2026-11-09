@@ -1,11 +1,20 @@
 {
   "name": "greenpulse",
+  "productName": "GreenPulse",
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "main": "desktop/main.mjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "mobile:build": "node scripts/check-mobile-env.mjs && node node_modules/typescript/bin/tsc -b && node node_modules/vite/bin/vite.js build --mode mobile",
+    "mobile:assets": "capacitor-assets generate --ios --android --iconBackgroundColor '#39734f' --iconBackgroundColorDark '#39734f' --splashBackgroundColor '#f5f7f2' --splashBackgroundColorDark '#161d18'",
+    "mobile:sync": "npm run mobile:build && node node_modules/@capacitor/cli/bin/capacitor sync",
+    "mobile:android": "node node_modules/@capacitor/cli/bin/capacitor open android",
+    "mobile:ios": "node node_modules/@capacitor/cli/bin/capacitor open ios",
+    "desktop:dev": "electron .",
+    "desktop:make": "electron-forge make",
     "test": "vitest run --pool=forks",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
@@ -13,6 +22,10 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
+    "@capacitor/geolocation": "^8.2.4",
+    "@capacitor/ios": "^8.6.0",
     "@fontsource/inter": "^5.3.0",
     "@fontsource/newsreader": "^5.3.0",
     "@supabase/supabase-js": "^2.57.4",
@@ -26,10 +39,17 @@
     "vite": "^6.0.0"
   },
   "devDependencies": {
+    "@capacitor/assets": "^4.0.0",
+    "@capacitor/cli": "^8.6.0",
+    "@electron-forge/cli": "^8.0.1",
+    "@electron-forge/maker-dmg": "^8.0.1",
+    "@electron-forge/maker-squirrel": "^8.0.1",
+    "@electron-forge/maker-zip": "^8.0.1",
     "@playwright/test": "^1.64.1",
     "@types/leaflet": "^1.9.16",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "electron": "^45.2.3",
     "typescript": "~5.7.2",
     "vitest": "^5.0.2"
   }

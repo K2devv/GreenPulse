@@ -1,8 +1,9 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { Check, Copy, LoaderCircle, X } from 'lucide-react'
+import { apiUrl } from './lib/api-url'
 
 type GuestReportState = {
-  report: { id: string; title: string; status: string; resolution_note: string | null; resolved_at: string | null; updated_at: string }
+  report: { id: string; title: string; status: string; outcome: string | null; resolved_at: string | null; updated_at: string }
   events: Array<{ id: number; event_type: string; message: string; created_at: string }>
   feedback: { feedback: 'fixed' | 'still_there'; message: string | null; updated_at: string } | null
 }
@@ -30,7 +31,7 @@ export function GuestReportTracking({ initialToken, emailSent = false, onClose }
     setBusy(true)
     setError('')
     try {
-      const response = await fetch('/api/guest-reports', {
+      const response = await fetch(apiUrl('/api/guest-reports'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action, trackingCode: token, feedback, message: note }),
@@ -81,7 +82,7 @@ export function GuestReportTracking({ initialToken, emailSent = false, onClose }
       {!initialToken && <form className="guest-track-form" onSubmit={track}><label className="field-label">Tracking code<input value={token} onChange={(event) => setToken(event.target.value.replace(/[^a-f0-9-]/gi, '').slice(0, 53))} autoComplete="off" placeholder="Paste the code from your submission" required /></label><button className="primary-button" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={15} /> : null} Track report</button></form>}
       {busy && !reportState && <p className="workflow-hint">Looking up your report…</p>}
       {reportState && <div className="guest-report-result"><div className="guest-report-status"><div><small>{reportState.report.id.slice(0, 8).toUpperCase()}</small><strong>{reportState.report.title}</strong></div><span className={`status-pill status-${reportState.report.status.toLowerCase().replace(/ /g, '-')}`}><i />{reportState.report.status}</span></div>
-        {reportState.report.resolution_note && <p className="workflow-note-text"><strong>Response notes</strong>{reportState.report.resolution_note}</p>}
+        {reportState.report.outcome && <p className="workflow-note-text"><strong>Update</strong>{reportState.report.outcome}</p>}
         {['Resolved', 'Closed'].includes(reportState.report.status) && <section className="guest-feedback"><h3>Was the issue fixed?</h3><p>Let the response team know if it is still happening.</p><label className="field-label">Optional note<textarea rows={2} maxLength={500} value={message} onChange={(event) => setMessage(event.target.value)} placeholder="Add a short update for the response team" /></label>{reportState.feedback && <small className="workflow-hint">Last response: {reportState.feedback.feedback === 'fixed' ? 'You confirmed it was fixed.' : 'You said it is still happening.'}</small>}<div className="workflow-actions"><button className="primary-button" type="button" disabled={busy} onClick={() => void sendFeedback('fixed')}>{busy ? 'Saving…' : 'It was fixed'}</button><button className="secondary-button" type="button" disabled={busy} onClick={() => void sendFeedback('still_there')}>Still needs attention</button></div></section>}
         <div className="guest-history"><h3>Report history</h3>{reportState.events.length ? <ol>{reportState.events.map((event) => <li key={event.id}><small>{new Date(event.created_at).toLocaleString()}</small><span>{event.message}</span></li>)}</ol> : <p>No updates yet.</p>}</div>
       </div>}

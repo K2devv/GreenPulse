@@ -1,5 +1,9 @@
 import { createClient } from '@supabase/supabase-js'
 import { DISTRICT_5_BARANGAYS } from '../src/lib/report-filters'
+import { publicGuestEvents, publicGuestOutcome } from '../src/lib/guest-tracking'
+import { claimRateLimit, hashRateLimitSubject, rateLimitAddress } from '../server/request-safety'
+import { withAppCors } from '../server/app-cors'
+import { normalizePhoneNumber } from '../src/lib/phone-number'
 
 declare const process: { env: Record<string, string | undefined> }
 
@@ -30,14 +34,6 @@ async function stableGuestCode(submissionId: string, secret: string) {
   return Array.from(new Uint8Array(signature).slice(0, 24), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
-async function ipHash(request: Request, secret: string) {
-  const forwarded = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-  const address = request.headers.get('x-real-ip')?.trim() || forwarded || 'local-development'
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
-  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(address))
-  return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
 function cleanCode(value: unknown) {
   return typeof value === 'string' ? value.toLowerCase().replace(/[^a-f0-9]/g, '') : ''
 }
@@ -64,11 +60,16 @@ async function sendConfirmationEmail(email: string, code: string, title: string)
   return delivery.ok
 }
 
-export default async function handler(request: Request): Promise<Response> {
+async function handler(request: Request): Promise<Response> {
   if (request.method !== 'POST') return jsonResponse({ error: 'Method not allowed.' }, 405)
   const supabaseUrl = process.env.VITE_SUPABASE_URL
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-  if (!supabaseUrl || !serviceRoleKey) return jsonResponse({ error: 'Guest reporting is not configured on the server.' }, 503)
+  const trackingSecret = process.env.GUEST_TRACKING_SECRET
+  if (!supabaseUrl || !serviceRoleKey || !trackingSecret || trackingSecret.length < 32) {
+    return jsonResponse({ error: 'Guest reporting is not configured on the server.' }, 503)
+  }
+  const address = rateLimitAddress(request)
+  if (!address) return jsonResponse({ error: 'Guest reporting is temporarily unavailable.' }, 503)
 
   const contentLength = Number(request.headers.get('content-length') ?? 0)
   if (contentLength > 3_800_000) return jsonResponse({ error: 'The request is too large. Guest report photos must be 2.5 MB or smaller.' }, 413)
@@ -89,6 +90,18 @@ export default async function handler(request: Request): Promise<Response> {
     const code = cleanCode(payload.trackingCode)
     if (!/^[a-f0-9]{48}$/.test(code)) return jsonResponse({ error: 'Enter the 48-character tracking code from your submission.' }, 400)
     const tokenHash = await sha256(code)
+    if (action === 'track') {
+      const trackLimit = await claimRateLimit(admin, `ip:${address}`, trackingSecret, 'guest_tracking', 60, 3600)
+      if (trackLimit.error) return jsonResponse({ error: 'Report tracking is temporarily unavailable.' }, 503)
+      if (!trackLimit.allowed) return jsonResponse({ error: 'Too many tracking requests. Please try again later.' }, 429)
+    } else {
+      const [ipLimit, codeLimit] = await Promise.all([
+        claimRateLimit(admin, `ip:${address}`, trackingSecret, 'guest_feedback_ip', 10, 3600),
+        claimRateLimit(admin, `code:${tokenHash}`, trackingSecret, 'guest_feedback', 5, 3600),
+      ])
+      if (ipLimit.error || codeLimit.error) return jsonResponse({ error: 'Report tracking is temporarily unavailable.' }, 503)
+      if (!ipLimit.allowed || !codeLimit.allowed) return jsonResponse({ error: 'Too many follow-up responses. Please try again later.' }, 429)
+    }
     const { data: access, error: accessError } = await admin.from('guest_report_access').select('report_id').eq('access_token_hash', tokenHash).maybeSingle()
     if (accessError) return jsonResponse({ error: 'Report tracking is temporarily unavailable.' }, 500)
     if (!access) return jsonResponse({ error: 'No report was found for that code.' }, 404)
@@ -105,12 +118,16 @@ export default async function handler(request: Request): Promise<Response> {
     }
 
     const [{ data: report, error: reportError }, { data: events, error: eventsError }, { data: feedback, error: feedbackError }] = await Promise.all([
-      admin.from('reports').select('id, title, status, resolution_note, resolved_at, updated_at').eq('id', access.report_id).maybeSingle(),
+      admin.from('reports').select('id, title, status, resolved_at, updated_at').eq('id', access.report_id).maybeSingle(),
       admin.from('report_events').select('id, event_type, message, created_at').eq('report_id', access.report_id).order('created_at', { ascending: true }),
       admin.from('report_resolution_feedback').select('feedback, message, updated_at').eq('report_id', access.report_id).maybeSingle(),
     ])
     if (reportError || eventsError || feedbackError || !report) return jsonResponse({ error: 'Report tracking is temporarily unavailable.' }, 500)
-    return jsonResponse({ report, events: events ?? [], feedback: feedback ?? null })
+    return jsonResponse({
+      report: { ...report, outcome: publicGuestOutcome(report.status) },
+      events: publicGuestEvents(events ?? []),
+      feedback: feedback ?? null,
+    })
   }
 
   if (action !== 'submit') return jsonResponse({ error: 'Unknown request.' }, 400)
@@ -132,6 +149,9 @@ export default async function handler(request: Request): Promise<Response> {
   const latitude = Number(payload.latitude)
   const longitude = Number(payload.longitude)
   const email = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : ''
+  const phoneInput = typeof payload.phone === 'string' ? payload.phone.trim() : ''
+  const phone = phoneInput ? normalizePhoneNumber(phoneInput) : undefined
+  if (!email && !phoneInput) return jsonResponse({ error: 'Enter an email address or phone number so staff can follow up.' }, 400)
   if (payload.consentGiven !== true) return jsonResponse({ error: 'Review and accept the report visibility notice before submitting.' }, 400)
   if (title.length < 3 || title.length > 90 || issueType.length < 1 || issueType.length > 80 || description.length < 8 || description.length > 500 || additionalInfo.length > 2_000 || locationLabel.length < 1 || locationLabel.length > 200) {
     return jsonResponse({ error: 'Check the title, issue type, description, and location fields.' }, 400)
@@ -150,10 +170,11 @@ export default async function handler(request: Request): Promise<Response> {
   if (typeof boundaryBarangay === 'string') barangay = boundaryBarangay
   if (barangay && !DISTRICT_5_BARANGAYS.includes(barangay as (typeof DISTRICT_5_BARANGAYS)[number])) return jsonResponse({ error: 'Choose a listed District 5 barangay.' }, 400)
   if (email && !validEmail(email)) return jsonResponse({ error: 'Enter a valid email address or leave it blank.' }, 400)
+  if (phoneInput && !phone) return jsonResponse({ error: 'Enter a valid mobile number, such as 09XXXXXXXXX or +639XXXXXXXXX.' }, 400)
 
   const submissionId = typeof payload.submissionId === 'string' ? payload.submissionId.toLowerCase() : ''
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(submissionId)) return jsonResponse({ error: 'A valid submission identifier is required. Reopen the saved draft and try again.' }, 400)
-  const code = await stableGuestCode(submissionId, process.env.GUEST_TRACKING_SECRET || serviceRoleKey)
+  const code = await stableGuestCode(submissionId, trackingSecret)
   const tokenHash = await sha256(code)
   const { data: existingAccess, error: existingError } = await admin.from('guest_report_access')
     .select('report_id, access_token_hash').eq('client_submission_id', submissionId).maybeSingle()
@@ -171,6 +192,7 @@ export default async function handler(request: Request): Promise<Response> {
       client_submission_id: submissionId,
       access_token_hash: tokenHash,
       contact_email: email || null,
+      contact_phone: phone ?? null,
     })
     if (repairError && repairError.code !== '23505') return jsonResponse({ error: 'The submitted report exists but its tracking access could not be restored. Retry shortly.' }, 503)
     return jsonResponse({ reportId: existingReport.id, trackingCode: code, emailSent: false, alreadySubmitted: true })
@@ -196,7 +218,7 @@ export default async function handler(request: Request): Promise<Response> {
     photos.push({ path: `guest/${reportId}/${crypto.randomUUID()}.${allowedPhotoTypes[match[1]]}`, bytes, mime: match[1] })
   }
 
-  const ip = await ipHash(request, serviceRoleKey)
+  const ip = await hashRateLimitSubject(`ip:${address}`, trackingSecret)
   const { data: allowed, error: limitError } = await admin.rpc('claim_guest_report_slot', { p_ip_hash: ip })
   if (limitError) return jsonResponse({ error: 'Guest reporting is temporarily unavailable.' }, 500)
   if (!allowed) return jsonResponse({ error: 'Too many guest reports from this connection. Please try again later or sign in.' }, 429)
@@ -235,7 +257,7 @@ export default async function handler(request: Request): Promise<Response> {
     return jsonResponse({ error: 'The report could not be saved. Please try again.' }, 500)
   }
 
-  const { error: accessError } = await admin.from('guest_report_access').insert({ report_id: reportId, client_submission_id: submissionId, access_token_hash: tokenHash, contact_email: email || null })
+  const { error: accessError } = await admin.from('guest_report_access').insert({ report_id: reportId, client_submission_id: submissionId, access_token_hash: tokenHash, contact_email: email || null, contact_phone: phone ?? null })
   if (accessError) {
     await admin.from('reports').delete().eq('id', reportId)
     if (uploadedPhotoPaths.length) await admin.storage.from('report-photos').remove(uploadedPhotoPaths)
@@ -247,3 +269,5 @@ export default async function handler(request: Request): Promise<Response> {
   if (emailSent) await admin.from('guest_report_access').update({ last_email_notification_at: new Date().toISOString() }).eq('report_id', reportId)
   return jsonResponse({ reportId, trackingCode: code, emailSent }, 201)
 }
+
+export default withAppCors(handler)

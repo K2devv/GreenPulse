@@ -1,4 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
+import { claimRateLimit, hashRateLimitSubject, rateLimitAddress } from '../server/request-safety'
+import { withAppCors } from '../server/app-cors'
 
 declare const process: { env: Record<string, string | undefined> }
 
@@ -11,15 +13,7 @@ function jsonResponse(body: Record<string, unknown>, status = 200) {
   })
 }
 
-async function ipHash(request: Request, secret: string, scope = '') {
-  const forwarded = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
-  const address = request.headers.get('x-real-ip')?.trim() || forwarded || 'local-development'
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
-  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(scope ? `${address}:${scope}` : address))
-  return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
-export default async function handler(request: Request): Promise<Response> {
+async function handler(request: Request): Promise<Response> {
   if (request.method !== 'POST') return jsonResponse({ error: 'Method not allowed.' }, 405)
   const supabaseUrl = process.env.VITE_SUPABASE_URL
   const anonKey = process.env.VITE_SUPABASE_ANON_KEY
@@ -43,11 +37,15 @@ export default async function handler(request: Request): Promise<Response> {
     if (error || !user) return jsonResponse({ error: 'Your session expired. Sign in again.' }, 401)
     reporterId = user.id
   } else {
-    guestIpHash = await ipHash(request, serviceRoleKey)
-    const { data: allowed, error } = await admin.rpc('claim_guest_report_slot', { p_ip_hash: guestIpHash })
-    if (error) return jsonResponse({ error: 'Report confirmation is temporarily unavailable.' }, 500)
-    if (!allowed) return jsonResponse({ error: 'Too many recent submissions or confirmations. Please try again later.' }, 429)
-    guestIpHash = await ipHash(request, serviceRoleKey, reportId)
+    const address = rateLimitAddress(request)
+    if (!address) return jsonResponse({ error: 'Report confirmation is temporarily unavailable.' }, 503)
+    const [hourLimit, dayLimit] = await Promise.all([
+      claimRateLimit(admin, `ip:${address}`, serviceRoleKey, 'guest_confirmation_hour', 10, 3600),
+      claimRateLimit(admin, `ip:${address}`, serviceRoleKey, 'guest_confirmation_day', 20, 86400),
+    ])
+    if (hourLimit.error || dayLimit.error) return jsonResponse({ error: 'Report confirmation is temporarily unavailable.' }, 503)
+    if (!hourLimit.allowed || !dayLimit.allowed) return jsonResponse({ error: 'Too many recent confirmations. Please try again later.' }, 429)
+    guestIpHash = await hashRateLimitSubject(`ip:${address}:report:${reportId}`, serviceRoleKey)
   }
 
   const { data: report, error: reportError } = await admin.from('reports').select('id, status').eq('id', reportId).maybeSingle()
@@ -59,3 +57,5 @@ export default async function handler(request: Request): Promise<Response> {
   if (insertError) return jsonResponse({ error: 'Your confirmation could not be saved.' }, 500)
   return jsonResponse({ confirmed: true })
 }
+
+export default withAppCors(handler)

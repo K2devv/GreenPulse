@@ -1,0 +1,24 @@
+name: Deadline checks
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+jobs:
+  escalations:
+    if: vars.GREENPULSE_APP_URL != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check response deadlines
+        env:
+          APP_URL: ${{ vars.GREENPULSE_APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_SECRET" ]; then
+            echo "Set the CRON_SECRET secret. It must match the server CRON_SECRET."
+            exit 1
+          fi
+          curl --fail-with-body --silent --show-error --request POST "$APP_URL/api/process-escalations" \
+            --header "Authorization: Bearer $CRON_SECRET" \
+            --header "Content-Type: application/json"

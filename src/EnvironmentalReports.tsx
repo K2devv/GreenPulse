@@ -54,7 +54,7 @@ export function EnvironmentalReports({ reports }: { reports: readonly SummaryRep
 
   const exportName = `greenpulse-${focus}-${localDateInput(new Date())}`
 
-  return <section className="env-reports" id="admin-summary" aria-label="Environmental reports">
+  return <section className="env-reports" id="admin-summary" role="tabpanel" aria-labelledby="admin-summary-tab">
     <div className="analytics-heading">
       <div><p className="eyebrow">ENVIRONMENTAL REPORTS</p><h2>Generate a summary report</h2></div>
       <div className="analytics-heading-actions">

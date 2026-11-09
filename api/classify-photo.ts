@@ -1,4 +1,9 @@
-import { isReportCategory, reportCategories } from '../src/lib/classify-report-photo'
+import { createClient } from '@supabase/supabase-js'
+import { isReportCategory, reportCategories } from '../src/lib/report-categories'
+import { claimRateLimit } from '../server/request-safety'
+import { withAppCors } from '../server/app-cors'
+
+declare const process: { env: Record<string, string | undefined> }
 
 export const config = { runtime: 'edge' }
 
@@ -12,7 +17,7 @@ function jsonResponse(body: Record<string, string>, status = 200) {
   })
 }
 
-export default async function handler(request: Request): Promise<Response> {
+async function handler(request: Request): Promise<Response> {
   if (request.method !== 'POST') return jsonResponse({ error: 'Method not allowed.' }, 405)
 
   const apiKey = process.env.GEMINI_API_KEY
@@ -20,14 +25,17 @@ export default async function handler(request: Request): Promise<Response> {
 
   const supabaseUrl = process.env.VITE_SUPABASE_URL
   const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   const accessToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '')
-  if (!supabaseUrl || !supabaseKey || !accessToken) return jsonResponse({ error: 'Sign in before requesting photo analysis.' }, 401)
+  if (!supabaseUrl || !supabaseKey || !serviceRoleKey || !accessToken) return jsonResponse({ error: 'Sign in before requesting photo analysis.' }, 401)
 
   try {
     const authResponse = await fetch(`${supabaseUrl.replace(/\/$/, '')}/auth/v1/user`, {
       headers: { apikey: supabaseKey, authorization: `Bearer ${accessToken}` },
     })
     if (!authResponse.ok) return jsonResponse({ error: 'Your session expired. Sign in again to analyze this photo.' }, 401)
+    const user = await authResponse.json() as { id?: unknown }
+    if (typeof user.id !== 'string') return jsonResponse({ error: 'Your session expired. Sign in again to analyze this photo.' }, 401)
 
     const payload = await request.json() as { mimeType?: unknown; imageData?: unknown }
     if (typeof payload.imageData !== 'string' || payload.imageData.length > maxImageDataLength || !/^[A-Za-z0-9+/]+={0,2}$/.test(payload.imageData)) {
@@ -36,6 +44,14 @@ export default async function handler(request: Request): Promise<Response> {
     if (typeof payload.mimeType !== 'string' || !allowedMimeTypes.has(payload.mimeType)) {
       return jsonResponse({ error: 'Use a JPEG, PNG, or WebP photo.' }, 400)
     }
+
+    const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { autoRefreshToken: false, persistSession: false } })
+    const [hourLimit, dayLimit] = await Promise.all([
+      claimRateLimit(admin, `user:${user.id}`, serviceRoleKey, 'classify_photo_hour', 12, 3600),
+      claimRateLimit(admin, `user:${user.id}`, serviceRoleKey, 'classify_photo_day', 40, 86400),
+    ])
+    if (hourLimit.error || dayLimit.error) return jsonResponse({ error: 'Photo analysis is temporarily unavailable. Please try again or choose a category manually.' }, 503)
+    if (!hourLimit.allowed || !dayLimit.allowed) return jsonResponse({ error: 'Photo analysis is limited for now. Please choose a category manually and try again later.' }, 429)
 
     const geminiResponse = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${encodeURIComponent(apiKey)}`, {
       method: 'POST',
@@ -78,3 +94,5 @@ export default async function handler(request: Request): Promise<Response> {
     return jsonResponse({ error: 'Photo analysis is temporarily unavailable. Please try again or choose a category manually.' }, 502)
   }
 }
+
+export default withAppCors(handler)

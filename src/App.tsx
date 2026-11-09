@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 import {
   AlertTriangle,
   ArrowDownUp,
@@ -11,6 +11,7 @@ import {
   CheckCheck,
   ChevronDown,
   Clock3,
+  FileSearch,
   ClipboardCheck,
   Crosshair,
   LocateFixed,
@@ -42,11 +43,15 @@ import MarkerClusterGroup from 'react-leaflet-cluster'
 import { Circle, MapContainer, Marker, Polygon, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet'
 import { divIcon, latLngBounds, type LatLngExpression } from 'leaflet'
 import type { Session } from '@supabase/supabase-js'
+import { Capacitor } from '@capacitor/core'
+import { Geolocation } from '@capacitor/geolocation'
 import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type EnvironmentalFollowUp, type NotificationRow, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
+import { apiUrl } from './lib/api-url'
+import { normalizePhoneNumber } from './lib/phone-number'
 import { StaffWorkflowPanel } from './StaffWorkflowPanel'
 import { AnimatedNumber, StatNumber } from './AnimatedNumber'
 import { AdminBarChart, AdminTrendChart, ChartEmpty, ChartSkeleton } from './AdminCharts'
-import { AdminSectionNav, type AdminSection } from './AdminSectionNav'
+import { AdminSectionNav, adminTabId, type AdminSection } from './AdminSectionNav'
 import { FilterChips } from './FilterChips'
 import { ToastViewport, toneForMessage, useToasts } from './Toaster'
 import { ViewLoader, useViewTransition } from './ViewLoader'
@@ -62,7 +67,7 @@ import { EmptyIllustration } from './EmptyIllustration'
 import { useFlip } from './useFlip'
 import { useStatusChanges } from './useStatusChanges'
 import { EnvironmentalReports } from './EnvironmentalReports'
-import { ReportConversation, ReportTimeline, ResidentReportModal } from './ReportCommunication'
+import { CommunityReportDiscussion, ReportConversation, ReportTimeline, ResidentReportModal } from './ReportCommunication'
 import { isOpenStatus } from './lib/report-workflow'
 import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, clearFilter, countActiveFilters, defaultReportFilters, describeActiveFilters, detectBarangay, formatReportId, loadSavedFilters, saveFilters, type ReportFilters } from './lib/report-filters'
 import { needsImmediateAttention } from './lib/report-escalation'
@@ -209,6 +214,10 @@ function createReportMarker(report: Report, selected: boolean) {
   })
 }
 
+function placeLabel(report: Pick<Report, 'barangay' | 'location'>) {
+  return report.barangay ? `Barangay ${report.barangay}` : report.location || 'District 5, Quezon City'
+}
+
 function approximateCoordinates([latitude, longitude]: [number, number]): [number, number] {
   return [Number(latitude.toFixed(3)), Number(longitude.toFixed(3))]
 }
@@ -281,7 +290,7 @@ function toLocalDateTimeInput(value: Date) {
 
 async function deliverNotificationEmails(reportId: string, accessToken: string) {
   try {
-    await fetch('/api/send-notification-emails', {
+    await fetch(apiUrl('/api/send-notification-emails'), {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ reportId }),
@@ -401,8 +410,14 @@ function App() {
   const [authMessageSuccess, setAuthMessageSuccess] = useState(false)
   const [authBusy, setAuthBusy] = useState(false)
   const [confirmationEmail, setConfirmationEmail] = useState('')
+  const [signupVerificationMethod, setSignupVerificationMethod] = useState<'email' | 'phone'>('email')
+  const [signInMethod, setSignInMethod] = useState<'password' | 'phone-otp'>('password')
+  const [phoneOtpPending, setPhoneOtpPending] = useState(false)
+  const [phoneOtpNumber, setPhoneOtpNumber] = useState('')
+  const [phoneOtpPurpose, setPhoneOtpPurpose] = useState<'sign-in' | 'sign-up' | null>(null)
   const [staffMode, setStaffMode] = useState(false)
   const [staffDashboardOpen, setStaffDashboardOpen] = useState(true)
+  const [adminSection, setAdminSection] = useState(ADMIN_SECTIONS[0].id)
   const [staffFilters, setStaffFilters] = useState<ReportFilters>(defaultReportFilters)
   const [staffFiltersOpen, setStaffFiltersOpen] = useState(false)
   const [staffQueue, setStaffQueue] = useState<Report[]>([])
@@ -413,6 +428,10 @@ function App() {
   const [teamModalOpen, setTeamModalOpen] = useState(false)
   const [teamMessage, setTeamMessage] = useState('')
   const [teamBusy, setTeamBusy] = useState(false)
+  const [responderModalOpen, setResponderModalOpen] = useState(false)
+  const [responderBusy, setResponderBusy] = useState(false)
+  const [responderMessage, setResponderMessage] = useState('')
+  const [staffUsersRefreshToken, setStaffUsersRefreshToken] = useState(0)
   const [reportBarangay, setReportBarangay] = useState('')
   const [reportCategory, setReportCategory] = useState<Category>('Waste')
   const [staffUsers, setStaffUsers] = useState<Profile[]>([])
@@ -448,6 +467,7 @@ function App() {
   const [statusFilter, setStatusFilter] = useState('All statuses')
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState<string>()
+  const [communityDiscussionId, setCommunityDiscussionId] = useState<string>()
   const [newestFirst, setNewestFirst] = useState(true)
   const [mapSearchQuery, setMapSearchQuery] = useState('')
   const [mapSearchSuggestions, setMapSearchSuggestions] = useState<LocationSuggestion[]>([])
@@ -831,7 +851,7 @@ function App() {
     supabase.from('profiles').select('id, display_name, avatar_path, role').in('role', ['responder', 'admin']).then(({ data }) => {
       setStaffUsers((data ?? []) as Profile[])
     })
-  }, [profile?.role])
+  }, [profile?.role, staffUsersRefreshToken])
 
   async function loadTeams() {
     if (!supabase) return
@@ -1097,9 +1117,12 @@ function App() {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
+  const markTourSeen = useCallback(() => {
+    try { localStorage.setItem('greenpulse-tour-seen', '1') } catch { /* the tour simply shows again next visit */ }
+  }, [])
   function dismissTour() {
     setTourOpen(false)
-    try { localStorage.setItem('greenpulse-tour-seen', '1') } catch { /* the tour simply shows again next visit */ }
+    markTourSeen()
   }
   const nearbySuggestions = useMemo(() => {
     if (!reporting || !locationConfirmed || !supabase) return []
@@ -1117,6 +1140,7 @@ function App() {
     && item.source_report_ids.filter((id) => hotspot.reportIds.includes(id)).length >= 2)), [environmentalFollowups, recurringHotspots])
 
   const selectedReport = mapReports.find((report) => report.id === selectedId)
+  const communityDiscussionReport = mapReports.find((report) => report.id === communityDiscussionId)
   const staffReport = reports.find((report) => report.id === staffReportId) ?? staffQueue.find((report) => report.id === staffReportId)
   const followUpReport = reports.find((report) => report.id === followUpId)
   const selectedOwnReport = selectedReport && session && selectedReport.reporterId === session.user.id ? selectedReport : undefined
@@ -1132,43 +1156,98 @@ function App() {
     .sort((first, second) => new Date(second.created_at).getTime() - new Date(first.created_at).getTime())
   const unreadNotificationCount = inboxNotifications.filter((notification) => !notification.read_at).length
 
+  function resetPhoneOtp() {
+    setPhoneOtpPending(false)
+    setPhoneOtpNumber('')
+    setPhoneOtpPurpose(null)
+  }
+
+  function openAuthModal(mode: 'sign-in' | 'sign-up') {
+    resetPhoneOtp()
+    setSignupVerificationMethod('email')
+    setSignInMethod('password')
+    setAuthModal(mode)
+    setAuthMessage('')
+    setAuthMessageSuccess(false)
+    setConfirmationEmail('')
+  }
+
+  function closeAuthModal() {
+    setAuthModal(null)
+    setConfirmationEmail('')
+    resetPhoneOtp()
+  }
+
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!supabase) return
+    if (!supabase || !authModal) return
+    const mode = authModal
     const formData = new FormData(event.currentTarget)
-    const email = String(formData.get('email') ?? '').trim()
-    const password = String(formData.get('password') ?? '')
     setAuthMessage('')
     setAuthMessageSuccess(false)
     setBackendError('')
     setAuthBusy(true)
-    const result = authModal === 'sign-up'
-      ? await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          emailRedirectTo: getAuthRedirectUrl(),
-          data: { display_name: String(formData.get('display_name') ?? '').trim() },
-        },
-      })
-      : await supabase.auth.signInWithPassword({ email, password })
-    setAuthBusy(false)
-    if (result.error) {
-      const message = result.error.message
+    try {
+      if (phoneOtpPending) {
+        const token = String(formData.get('phone_otp') ?? '').trim()
+        if (!token) throw new Error('Enter the code sent to your phone.')
+        const { error } = await supabase.auth.verifyOtp({ phone: phoneOtpNumber, token, type: 'sms' })
+        if (error) throw error
+        closeAuthModal()
+        setAuthMessage('')
+        return
+      }
+
+      if ((mode === 'sign-up' && signupVerificationMethod === 'phone') || (mode === 'sign-in' && signInMethod === 'phone-otp')) {
+        const enteredPhone = String(formData.get('phone') ?? '').trim()
+        const phone = normalizePhoneNumber(enteredPhone)
+        if (!phone) throw new Error('Enter a valid mobile number, such as 09XXXXXXXXX or +639XXXXXXXXX.')
+        const displayName = String(formData.get('display_name') ?? '').trim()
+        const { error } = await supabase.auth.signInWithOtp({
+          phone,
+          options: {
+            shouldCreateUser: mode === 'sign-up',
+            ...(mode === 'sign-up' ? { data: { display_name: displayName } } : {}),
+          },
+        })
+        if (error) throw error
+        setPhoneOtpNumber(phone)
+        setPhoneOtpPurpose(mode)
+        setPhoneOtpPending(true)
+        setAuthMessage(`A verification code was sent to ${phone}.`)
+        setAuthMessageSuccess(true)
+        return
+      }
+
+      const email = String(formData.get('email') ?? '').trim()
+      const password = String(formData.get('password') ?? '')
+      const result = mode === 'sign-up'
+        ? await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            emailRedirectTo: getAuthRedirectUrl(),
+            data: { display_name: String(formData.get('display_name') ?? '').trim() },
+          },
+        })
+        : await supabase.auth.signInWithPassword({ email, password })
+      if (result.error) throw result.error
+      if (mode === 'sign-up' && !result.data.session) {
+        setConfirmationEmail(email)
+        setAuthMessage('Confirmation requested. Check your inbox and spam folder, then follow the link to return here.')
+        setAuthMessageSuccess(true)
+        return
+      }
+      closeAuthModal()
+      setAuthMessage('')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Authentication could not be completed. Please try again.'
       setAuthMessage(/rate limit/i.test(message)
-        ? 'Supabase has temporarily limited confirmation emails. Wait before retrying, or configure custom SMTP in Supabase Auth.'
+        ? 'Supabase has temporarily limited verification messages. Wait before retrying, or check the email and SMS provider settings in Supabase Auth.'
         : message)
-      return
+    } finally {
+      setAuthBusy(false)
     }
-    if (authModal === 'sign-up' && !result.data.session) {
-      setConfirmationEmail(email)
-      setAuthMessage('Confirmation requested. Check your inbox and spam folder, then follow the link to return here.')
-      setAuthMessageSuccess(true)
-      return
-    }
-    setAuthModal(null)
-    setAuthMessage('')
-    setConfirmationEmail('')
   }
 
   async function resendConfirmation() {
@@ -1186,6 +1265,28 @@ function App() {
       ? (/rate limit/i.test(error.message) ? 'The email limit is still active. Please wait before requesting another confirmation.' : error.message)
       : 'A new confirmation email has been requested.')
     setAuthMessageSuccess(!error)
+  }
+
+  async function resendPhoneOtp() {
+    if (!supabase || !phoneOtpNumber || !phoneOtpPurpose) return
+    setAuthBusy(true)
+    setAuthMessage('')
+    setAuthMessageSuccess(false)
+    try {
+      if (phoneOtpPurpose === 'sign-up') {
+        const { error } = await supabase.auth.resend({ type: 'sms', phone: phoneOtpNumber })
+        if (error) throw error
+      } else {
+        const { error } = await supabase.auth.signInWithOtp({ phone: phoneOtpNumber, options: { shouldCreateUser: false } })
+        if (error) throw error
+      }
+      setAuthMessage(`A new code was sent to ${phoneOtpNumber}.`)
+      setAuthMessageSuccess(true)
+    } catch (error) {
+      setAuthMessage(error instanceof Error ? error.message : 'A new code could not be sent.')
+    } finally {
+      setAuthBusy(false)
+    }
   }
 
   function handleProfileAvatar(file?: File) {
@@ -1271,7 +1372,7 @@ function App() {
     setFormError('')
     setFormNotice('')
     try {
-      const response = await fetch('/api/confirm-report', {
+      const response = await fetch(apiUrl('/api/confirm-report'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
         body: JSON.stringify({ reportId: report.id }),
@@ -1438,6 +1539,51 @@ function App() {
   }
 
   function requestLocation(showNearby = false) {
+    const handleLocationError = () => {
+      const message = 'Location was not shared. You can still select a point on the map.'
+      setMapLocationError(message)
+      if (reporting) setFormError(message)
+    }
+
+    const handlePosition = (coords: { latitude: number; longitude: number }) => {
+      const currentLocation: [number, number] = [coords.latitude, coords.longitude]
+      if (!isInsideDistrict(currentLocation)) {
+        setMapLocationError(outsideDistrictMessage)
+        if (reporting) setFormError(outsideDistrictMessage)
+        return
+      }
+      setGpsLocation(currentLocation)
+      setLocation(currentLocation)
+      setMapCenter(currentLocation)
+      setLocationQuery('Current location')
+      setLocationConfirmed(true)
+      setLocationSuggestions([])
+      setLocationSearchMessage('')
+      setMapLocationError('')
+      if (showNearby) setNearbyOnly(true)
+      setSelectedId(undefined)
+      setFormError('')
+      const request = ++geocodeRequest.current
+      void reverseGeocode(currentLocation).then((label) => {
+        if (request === geocodeRequest.current) {
+          setLocationQuery(label)
+          setReportBarangay((current) => detectBarangay(label) ?? current)
+        }
+      }).catch((error: unknown) => {
+        if (request === geocodeRequest.current) {
+          const message = error instanceof Error ? error.message : 'Address lookup is temporarily unavailable.'
+          setLocationSearchMessage(`${message} Coordinates are still selected.`)
+        }
+      })
+    }
+
+    if (Capacitor.isNativePlatform()) {
+      void Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 10000 })
+        .then(({ coords }) => handlePosition(coords))
+        .catch(handleLocationError)
+      return
+    }
+
     if (!navigator.geolocation) {
       const message = 'Location access is not available in this browser.'
       setMapLocationError(message)
@@ -1445,42 +1591,8 @@ function App() {
       return
     }
     navigator.geolocation.getCurrentPosition(
-      ({ coords }) => {
-        const currentLocation: [number, number] = [coords.latitude, coords.longitude]
-        if (!isInsideDistrict(currentLocation)) {
-          setMapLocationError(outsideDistrictMessage)
-          if (reporting) setFormError(outsideDistrictMessage)
-          return
-        }
-        setGpsLocation(currentLocation)
-        setLocation(currentLocation)
-        setMapCenter(currentLocation)
-        setLocationQuery('Current location')
-        setLocationConfirmed(true)
-        setLocationSuggestions([])
-        setLocationSearchMessage('')
-        setMapLocationError('')
-        if (showNearby) setNearbyOnly(true)
-        setSelectedId(undefined)
-        setFormError('')
-        const request = ++geocodeRequest.current
-        void reverseGeocode(currentLocation).then((label) => {
-          if (request === geocodeRequest.current) {
-            setLocationQuery(label)
-            setReportBarangay((current) => detectBarangay(label) ?? current)
-          }
-        }).catch((error: unknown) => {
-          if (request === geocodeRequest.current) {
-            const message = error instanceof Error ? error.message : 'Address lookup is temporarily unavailable.'
-            setLocationSearchMessage(`${message} Coordinates are still selected.`)
-          }
-        })
-      },
-      () => {
-        const message = 'Location was not shared. You can still select a point on the map.'
-        setMapLocationError(message)
-        if (reporting) setFormError(message)
-      },
+      ({ coords }) => handlePosition(coords),
+      handleLocationError,
       { enableHighAccuracy: true, timeout: 10000 },
     )
   }
@@ -1580,6 +1692,18 @@ function App() {
       setFormError('Add a title of at least 3 characters and a description of at least 8 characters.')
       return
     }
+    const guestEmail = String(formData.get('contact_email') ?? '').trim()
+    const guestPhone = String(formData.get('contact_phone') ?? '').trim()
+    if (supabase && !session) {
+      if (!guestEmail && !guestPhone) {
+        setFormError('Enter an email address or phone number so staff can follow up.')
+        return
+      }
+      if (guestPhone && !normalizePhoneNumber(guestPhone)) {
+        setFormError('Enter a valid mobile number, such as 09XXXXXXXXX or +639XXXXXXXXX.')
+        return
+      }
+    }
     setFormError('')
     setFormNotice('')
     let report: Report
@@ -1632,10 +1756,11 @@ function App() {
       }
       report = toReport(data as ReportRow)
     } else if (supabase) {
-      const email = String(formData.get('contact_email') ?? '').trim()
+      const email = guestEmail
+      const phone = guestPhone
       const website = String(formData.get('website') ?? '')
       setGuestSubmitting(true)
-      const response = await fetch('/api/guest-reports', {
+      const response = await fetch(apiUrl('/api/guest-reports'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1653,6 +1778,7 @@ function App() {
           longitude: location[1],
           barangay,
           email,
+          phone,
           photoDataUrls: photoPreviews,
           website,
           startedAt: formStartedAt,
@@ -1760,6 +1886,34 @@ function App() {
     await loadTeams()
   }
 
+  async function createResponder(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!session || profile?.role !== 'admin') return
+    const form = event.currentTarget
+    const data = new FormData(form)
+    const displayName = String(data.get('display_name') ?? '').trim()
+    const email = String(data.get('email') ?? '').trim()
+    setResponderBusy(true)
+    setResponderMessage('')
+    try {
+      const response = await fetch(apiUrl('/api/admin-create-responder'), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ displayName, email }),
+      })
+      const result = await response.json() as { displayName?: string; error?: string }
+      if (!response.ok) throw new Error(result.error ?? 'The responder invitation could not be sent.')
+      form.reset()
+      setResponderModalOpen(false)
+      setStaffUsersRefreshToken((current) => current + 1)
+      pushToast({ tone: 'success', message: `${result.displayName ?? displayName} was invited as a responder.` })
+    } catch (error) {
+      setResponderMessage(error instanceof Error ? error.message : 'The responder invitation could not be sent.')
+    } finally {
+      setResponderBusy(false)
+    }
+  }
+
   async function deleteTeam(team: Team) {
     if (!supabase || !window.confirm(`Delete "${team.name}"? Reports assigned to it will become unassigned.`)) return
     setTeamBusy(true)
@@ -1828,7 +1982,7 @@ function App() {
     setEscalationRunBusy(true)
     setSlaEscalationMessage('Checking open reports against configured deadlines…')
     try {
-      const response = await fetch('/api/process-escalations', {
+      const response = await fetch(apiUrl('/api/process-escalations'), {
         method: 'POST',
         headers: { Authorization: `Bearer ${session.access_token}` },
       })
@@ -1854,7 +2008,7 @@ function App() {
     let firstError = ''
     for (const reportId of reportIds) {
       try {
-        const response = await fetch('/api/send-notification-emails', {
+        const response = await fetch(apiUrl('/api/send-notification-emails'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
           body: JSON.stringify({ reportId }),
@@ -2039,21 +2193,20 @@ function App() {
           <span className="brand-mark"><Leaf size={19} strokeWidth={2.2} /></span>
           <span className="brand-name">green<span>pulse</span></span>
         </a>
-        <div className="topbar-context"><span className="live-dot" /> Community watch <span className="context-divider">/</span> Environmental reports</div>
+        <div className="topbar-context">{isSupabaseConfigured && <span className={`live-dot ${isOnline ? '' : 'is-offline'}`} />} Community watch <span className="context-divider">/</span> Environmental reports</div>
         <div className={`topbar-chip ${scrolledPastHeading ? 'is-visible' : ''}`} aria-hidden={!scrolledPastHeading}><strong>{contextTitle}</strong><span>{openReports} open</span>{urgentOpenCount > 0 && <span className="is-urgent">{urgentOpenCount} urgent</span>}</div>
         <div className="topbar-actions">
-          <SyncStatus state={syncState} detail={lastSyncedAt ? `Last synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : undefined} onRetry={() => setReportRefreshToken((current) => current + 1)} />
+          <SyncStatus state={syncState} detail={!isSupabaseConfigured ? 'Reports stay in this browser. Add Supabase settings to enable shared reports and accounts.' : lastSyncedAt ? `Last synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : undefined} onRetry={() => setReportRefreshToken((current) => current + 1)} />
           <DisplaySettings prefs={displayPrefs} onChange={updateDisplayPrefs} />
-          {!isSupabaseConfigured ? <span className="mode-badge">DEMO MODE</span> : null}
           {savedDraftAvailable && <button className="text-button resume-draft-button" type="button" onClick={() => void restoreReportDraft(false)}>Resume draft</button>}
           <button className="icon-button theme-toggle" type="button" role="switch" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} aria-label="Dark mode" aria-checked={theme === 'dark'} title={`Turn dark mode ${theme === 'dark' ? 'off' : 'on'}`}><span className="theme-toggle-thumb" aria-hidden="true">{theme === 'dark' ? <Moon size={12} /> : <Sun size={12} />}</span></button>
-          {isSupabaseConfigured && <button className="secondary-button track-report-button" type="button" onClick={() => { setGuestTrackingToken(undefined); setGuestTrackingEmailSent(false); setGuestTrackingOpen(true) }}>Track report</button>}
+          {isSupabaseConfigured && <button className="secondary-button track-report-button" type="button" aria-label="Track a report" title="Track a report" onClick={() => { setGuestTrackingToken(undefined); setGuestTrackingEmailSent(false); setGuestTrackingOpen(true) }}><FileSearch size={15} /><span className="track-report-label">Track report</span></button>}
           {session && <button className={`icon-button notification-toggle ${notificationPanelOpen ? 'active' : ''}`} type="button" onClick={() => setNotificationPanelOpen((open) => !open)} aria-label={`Notifications${unreadNotificationCount ? `, ${unreadNotificationCount} unread` : ''}`} aria-expanded={notificationPanelOpen} title="Notifications"><Bell size={16} />{unreadNotificationCount > 0 && <span className="notification-count">{unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}</span>}</button>}
           {session ? <>
             {(profile?.role === 'responder' || profile?.role === 'admin') && <button className={`text-button staff-toggle ${staffMode ? 'active' : ''}`} type="button" title={staffMode ? 'Return to community view' : 'Open staff desk'} aria-label={staffMode ? 'Return to community view' : 'Open staff desk'} onClick={() => { setStaffMode((current) => !current); setStaffDashboardOpen(true) }}><ClipboardCheck size={15} /><span>{staffMode ? 'Community view' : 'Staff desk'}</span></button>}
-            <button className="profile-button" type="button" onClick={() => { setProfileAvatarPreview(profileAvatarUrl); setProfileModal(true) }} aria-label="Open profile settings"><span className="avatar">{profileAvatarUrl ? <img src={profileAvatarUrl} alt="" /> : (profile?.display_name || session.user.email || 'R').slice(0, 1).toUpperCase()}</span><span className="profile-label">{profile?.display_name || session.user.email}</span>{profile && <span className={`profile-role-badge role-${profile.role}`}>{getRoleLabel(profile.role)}</span>}</button>
-            <button className="icon-button" type="button" onClick={() => void supabase?.auth.signOut()} aria-label="Sign out" title="Sign out"><LogOut size={16} /></button>
-          </> : isSupabaseConfigured ? <button className="sign-in-button" type="button" onClick={() => { setAuthModal('sign-in'); setAuthMessage(''); setAuthMessageSuccess(false); setConfirmationEmail('') }} disabled={!authReady}><LogIn size={15} />Sign in</button> : <span className="profile-button"><span className="avatar">G</span><span className="profile-label">Guest</span></span>}
+            <button className="profile-button" type="button" onClick={() => { setProfileAvatarPreview(profileAvatarUrl); setProfileModal(true) }} aria-label="Open profile settings"><span className="avatar">{profileAvatarUrl ? <img src={profileAvatarUrl} alt="" /> : (profile?.display_name || session.user.email || session.user.phone || 'R').slice(0, 1).toUpperCase()}</span><span className="profile-label">{profile?.display_name || session.user.email || session.user.phone}</span>{profile && <span className={`profile-role-badge role-${profile.role}`}>{getRoleLabel(profile.role)}</span>}</button>
+            <button className="icon-button topbar-signout" type="button" onClick={() => void supabase?.auth.signOut()} aria-label="Sign out" title="Sign out"><LogOut size={16} /></button>
+          </> : isSupabaseConfigured ? <button className="sign-in-button" type="button" onClick={() => openAuthModal('sign-in')} disabled={!authReady}><LogIn size={15} />Sign in</button> : <span className="profile-button"><span className="avatar">G</span><span className="profile-label">Guest</span></span>}
         </div>
       </header>
 
@@ -2079,12 +2232,11 @@ function App() {
           <div className="page-heading-actions"><button className="primary-button" type="button" onClick={startReport}><Plus size={17} /> {t('reportIssue')}</button></div>
         </section>
 
-        {!isSupabaseConfigured && <div className="connection-banner demo-banner"><span className="mode-dot" /><span><strong>Demo data</strong> Reports stay in this browser. Add Supabase settings to enable shared reports and accounts.</span></div>}
         {isSupabaseConfigured && !isOnline && <div className="connection-banner error-banner" role="status"><span><strong>You’re offline.</strong> Showing the last synced reports; you can save a report on this device and queue it for upload when you reconnect.{lastSyncedAt ? ` Last synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : ''}</span></div>}
         {draftMessage && <div className="connection-banner" role="status"><span>{draftMessage}</span>{savedDraftAvailable && <button className="text-button" type="button" onClick={() => void deleteSavedDraft()}>Delete saved draft</button>}</div>}
         {backendError && <div className="connection-banner error-banner" role="alert"><AlertTriangle size={16} /><span>{backendError}</span><button type="button" onClick={() => setBackendError('')} aria-label="Dismiss message"><X size={14} /></button></div>}
 
-        {!staffMode && tourOpen && <WelcomeTour onDismiss={dismissTour} onStart={() => { dismissTour(); startReport() }} />}
+        {!staffMode && tourOpen && <WelcomeTour onDismiss={dismissTour} onSeen={markTourSeen} />}
 
         {staffMode ? <section className="stats-row staff-stats" aria-label="Staff response summary">
           <div className="stat-item"><span className="stat-icon stat-leaf"><ClipboardCheck size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={openReports} /></strong><span>Open queue</span></span></div>
@@ -2095,16 +2247,16 @@ function App() {
           <div className="stat-item"><span className="stat-icon stat-leaf"><Leaf size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={openReports} /></strong><span>Open reports</span></span><span className="stat-note">needs attention</span></div>
           <div className="stat-item"><span className="stat-icon stat-verify"><ShieldCheck size={18} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={verifiedReports} /></strong><span>Verified or assigned</span></span><span className="stat-note">being followed up</span></div>
           <div className="stat-item"><span className="stat-icon stat-clock"><Clock3 size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={reports.length} /></strong><span>Community reports</span></span><span className="stat-note">all time</span></div>
-          <div className="stat-updated" aria-live="polite">{isSupabaseConfigured ? <><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} />{lastSyncedAt ? `Synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Syncing reports…'}<button className="text-button" type="button" disabled={!isOnline || loadingReports} onClick={() => setReportRefreshToken((current) => current + 1)}>Refresh</button></> : 'Demo data is stored in this browser'}</div>
+          {isSupabaseConfigured && <div className="stat-updated" aria-live="polite"><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} />{lastSyncedAt ? `Synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Syncing reports…'}<button className="text-button" type="button" disabled={!isOnline || loadingReports} onClick={() => setReportRefreshToken((current) => current + 1)}>Refresh</button></div>}
         </section>}
 
         {staffMode && profile?.role === 'admin' && staffDashboardOpen && <section className="admin-overview" aria-label="Admin dashboard" aria-busy={loadingReports}>
           <div className="analytics-heading">
             <div><p className="eyebrow">ADMIN DASHBOARD</p><h2>Environmental report overview</h2></div>
-            <div className="analytics-heading-actions"><span className="analytics-period">{loadingReports ? 'Loading reports…' : 'All reports'}<i />Current data</span><button className="secondary-button admin-dashboard-action" type="button" onClick={() => setStaffDashboardOpen(false)}><ClipboardCheck size={14} /> Response desk</button></div>
+            <div className="analytics-heading-actions"><span className="analytics-period">{loadingReports ? 'Loading reports…' : 'All reports'}<i />Current data</span><button className="secondary-button add-responder-button" type="button" onClick={() => { setResponderMessage(''); setResponderModalOpen(true) }}><Plus size={14} /> Add responder</button><button className="secondary-button admin-dashboard-action" type="button" onClick={() => setStaffDashboardOpen(false)}><ClipboardCheck size={14} /> Response desk</button></div>
           </div>
-          <AdminSectionNav sections={ADMIN_SECTIONS} />
-          <div className="admin-metrics-grid" id="admin-overview-metrics">
+          <AdminSectionNav sections={ADMIN_SECTIONS} active={adminSection} onChange={setAdminSection} />
+          {adminSection === 'admin-overview-metrics' && <div className="admin-metrics-grid" id="admin-overview-metrics" role="tabpanel" aria-labelledby={adminTabId('admin-overview-metrics')}>
             {[
               { label: 'Total reports', value: adminAnalytics.total, note: 'All recorded reports', icon: <Leaf size={15} /> },
               { label: 'Pending reports', value: adminAnalytics.pending, note: 'Awaiting review or follow-up', icon: <Clock3 size={15} /> },
@@ -2124,8 +2276,8 @@ function App() {
             ].map((metric, index) => <article className="admin-metric" key={metric.label} style={{ '--i': index } as CSSProperties}>
               <span className="admin-metric-icon">{metric.icon}</span><strong>{loadingReports ? <><span className="skeleton skeleton-stat" aria-hidden="true" /><span className="sr-only">Loading</span></> : typeof metric.value === 'number' ? <AnimatedNumber value={metric.value} /> : metric.value}</strong><span>{metric.label}</span><small>{metric.note}</small>
             </article>)}
-          </div>
-          <div className="admin-chart-grid" id="admin-charts">
+          </div>}
+          {adminSection === 'admin-charts' && <div className="admin-chart-grid" id="admin-charts" role="tabpanel" aria-labelledby={adminTabId('admin-charts')}>
             <AdminBarChart title="Reports by category" description="Environmental concern type" data={adminAnalytics.byCategory} loading={loadingReports} />
             <AdminBarChart title="Reports by status" description="Current response stage" data={adminAnalytics.byStatus} loading={loadingReports} />
             <AdminBarChart title="Reports by urgency" description="Reported urgency level" data={adminAnalytics.byUrgency} loading={loadingReports} />
@@ -2145,9 +2297,9 @@ function App() {
                 <small>Resolved reports with recorded resolution timestamps</small>
               </div>
             </article>
-          </div>
-          <EnvironmentalReports reports={reports} />
-          <section className="pilot-outcomes analytics-chart" id="admin-pilot" aria-label="Pilot outcome results">
+          </div>}
+          {adminSection === 'admin-summary' && <EnvironmentalReports reports={reports} />}
+          {adminSection === 'admin-pilot' && <section className="pilot-outcomes analytics-chart" id="admin-pilot" role="tabpanel" aria-labelledby={adminTabId('admin-pilot')}>
             <div className="analytics-chart-heading"><div><strong>Pilot outcomes</strong><span>All-time response and recurrence measures for participating teams</span></div><BarChart3 size={17} /></div>
             {pilotOutcomesMessage && <p className="workflow-hint" role="status">{pilotOutcomesMessage}</p>}
             {!pilotOutcomes && !pilotOutcomesMessage && (loadingReports ? <ChartSkeleton rows={3} /> : <ChartEmpty title="No pilot outcomes yet" hint="Response and recurrence measures appear after reports have been handled." />)}
@@ -2155,8 +2307,8 @@ function App() {
               <div className="pilot-outcome-metrics"><p><strong>{pilotOutcomes.totalReports}</strong><span>recorded reports</span></p><p><strong>{pilotOutcomes.reopenedReports}</strong><span>reopened reports</span></p></div>
               <div className="pilot-outcome-table-wrap"><table className="pilot-outcome-table"><caption className="sr-only">Report outcomes by barangay</caption><thead><tr><th scope="col">Barangay</th><th scope="col">Reports</th><th scope="col">Resolved or closed</th><th scope="col">Reopened</th><th scope="col">Avg. first response</th><th scope="col">Avg. resolution</th></tr></thead><tbody>{pilotOutcomes.byBarangay.map((row) => <tr key={row.label}><th scope="row">{row.label}</th><td>{row.reports}</td><td>{row.resolved}</td><td>{row.reopened}</td><td>{formatDuration(row.averageFirstResponseMs ?? undefined)}</td><td>{formatDuration(row.averageResolutionMs ?? undefined)}</td></tr>)}</tbody></table></div>
             </>}
-          </section>
-          <div className="admin-operations-grid" id="admin-operations">
+          </section>}
+          {adminSection === 'admin-operations' && <div className="admin-operations-grid" id="admin-operations" role="tabpanel" aria-labelledby={adminTabId('admin-operations')}>
             <form className="admin-operation-card" onSubmit={(event) => void saveResponseSettings(event)}>
               <div><p className="eyebrow">OPERATIONS</p><h3>Response deadlines</h3><p>These targets drive overdue alerts in the staff inbox.</p></div>
               <label className="field-label">Standard urgency deadline (hours)<input name="response_sla_hours" type="number" min={1} max={720} step={1} value={responseSettings.response_sla_hours} onChange={(event) => setResponseSettings((current) => ({ ...current, response_sla_hours: Number(event.target.value) }))} required /></label>
@@ -2187,11 +2339,11 @@ function App() {
               <div className="workload-list"><strong>Responders</strong>{staffUsers.filter((user) => user.role === 'responder').map((user) => <div className="workload-row" key={user.id}><span>{user.display_name || 'Unnamed responder'}</span><b>{reports.filter((report) => report.assignedTo === user.id && isOpenStatus(report.status)).length}</b></div>)}{staffUsers.filter((user) => user.role === 'responder').length === 0 && <span className="workflow-hint">No responders are configured.</span>}</div>
               <div className="workload-list"><strong>Teams</strong>{teams.map((team) => <div className="workload-row" key={team.id}><span>{team.name}</span><b>{reports.filter((report) => report.assignedTeamId === team.id && isOpenStatus(report.status)).length}</b></div>)}{teams.length === 0 && <span className="workflow-hint">No teams are configured.</span>}</div>
             </section>
-          </div>
+          </div>}
         </section>}
 
         {staffMode && (profile?.role === 'responder' || profile?.role === 'admin') && (!staffDashboardOpen || profile.role !== 'admin') && <section className="staff-workbench" aria-label="Staff report management">
-          <div className="staff-workbench-heading"><div><p className="eyebrow">RESPONSE MANAGEMENT</p><h2>Staff desk</h2><p>Review incoming reports, assign responders, and record outcomes.</p></div><div className="staff-workbench-actions">{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => { setTeamMessage(''); setTeamModalOpen(true) }}><Users size={14} /> Manage teams</button>}{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => setStaffDashboardOpen(true)}><BarChart3 size={14} /> Dashboard</button>}<span className="role-chip"><ShieldCheck size={14} />{profile.role}</span></div></div>
+          <div className="staff-workbench-heading"><div><p className="eyebrow">RESPONSE MANAGEMENT</p><h2>Staff desk</h2><p>Review incoming reports, assign responders, and record outcomes.</p></div><div className="staff-workbench-actions">{profile.role === 'admin' && <button className="secondary-button add-responder-button" type="button" onClick={() => { setResponderMessage(''); setResponderModalOpen(true) }}><Plus size={14} /> Add responder</button>}{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => { setTeamMessage(''); setTeamModalOpen(true) }}><Users size={14} /> Manage teams</button>}{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => setStaffDashboardOpen(true)}><BarChart3 size={14} /> Dashboard</button>}<span className="role-chip"><ShieldCheck size={14} />{profile.role}</span></div></div>
           <section className="admin-operation-card staff-escalation-panel" aria-label="My deadline escalations">
             <div><p className="eyebrow">FOLLOW-UP CONTROL</p><h3>Deadline escalations</h3><p>Review reports assigned to you or your team and acknowledge the follow-up.</p></div>
             <div className="workload-list escalation-list">{slaEscalations.filter((item) => {
@@ -2287,7 +2439,7 @@ function App() {
                       icon={createReportMarker(report, selectedId === report.id)}
                       eventHandlers={{ click: () => setSelectedId(report.id) }}
                     >
-                      {!mobileMap && <Popup className="report-map-popup"><div><span>{report.category} · {report.status}</span><strong>{report.title}</strong><small className="popup-reporter"><UserRound size={12} />Reported by {report.reporterName || 'Community resident'}</small><small><MapPin size={12} />Approx. {approximateCoordinates(report.coordinates).map((coordinate) => coordinate.toFixed(3)).join(', ')}</small><p>{report.description}</p></div></Popup>}
+                      {!mobileMap && <Popup className="report-map-popup"><div><span>{report.category} · {report.status}</span><strong>{report.title}</strong><small className="popup-reporter"><UserRound size={12} />Reported by {report.reporterName || 'Community resident'}</small><small><MapPin size={12} />{placeLabel(report)}</small><p>{report.description}</p><button className="popup-discussion-button" type="button" onClick={() => setCommunityDiscussionId(report.id)}><MessageSquare size={12} /> Comments and discussion</button></div></Popup>}
                     </Marker>
                   ))}
                 </MarkerClusterGroup>
@@ -2297,8 +2449,9 @@ function App() {
                 <button className="icon-button map-sheet-close" type="button" onClick={() => setSelectedId(undefined)} aria-label="Close report preview"><X size={15} /></button>
                 <span className="map-sheet-meta">{selectedReport.category} · {selectedReport.status}</span>
                 <strong>{selectedReport.title}</strong>
-                <small><MapPin size={12} />Approx. {approximateCoordinates(selectedReport.coordinates).map((coordinate) => coordinate.toFixed(3)).join(', ')} · {formatCreatedAt(selectedReport.createdAt)}</small>
+                <small><MapPin size={12} />{placeLabel(selectedReport)} · {formatCreatedAt(selectedReport.createdAt)}</small>
                 <p>{selectedReport.description}</p>
+                <button className="secondary-button map-sheet-discussion" type="button" onClick={() => setCommunityDiscussionId(selectedReport.id)}><MessageSquare size={14} /> Comments and discussion</button>
               </div>}
               <div className="map-search-wrap">
                 <label className="map-search-box"><Search size={15} /><input value={mapSearchQuery} onChange={(event) => { setMapSearchQuery(event.target.value); setMapSearchMessage('') }} placeholder="Search a place or address" aria-label="Search the map by place or address" autoComplete="off" />{mapSearchBusy && <span className="search-spinner" aria-label="Searching places" />}{mapSearchQuery && <button type="button" onClick={() => { setMapSearchQuery(''); setMapSearchSuggestions([]); setMapSearchMessage('') }} aria-label="Clear map search"><X size={13} /></button>}</label>
@@ -2336,16 +2489,16 @@ function App() {
                 const Icon = categoryIcon(report.category)
                 return <button type="button" data-flip-id={report.id} className={`report-item ${selectedId === report.id ? 'is-selected' : ''}`} key={report.id} onClick={() => setSelectedId(report.id)}>
                   <span className="report-category-icon" style={{ color: categoryColors[report.category], backgroundColor: `${categoryColors[report.category]}14` }}><Icon size={17} /></span>
-                  <span className="report-main"><span className="report-title">{report.title}</span><span className="report-meta"><MapPin size={12} />Approx. {approximateCoordinates(report.coordinates).map((coordinate) => coordinate.toFixed(3)).join(', ')}<span>·</span>{formatCreatedAt(report.createdAt)}</span><span className="report-tags"><span key={report.status} className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')} ${changedStatuses.has(report.id) ? 'pill-changed' : ''}`}><i />{report.status}</span>{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></span>
+                  <span className="report-main"><span className="report-title">{report.title}</span><span className="report-meta"><MapPin size={12} />{placeLabel(report)}<span>·</span>{formatCreatedAt(report.createdAt)}</span><span className="report-tags"><span key={report.status} className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')} ${changedStatuses.has(report.id) ? 'pill-changed' : ''}`}><i />{report.status}</span>{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></span>
                   <span className="report-id">{formatReportId(report.id)}</span>
                 </button>
               })}
             </div>
-            <div className="panel-footer"><span><span className="live-dot" /> Live community feed</span><button type="button" onClick={() => { setCategoryFilter('All categories'); setStatusFilter('All statuses'); setSearch('') }}>{t('resetFilters')}</button></div>
+            <div className="panel-footer">{isSupabaseConfigured ? <span><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} /> Live community feed</span> : <span>Sample reports on this device</span>}<button type="button" onClick={() => { setCategoryFilter('All categories'); setStatusFilter('All statuses'); setSearch('') }}>{t('resetFilters')}</button></div>
           </aside>
         </section>}
 
-        <footer className="page-footer"><span>GREENPULSE <i>·</i> COMMUNITY ENVIRONMENT MONITORING · DISTRICT 5</span>{!staffMode && <button type="button" onClick={startReport}><Plus size={14} /> Add a report</button>}</footer>
+        <footer className="page-footer"><span>GREENPULSE <i>·</i> COMMUNITY ENVIRONMENT MONITORING · DISTRICT 5</span></footer>
       </main>
 
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
@@ -2407,7 +2560,7 @@ function App() {
               </MapContainer>
             </div>
             <div className="location-field"><div className="location-copy"><MapPin size={16} /><span><strong>{locationConfirmed ? 'Selected location' : 'Choose a map location'}</strong><small>{locationConfirmed ? `${location[0].toFixed(5)}, ${location[1].toFixed(5)}` : 'Pick a search suggestion or use GPS'}</small></span></div></div>
-            {isSupabaseConfigured && <p className="privacy-note">{session ? 'Your account identity stays private. The public map shows approximate report locations.' : 'Your optional email stays private. The public map shows approximate report locations.'}</p>}
+            {isSupabaseConfigured && <p className="privacy-note">{session ? 'Your account identity stays private. The public map shows approximate report locations.' : 'Your email and phone number stay private. The public map shows approximate report locations.'}</p>}
             {nearbySuggestions.length > 0 && <section className="nearby-suggestions" aria-label="Similar open reports nearby"><div><strong>Similar open reports nearby</strong><p>If one is the same issue, follow it or confirm it is still present.</p></div>{nearbySuggestions.map((candidate) => <article className="nearby-suggestion" key={candidate.id}><span><strong>{candidate.title}</strong><small>{candidate.status} · {candidate.barangay ? `Barangay ${candidate.barangay} · ` : ''}{Math.round(distanceInMeters(candidate.coordinates, location))} m away</small></span><div className="nearby-suggestion-actions"><button className="text-button" type="button" onClick={() => { setReporting(false); setStaffMode(false); setSelectedId(candidate.id); setMapCenter(candidate.coordinates) }}>View</button>{session && <button className="text-button" type="button" onClick={() => void toggleReportFollow(candidate)}>{followedReportIds.includes(candidate.id) ? 'Unfollow' : 'Follow'}</button>}<button className="text-button" type="button" onClick={() => void confirmNearbyReport(candidate)}>Confirm still present</button></div></article>)}</section>}
                 </section>
                 <section className="form-section">
@@ -2415,7 +2568,7 @@ function App() {
             <div className="photo-row"><label className="upload-button"><Camera size={15} />{photoFiles.length ? `${t('addPhotos')} (${photoFiles.length}/${MAX_REPORT_PHOTOS})` : t('addPhotos')}<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => { void handlePhotos(event.target.files); event.currentTarget.value = '' }} /></label><span>Optional · up to {MAX_REPORT_PHOTOS} JPEG, PNG, or WebP photos · max {isSupabaseConfigured && !session ? '2.5 MB each for guests' : '5 MB each'} · compressed before upload</span></div>
             {photoPreviews.length > 0 && <div className="report-photo-previews">{photoPreviews.map((preview, index) => <div className="report-photo-preview" key={`${index}-${preview.slice(-24)}`}><img className="photo-preview" src={preview} alt={`Selected report attachment ${index + 1}`} /><button className="remove-photo" type="button" aria-label={`Remove report photo ${index + 1}`} onClick={() => { setPhotoPreviews((current) => current.filter((_, photoIndex) => photoIndex !== index)); setPhotoFiles((current) => current.filter((_, photoIndex) => photoIndex !== index)) }}><X size={13} /> Remove</button></div>)}</div>}
                 </section>
-                {isSupabaseConfigured && !session && <section className="form-section guest-contact-section"><h3 className="form-section-title"><span>4</span>{t('followUp')}</h3><label className="field-label">{t('emailAddress')} <span className="field-hint">{t('optionalTracking')}</span><input name="contact_email" type="email" autoComplete="email" maxLength={254} placeholder="you@example.com" /></label><p className="workflow-hint">Your email is kept private. You can still track the report with the code shown after submission.</p></section>}
+                {isSupabaseConfigured && !session && <section className="form-section guest-contact-section"><h3 className="form-section-title"><span>4</span>{t('followUp')}</h3><p className="workflow-hint">Provide at least one contact for security and follow-up. Your email and phone number stay private.</p><label className="field-label">Email address<input name="contact_email" type="email" autoComplete="email" maxLength={254} placeholder="you@example.com" /></label><label className="field-label">Mobile number<input name="contact_phone" type="tel" autoComplete="tel" inputMode="tel" maxLength={24} placeholder="09XXXXXXXXX or +639XXXXXXXXX" /></label><p className="workflow-hint">You can still track the report with the code shown after submission.</p></section>}
               </div>
             </div>
             <label className="privacy-consent"><input type="checkbox" name="public_display_consent" required /><span>{t('publicConsent')} <small>{t('retentionNotice')}</small></span></label>
@@ -2427,6 +2580,20 @@ function App() {
       </div>}
 
       {guestTrackingOpen && <GuestReportTracking initialToken={guestTrackingToken} emailSent={guestTrackingEmailSent} onClose={() => { setGuestTrackingOpen(false); setGuestTrackingToken(undefined); setGuestTrackingEmailSent(false) }} />}
+
+      {communityDiscussionReport && <CommunityReportDiscussion report={communityDiscussionReport} userId={session?.user.id} canComment={profile?.role === 'resident'} onSignIn={() => openAuthModal('sign-in')} onClose={() => setCommunityDiscussionId(undefined)} />}
+
+      {responderModalOpen && profile?.role === 'admin' && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !responderBusy) setResponderModalOpen(false) }}>
+        <section className="report-modal responder-modal" role="dialog" aria-modal="true" aria-labelledby="responder-title">
+          <div className="modal-header"><div><p className="eyebrow">STAFF DESK</p><h2 id="responder-title">Add a responder</h2><p>Send an invitation email so they can finish setting up their account.</p></div><button className="icon-button" type="button" onClick={() => setResponderModalOpen(false)} disabled={responderBusy} aria-label="Close add responder form"><X size={19} /></button></div>
+          <form onSubmit={(event) => void createResponder(event)}>
+            <label className="field-label">Responder name<input name="display_name" autoComplete="name" minLength={2} maxLength={80} required /></label>
+            <label className="field-label">Email address<input name="email" type="email" autoComplete="email" maxLength={254} required /></label>
+            {responderMessage && <p className="form-error" role="alert">{responderMessage}</p>}
+            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setResponderModalOpen(false)} disabled={responderBusy}>Cancel</button><button className="primary-button" type="submit" disabled={responderBusy}>{responderBusy ? 'Sending invitation…' : <><Plus size={15} /> Invite responder</>}</button></div>
+          </form>
+        </section>
+      </div>}
 
       {teamModalOpen && profile?.role === 'admin' && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTeamModalOpen(false) }}>
         <section className="report-modal team-modal" role="dialog" aria-modal="true" aria-labelledby="team-title">
@@ -2440,16 +2607,32 @@ function App() {
         </section>
       </div>}
 
-      {authModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setAuthModal(null) }}>
+      {authModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeAuthModal() }}>
         <section className="report-modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
-          <div className="modal-header"><div><p className="eyebrow">DISTRICT 5 COMMUNITY ACCOUNT</p><h2 id="auth-title">{confirmationEmail && authModal === 'sign-up' ? 'Confirm your email' : authModal === 'sign-up' ? 'Create your account' : 'Welcome back'}</h2><p>{confirmationEmail && authModal === 'sign-up' ? `Follow the confirmation link sent to ${confirmationEmail}.` : 'Sign in to manage your reports and follow community updates. You can also submit a guest report with a tracking code.'}</p></div><button className="icon-button" type="button" onClick={() => { setAuthModal(null); setConfirmationEmail('') }} aria-label="Close sign-in form"><X size={19} /></button></div>
+          <div className="modal-header"><div><p className="eyebrow">DISTRICT 5 COMMUNITY ACCOUNT</p><h2 id="auth-title">{phoneOtpPending ? 'Verify your phone number' : confirmationEmail && authModal === 'sign-up' ? 'Confirm your email' : authModal === 'sign-up' ? 'Create your account' : 'Welcome back'}</h2><p>{phoneOtpPending ? `Enter the SMS code sent to ${phoneOtpNumber}.` : confirmationEmail && authModal === 'sign-up' ? `Follow the confirmation link sent to ${confirmationEmail}.` : authModal === 'sign-up' ? 'Choose email confirmation or verify by phone OTP.' : 'Sign in with your email and password or request a phone OTP. You can also submit a guest report with a tracking code.'}</p></div><button className="icon-button" type="button" onClick={closeAuthModal} aria-label="Close sign-in form"><X size={19} /></button></div>
           <form onSubmit={submitAuth}>
-            {authModal === 'sign-up' && <label className="field-label">Name<input name="display_name" autoComplete="name" maxLength={80} required /></label>}
-            <label className="field-label">Email<input name="email" type="email" autoComplete="email" defaultValue={confirmationEmail} required /></label>
-            <label className="field-label">Password<input name="password" type="password" minLength={8} autoComplete={authModal === 'sign-up' ? 'new-password' : 'current-password'} required /></label>
+            {phoneOtpPending ? <>
+              <label className="field-label">SMS verification code<input name="phone_otp" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={8} required autoFocus /></label>
+              <button className="resend-confirmation" type="button" onClick={() => void resendPhoneOtp()} disabled={authBusy}>Resend phone code</button>
+              <button className="resend-confirmation" type="button" onClick={() => { resetPhoneOtp(); setAuthMessage('') }} disabled={authBusy}>Use a different phone number</button>
+            </> : confirmationEmail && authModal === 'sign-up' ? <p className="workflow-hint">Your account will be ready after you confirm the email link.</p> : authModal === 'sign-up' ? <>
+              <label className="field-label">Verification method<select value={signupVerificationMethod} onChange={(event) => setSignupVerificationMethod(event.target.value as 'email' | 'phone')}><option value="email">Email confirmation</option><option value="phone">Phone OTP</option></select></label>
+              <label className="field-label">Name<input name="display_name" autoComplete="name" maxLength={80} required /></label>
+              {signupVerificationMethod === 'email' ? <>
+                <label className="field-label">Email<input name="email" type="email" autoComplete="email" defaultValue={confirmationEmail} required /></label>
+                <label className="field-label">Password<input name="password" type="password" minLength={8} autoComplete="new-password" required /></label>
+              </> : <label className="field-label">Mobile number<input name="phone" type="tel" autoComplete="tel" inputMode="tel" maxLength={24} placeholder="09XXXXXXXXX or +639XXXXXXXXX" required /></label>}
+            </> : signInMethod === 'password' ? <>
+              <label className="field-label">Sign-in method<select value={signInMethod} onChange={(event) => setSignInMethod(event.target.value as 'password' | 'phone-otp')}><option value="password">Email and password</option><option value="phone-otp">Phone OTP</option></select></label>
+              <label className="field-label">Email<input name="email" type="email" autoComplete="email" required /></label>
+              <label className="field-label">Password<input name="password" type="password" autoComplete="current-password" required /></label>
+            </> : <>
+              <label className="field-label">Sign-in method<select value={signInMethod} onChange={(event) => setSignInMethod(event.target.value as 'password' | 'phone-otp')}><option value="password">Email and password</option><option value="phone-otp">Phone OTP</option></select></label>
+              <label className="field-label">Mobile number<input name="phone" type="tel" autoComplete="tel" inputMode="tel" maxLength={24} placeholder="09XXXXXXXXX or +639XXXXXXXXX" required /></label>
+            </>}
             {authMessage && <p className={authMessageSuccess ? 'auth-success' : 'form-error'} role={authMessageSuccess ? 'status' : 'alert'}>{authMessage}</p>}
-            {confirmationEmail && <button className="resend-confirmation" type="button" onClick={() => void resendConfirmation()} disabled={authBusy}>Resend confirmation email</button>}
-            <div className="modal-actions"><button className="text-button" type="button" onClick={() => { setAuthModal(authModal === 'sign-up' ? 'sign-in' : 'sign-up'); setAuthMessage(''); setAuthMessageSuccess(false); setConfirmationEmail('') }}>{authModal === 'sign-up' ? 'Already have an account? Sign in' : 'Create an account'}</button><button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? 'Please wait…' : authModal === 'sign-up' ? 'Create account' : 'Sign in'}</button></div>
+            {confirmationEmail && authModal === 'sign-up' && <button className="resend-confirmation" type="button" onClick={() => void resendConfirmation()} disabled={authBusy}>Resend confirmation email</button>}
+            <div className="modal-actions"><button className="text-button" type="button" onClick={() => openAuthModal(authModal === 'sign-up' ? 'sign-in' : 'sign-up')} disabled={authBusy}>{authModal === 'sign-up' ? 'Already have an account? Sign in' : 'Create an account'}</button><button className="primary-button" type="submit" disabled={authBusy || Boolean(confirmationEmail)}>{authBusy ? 'Please wait…' : phoneOtpPending ? 'Verify code' : confirmationEmail ? 'Waiting for email confirmation' : authModal === 'sign-up' ? signupVerificationMethod === 'phone' ? 'Send phone OTP' : 'Create account' : signInMethod === 'phone-otp' ? 'Send phone OTP' : 'Sign in'}</button></div>
           </form>
         </section>
       </div>}
@@ -2460,10 +2643,10 @@ function App() {
           <form onSubmit={saveProfile}>
             <div className="profile-editor"><div className="profile-avatar-large">{profileAvatarPreview || profileAvatarUrl ? <img src={profileAvatarPreview || profileAvatarUrl} alt="Profile preview" /> : <UserRound size={27} />}</div><label className="upload-button"><Upload size={15} /> Change photo<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => handleProfileAvatar(event.target.files?.[0])} /></label><span className="profile-upload-note">JPEG, PNG, or WebP · max 3 MB</span></div>
             <label className="field-label">Display name<input name="display_name" defaultValue={profile.display_name} maxLength={80} required /></label>
-            <label className="field-label">Email<input value={session?.user.email ?? ''} readOnly /></label>
+            <label className="field-label">{session?.user.email ? 'Email' : 'Phone number'}<input value={session?.user.email ?? session?.user.phone ?? ''} readOnly /></label>
             <div className="field-label">Role<span><span className={`profile-role-badge role-${profile.role}`}>{getRoleLabel(profile.role)}</span></span></div>
-            <label className="notification-email-setting"><input type="checkbox" name="email_notifications" defaultChecked={profile.email_notifications !== false} /><span><strong>Email notifications</strong><small>Send report updates to this account's email address.</small></span></label>
-            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setProfileModal(false)}>Cancel</button><button className="primary-button" type="submit" disabled={profileSaving}>{profileSaving ? 'Saving…' : <><Check size={16} /> Save profile</>}</button></div>
+            {session?.user.email ? <label className="notification-email-setting"><input type="checkbox" name="email_notifications" defaultChecked={profile.email_notifications !== false} /><span><strong>Email notifications</strong><small>Send report updates to this account's email address.</small></span></label> : <p className="workflow-hint">Report updates will appear in the in-app inbox for this phone-based account.</p>}
+            <div className="modal-actions"><button className="text-button profile-signout" type="button" onClick={() => { setProfileModal(false); void supabase?.auth.signOut() }}><LogOut size={14} /> Sign out</button><button className="secondary-button" type="button" onClick={() => setProfileModal(false)}>Cancel</button><button className="primary-button" type="submit" disabled={profileSaving}>{profileSaving ? 'Saving…' : <><Check size={16} /> Save profile</>}</button></div>
           </form>
         </section>
       </div>}
