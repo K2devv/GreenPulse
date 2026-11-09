@@ -1,5 +1,35 @@
 import { app, BrowserWindow, shell } from 'electron'
+import { spawn } from 'node:child_process'
+import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+/**
+ * The Windows installer (Squirrel) launches the app with --squirrel-* flags during
+ * install, update, and uninstall. The app must create or remove its own Start menu
+ * and desktop shortcuts, then quit. Returns true when the app is handling one of these.
+ */
+function handleSquirrelEvent() {
+  if (process.platform !== 'win32') return false
+  const command = process.argv.find((arg) => arg.startsWith('--squirrel-'))
+  if (!command || command === '--squirrel-firstrun') return false
+
+  const updateExe = path.resolve(path.dirname(process.execPath), '..', 'Update.exe')
+  const exeName = path.basename(process.execPath)
+  const runUpdate = (args) => {
+    try {
+      spawn(updateExe, args, { detached: true })
+        .on('error', () => app.quit())
+        .on('close', () => app.quit())
+    } catch {
+      app.quit()
+    }
+  }
+
+  if (command === '--squirrel-install' || command === '--squirrel-updated') runUpdate(['--createShortcut', exeName])
+  else if (command === '--squirrel-uninstall') runUpdate(['--removeShortcut', exeName])
+  else app.quit()
+  return true
+}
 
 const appUrl = process.env.GREENPULSE_DESKTOP_URL || 'https://greenpulse-district5.vercel.app'
 const appOrigin = new URL(appUrl).origin
@@ -81,7 +111,9 @@ function createWindow() {
 }
 
 // Opening the app again focuses the existing window instead of starting a second copy.
-if (!app.requestSingleInstanceLock()) {
+if (handleSquirrelEvent()) {
+  // Installer step only: shortcuts are being created or removed, then the app quits.
+} else if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   app.on('second-instance', () => {
