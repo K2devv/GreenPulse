@@ -44,9 +44,12 @@ import { Circle, MapContainer, Marker, Polygon, Popup, TileLayer, useMap, useMap
 import { divIcon, latLngBounds, type LatLngExpression } from 'leaflet'
 import type { Session } from '@supabase/supabase-js'
 import { Capacitor } from '@capacitor/core'
+import { App as NativeApp } from '@capacitor/app'
 import { Geolocation } from '@capacitor/geolocation'
+import { topBackLayer, type BackLayer } from './lib/native-back'
 import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type EnvironmentalFollowUp, type NotificationRow, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
 import { apiUrl } from './lib/api-url'
+import { THEME_CHOICE_KEY, oppositeTheme, readThemeChoice, resolveTheme, type Theme } from './lib/theme-preference'
 import { normalizePhoneNumber } from './lib/phone-number'
 import { StaffWorkflowPanel } from './StaffWorkflowPanel'
 import { AnimatedNumber, StatNumber } from './AnimatedNumber'
@@ -84,7 +87,6 @@ import { deleteLocalReportDraft, getLocalReportDraft, saveLocalReportDraft, type
 type Category = 'Waste' | 'Pollution' | 'Flooding' | 'Drainage' | 'Water pollution' | 'Air pollution'
 type Status = 'Submitted' | 'Under review' | 'Additional information requested' | 'Verified' | 'In progress' | 'Awaiting verification' | 'Resolved' | 'Rejected' | 'Closed' | 'Duplicate'
 type Urgency = 'Low' | 'Medium' | 'High'
-type Theme = 'light' | 'dark'
 
 type LocationSuggestion = {
   label: string
@@ -521,13 +523,17 @@ function App() {
   const [followedReportIds, setFollowedReportIds] = useState<string[]>([])
   const geocodeRequest = useRef(0)
   const reportsLoaded = useRef(false)
-  const [theme, setTheme] = useState<Theme>(() => {
+  // The theme follows the system setting until the user picks one with the toggle.
+  const [themeChoice, setThemeChoice] = useState<Theme | null>(() => {
     try {
-      return localStorage.getItem('greenpulse-theme') === 'dark' ? 'dark' : 'light'
+      return readThemeChoice(window.localStorage)
     } catch {
-      return 'light'
+      return null
     }
   })
+  const [systemPrefersDark, setSystemPrefersDark] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  const theme = resolveTheme(themeChoice, systemPrefersDark)
+  const toggleTheme = () => setThemeChoice(oppositeTheme(theme))
   const t = (key: Parameters<typeof translate>[0]) => translate(key)
   const { toasts, push: pushToast, dismiss: dismissToast } = useToasts()
   const [clock, setClock] = useState(() => Date.now())
@@ -638,12 +644,21 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!themeChoice) return
     try {
-      localStorage.setItem('greenpulse-theme', theme)
+      localStorage.setItem(THEME_CHOICE_KEY, themeChoice)
     } catch {
       return
     }
-  }, [theme])
+  }, [themeChoice])
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = (event: MediaQueryListEvent) => setSystemPrefersDark(event.matches)
+    query.addEventListener('change', onChange)
+    return () => query.removeEventListener('change', onChange)
+  }, [])
 
   useEffect(() => {
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#141a16' : '#f5f7f2')
@@ -1143,6 +1158,55 @@ function App() {
   const communityDiscussionReport = mapReports.find((report) => report.id === communityDiscussionId)
   const staffReport = reports.find((report) => report.id === staffReportId) ?? staffQueue.find((report) => report.id === staffReportId)
   const followUpReport = reports.find((report) => report.id === followUpId)
+
+  // Android back button closes the topmost open layer, then minimizes the app.
+  const nativeBackRef = useRef<() => void>(() => undefined)
+  useEffect(() => {
+    const isAdmin = profile?.role === 'admin'
+    const open: Record<BackLayer, boolean> = {
+      palette: paletteOpen,
+      auth: Boolean(authModal),
+      profile: profileModal && Boolean(profile),
+      responder: responderModalOpen && isAdmin,
+      team: teamModalOpen && isAdmin,
+      'guest-tracking': guestTrackingOpen,
+      'community-discussion': Boolean(communityDiscussionReport),
+      'follow-up': Boolean(followUpReport && session),
+      'report-form': reporting,
+      notifications: notificationPanelOpen,
+      'staff-filters': staffMode && staffFiltersOpen,
+      'staff-detail': staffMode && Boolean(staffReportId),
+      'map-sheet': !staffMode && mobileMap && Boolean(selectedReport),
+      'staff-mode': staffMode,
+    }
+    const close: Record<BackLayer, () => void> = {
+      palette: () => setPaletteOpen(false),
+      auth: closeAuthModal,
+      profile: () => setProfileModal(false),
+      responder: () => { if (!responderBusy) setResponderModalOpen(false) },
+      team: () => setTeamModalOpen(false),
+      'guest-tracking': () => { setGuestTrackingOpen(false); setGuestTrackingToken(undefined); setGuestTrackingEmailSent(false) },
+      'community-discussion': () => setCommunityDiscussionId(undefined),
+      'follow-up': () => setFollowUpId(undefined),
+      'report-form': () => setReporting(false),
+      notifications: () => setNotificationPanelOpen(false),
+      'staff-filters': () => setStaffFiltersOpen(false),
+      'staff-detail': () => setStaffReportId(undefined),
+      'map-sheet': () => setSelectedId(undefined),
+      'staff-mode': () => setStaffMode(false),
+    }
+    nativeBackRef.current = () => {
+      const layer = topBackLayer(open)
+      if (layer) close[layer]()
+      else void NativeApp.minimizeApp()
+    }
+  })
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return
+    const listener = NativeApp.addListener('backButton', () => nativeBackRef.current())
+    return () => { void listener.then((handle) => handle.remove()) }
+  }, [])
+
   const selectedOwnReport = selectedReport && session && selectedReport.reporterId === session.user.id ? selectedReport : undefined
   const selectedOwnFeedback = selectedOwnReport ? residentFeedback[selectedOwnReport.id] : undefined
   const staffOnTask = Boolean(staffReport && session && (staffReport.assignedTo === session.user.id || teams.find((team) => team.id === staffReport.assignedTeamId)?.memberIds.includes(session.user.id)))
@@ -2168,7 +2232,7 @@ function App() {
     { id: 'act-location', group: 'Actions', label: 'Use my location', keywords: 'gps nearby locate', run: () => { setStaffMode(false); requestLocation(false) } },
     ...(isSupabaseConfigured ? [{ id: 'act-refresh', group: 'Actions', label: 'Refresh reports', keywords: 'sync reload', run: () => setReportRefreshToken((current) => current + 1) }] : []),
     { id: 'act-tour', group: 'Actions', label: 'Show the introduction again', keywords: 'help how works tour', run: () => { setStaffMode(false); setTourOpen(true); window.scrollTo({ top: 0 }) } },
-    { id: 'disp-theme', group: 'Display', label: `Turn dark mode ${theme === 'dark' ? 'off' : 'on'}`, keywords: 'theme light', run: () => setTheme((current) => current === 'dark' ? 'light' : 'dark') },
+    { id: 'disp-theme', group: 'Display', label: `Turn dark mode ${theme === 'dark' ? 'off' : 'on'}`, keywords: 'theme light', run: () => toggleTheme() },
     { id: 'disp-motion', group: 'Display', label: `${displayPrefs.reduceMotion ? 'Allow' : 'Reduce'} motion`, keywords: 'animation', run: () => updateDisplayPrefs({ reduceMotion: !displayPrefs.reduceMotion }) },
     { id: 'disp-contrast', group: 'Display', label: `Turn high contrast ${displayPrefs.highContrast ? 'off' : 'on'}`, keywords: 'accessibility', run: () => updateDisplayPrefs({ highContrast: !displayPrefs.highContrast }) },
     { id: 'disp-compact', group: 'Display', label: `Use ${displayPrefs.compact ? 'comfortable' : 'compact'} lists`, keywords: 'density rows', run: () => updateDisplayPrefs({ compact: !displayPrefs.compact }) },
@@ -2199,7 +2263,7 @@ function App() {
           <SyncStatus state={syncState} detail={!isSupabaseConfigured ? 'Reports stay in this browser. Add Supabase settings to enable shared reports and accounts.' : lastSyncedAt ? `Last synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : undefined} onRetry={() => setReportRefreshToken((current) => current + 1)} />
           <DisplaySettings prefs={displayPrefs} onChange={updateDisplayPrefs} />
           {savedDraftAvailable && <button className="text-button resume-draft-button" type="button" onClick={() => void restoreReportDraft(false)}>Resume draft</button>}
-          <button className="icon-button theme-toggle" type="button" role="switch" onClick={() => setTheme((current) => current === 'dark' ? 'light' : 'dark')} aria-label="Dark mode" aria-checked={theme === 'dark'} title={`Turn dark mode ${theme === 'dark' ? 'off' : 'on'}`}><span className="theme-toggle-thumb" aria-hidden="true">{theme === 'dark' ? <Moon size={12} /> : <Sun size={12} />}</span></button>
+          <button className="icon-button theme-toggle" type="button" role="switch" onClick={() => toggleTheme()} aria-label="Dark mode" aria-checked={theme === 'dark'} title={`Turn dark mode ${theme === 'dark' ? 'off' : 'on'}`}><span className="theme-toggle-thumb" aria-hidden="true">{theme === 'dark' ? <Moon size={12} /> : <Sun size={12} />}</span></button>
           {isSupabaseConfigured && <button className="secondary-button track-report-button" type="button" aria-label="Track a report" title="Track a report" onClick={() => { setGuestTrackingToken(undefined); setGuestTrackingEmailSent(false); setGuestTrackingOpen(true) }}><FileSearch size={15} /><span className="track-report-label">Track report</span></button>}
           {session && <button className={`icon-button notification-toggle ${notificationPanelOpen ? 'active' : ''}`} type="button" onClick={() => setNotificationPanelOpen((open) => !open)} aria-label={`Notifications${unreadNotificationCount ? `, ${unreadNotificationCount} unread` : ''}`} aria-expanded={notificationPanelOpen} title="Notifications"><Bell size={16} />{unreadNotificationCount > 0 && <span className="notification-count">{unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}</span>}</button>}
           {session ? <>
@@ -2423,7 +2487,7 @@ function App() {
             </div>
             <div className="map-frame">
               <MapContainer center={mapCenter as LatLngExpression} zoom={13} scrollWheelZoom className="leaflet-map" {...districtMapProps} zoomSnap={0}>
-                              <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                              <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" maxZoom={19} maxNativeZoom={19} />
                               <DistrictBoundary rings={districtRings} />
                               <MapFocus report={selectedReport} center={mapCenter} />
                 {heatmapEnabled && heatmapCells.map((cell) => {
@@ -2547,7 +2611,7 @@ function App() {
             <div className="location-picker-heading"><MapPin size={15} /><strong>{t('pinExactSpot')}</strong><span>{t('clickDragMap')}</span><button className="text-button" type="button" onClick={() => requestLocation()}><Crosshair size={14} /> {t('useMyLocation')}</button></div>
             <div className="report-location-map">
               <MapContainer center={location as LatLngExpression} zoom={15} scrollWheelZoom className="leaflet-map" {...districtMapProps}>
-                <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" maxZoom={19} maxNativeZoom={19} />
                 <DistrictBoundary rings={districtRings} />
                 <LocationPickerFocus center={location} />
                 <LocationPickerEvents onSelect={selectMapLocation} />

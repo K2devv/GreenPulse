@@ -9,11 +9,13 @@ import '@fontsource/inter/latin-600.css'
 import '@fontsource/inter/latin-700.css'
 import '@fontsource/newsreader/latin-500-italic.css'
 import './styles.css'
+import { Capacitor } from '@capacitor/core'
 import App from './App'
 
 const isProductionBuild = Boolean((import.meta as ImportMeta & { env?: { PROD?: boolean } }).env?.PROD)
 
-if (isProductionBuild && 'serviceWorker' in navigator) {
+// The native app bundles its assets, so the website's offline shell cache is not needed there.
+if (isProductionBuild && !Capacitor.isNativePlatform() && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     void navigator.serviceWorker.register('/service-worker.js').catch((error: unknown) => {
       console.warn('GreenPulse offline shell could not be registered.', error)

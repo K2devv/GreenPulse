@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GreenPulse</title>
+  <style>
+    :root { --bg: #f5f7f2; --text: #17271b; --muted: #5f6d62; --accent: #39734f; --accent-text: #fff; --card: #fff; --line: #dde5da; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #161d18; --text: #e6eee7; --muted: #a3b2a6; --accent: #6fb487; --accent-text: #0f1a12; --card: #1e2720; --line: #2d3a30; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: var(--bg); color: var(--text); font: 15px/1.5 "Segoe UI", system-ui, sans-serif; }
+    main { width: min(420px, 100%); padding: 32px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); text-align: center; }
+    .mark { width: 48px; height: 48px; margin: 0 auto 16px; border-radius: 50%; background: var(--accent); }
+    h1 { margin: 0 0 8px; font-size: 22px; }
+    p { margin: 0 0 22px; color: var(--muted); }
+    button { min-height: 40px; padding: 0 22px; border: 0; border-radius: 999px; background: var(--accent); color: var(--accent-text); font: inherit; font-weight: 600; cursor: pointer; }
+    button:focus-visible { outline: 3px solid var(--text); outline-offset: 3px; }
+    small { display: block; margin-top: 16px; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark" aria-hidden="true"></div>
+    <h1>GreenPulse can't connect</h1>
+    <p>Check your internet connection. GreenPulse needs to be online to load reports and the map.</p>
+    <button id="retry" type="button" autofocus>Try again</button>
+    <small id="status" role="status">It will also retry when your connection returns.</small>
+  </main>
+  <script>
+    const target = new URLSearchParams(location.search).get('url') || ''
+    const status = document.getElementById('status')
+    function retry() {
+      try {
+        if (!['https:', 'http:'].includes(new URL(target).protocol)) throw new Error('bad url')
+        status.textContent = 'Connecting…'
+        location.replace(target)
+      } catch {
+        status.textContent = 'The app address is not valid. Reinstall GreenPulse.'
+      }
+    }
+    document.getElementById('retry').addEventListener('click', retry)
+    window.addEventListener('online', retry)
+  </script>
+</body>
+</html>

@@ -1,7 +1,8 @@
 import { useLayoutEffect, useRef, type RefObject } from 'react'
 import { motionIsReduced } from './display-prefs'
 
-const EASING = 'cubic-bezier(.2, .8, .2, 1)'
+// Matches the --ease-out and --dur-med tokens in styles.css.
+const EASING = 'cubic-bezier(.22, 1, .36, 1)'
 
 // Animates children marked with data-flip-id when their order changes or new ones are added.
 export function useFlip(containerRef: RefObject<HTMLElement | null>, signature: string) {
@@ -20,7 +21,7 @@ export function useFlip(containerRef: RefObject<HTMLElement | null>, signature: 
       if (reduced || typeof element.animate !== 'function') return
       const previous = positions.current.get(id)
       if (previous !== undefined && previous !== top) {
-        element.animate([{ transform: `translateY(${previous - top}px)` }, { transform: 'translateY(0)' }], { duration: 320, easing: EASING })
+        element.animate([{ transform: `translateY(${previous - top}px)` }, { transform: 'translateY(0)' }], { duration: 300, easing: EASING })
       } else if (previous === undefined && hadItems) {
         element.animate([{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'none' }], { duration: 300, easing: EASING })
       }

@@ -1,0 +1,102 @@
+name: Android app
+
+# Builds the GreenPulse Android app from the same React code as the website.
+# Required repository secrets: VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY (the public website values).
+# Optional release signing secrets: ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD,
+# ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD. Without them only the debug APK is built.
+# Optional repository variable: GREENPULSE_APP_URL (defaults to the production website).
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'android-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Android app
+    runs-on: ubuntu-latest
+    env:
+      APP_URL: ${{ vars.GREENPULSE_APP_URL || 'https://greenpulse-district5.vercel.app' }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Write mobile settings
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+        run: |
+          printf 'VITE_SUPABASE_URL=%s\nVITE_SUPABASE_ANON_KEY=%s\nVITE_APP_URL=%s\nVITE_API_BASE_URL=%s\n' \
+            "$VITE_SUPABASE_URL" "$VITE_SUPABASE_ANON_KEY" "$APP_URL" "$APP_URL" > .env.mobile
+
+      - name: Build web bundle and sync Android project
+        run: npm run mobile:sync
+
+      - name: Choose app version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/android-v* ]]; then
+            name="${GITHUB_REF#refs/tags/android-v}"
+          else
+            name="1.0.${GITHUB_RUN_NUMBER}"
+          fi
+          echo "VERSION_NAME=$name" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+
+      - name: Prepare release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "No release keystore configured; building the debug APK only."
+            exit 0
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/greenpulse-release.jks"
+          {
+            echo "GREENPULSE_KEYSTORE_PATH=$RUNNER_TEMP/greenpulse-release.jks"
+            echo "GREENPULSE_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD"
+            echo "GREENPULSE_KEY_ALIAS=$ANDROID_KEY_ALIAS"
+            echo "GREENPULSE_KEY_PASSWORD=$ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          tasks="assembleDebug"
+          if [ -n "$GREENPULSE_KEYSTORE_PATH" ]; then tasks="$tasks assembleRelease bundleRelease"; fi
+          ./gradlew $tasks --no-daemon \
+            -PgreenpulseVersionCode="$VERSION_CODE" \
+            -PgreenpulseVersionName="$VERSION_NAME"
+
+      - name: Upload app files
+        uses: actions/upload-artifact@v4
+        with:
+          name: greenpulse-android-${{ env.VERSION_NAME }}
+          path: |
+            android/app/build/outputs/apk/**/*.apk
+            android/app/build/outputs/bundle/**/*.aab
+          if-no-files-found: error
+          retention-days: 14

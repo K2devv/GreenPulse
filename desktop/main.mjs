@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url'
 
 const appUrl = process.env.GREENPULSE_DESKTOP_URL || 'https://greenpulse-district5.vercel.app'
 const appOrigin = new URL(appUrl).origin
+const offlinePage = fileURLToPath(new URL('./offline.html', import.meta.url))
 
 app.setName('GreenPulse')
 
@@ -63,15 +64,40 @@ function createWindow() {
     openOutsideApp(target)
   })
 
+  // No connection (or the site is down): show a local page that retries the site.
+  // Code -3 is an aborted navigation, such as a redirect, and is not a failure.
+  window.webContents.on('did-fail-load', (_event, errorCode, _description, failedUrl, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3) return
+    try {
+      if (new URL(failedUrl).origin !== appOrigin) return
+    } catch {
+      return
+    }
+    void window.loadFile(offlinePage, { query: { url: appUrl } })
+  })
+
   void window.loadURL(appUrl)
+  return window
 }
 
-app.whenReady().then(() => {
-  createWindow()
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+// Opening the app again focuses the existing window instead of starting a second copy.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const [existing] = BrowserWindow.getAllWindows()
+    if (!existing) return
+    if (existing.isMinimized()) existing.restore()
+    existing.focus()
   })
-})
+
+  app.whenReady().then(() => {
+    createWindow()
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    })
+  })
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

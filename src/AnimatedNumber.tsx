@@ -3,7 +3,7 @@ import { motionIsReduced } from './display-prefs'
 
 const prefersReducedMotion = motionIsReduced
 
-export function AnimatedNumber({ value, duration = 700 }: { value: number; duration?: number }) {
+export function AnimatedNumber({ value, duration = 600 }: { value: number; duration?: number }) {
   const [displayed, setDisplayed] = useState(() => (prefersReducedMotion() ? value : 0))
   const displayedRef = useRef(displayed)
 

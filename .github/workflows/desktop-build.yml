@@ -19,9 +19,7 @@ jobs:
           - runner: windows-latest
             label: Windows
             artifact: greenpulse-windows
-          - runner: macos-latest
-            label: macOS
-            artifact: greenpulse-macos
+          # Add macos-latest / greenpulse-macos here when a Mac build is needed.
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out source

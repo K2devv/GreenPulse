@@ -7,6 +7,13 @@ const config: CapacitorConfig = {
   server: {
     androidScheme: 'https',
   },
+  plugins: {
+    SystemBars: {
+      // index.html uses viewport-fit=cover; the CSS reads the injected --safe-area-inset-* values.
+      insetsHandling: 'css',
+      initialViewportFitValueHint: 'cover',
+    },
+  },
 }
 
 export default config

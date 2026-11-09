@@ -56,7 +56,15 @@
       </div>
     </div>
     <script>
-      try { if (localStorage.getItem('greenpulse-theme') === 'dark') document.getElementById('boot-splash').classList.add('gp-dark') } catch (e) {}
+      // Mirrors src/lib/theme-preference.ts: a saved choice wins, otherwise follow the system setting.
+      try {
+        var choice = localStorage.getItem('greenpulse-theme-choice') || (localStorage.getItem('greenpulse-theme') === 'dark' ? 'dark' : '')
+        var dark = choice ? choice === 'dark' : window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+        if (dark) {
+          document.getElementById('boot-splash').classList.add('gp-dark')
+          document.querySelector('meta[name="theme-color"]').setAttribute('content', '#141a16')
+        }
+      } catch (e) {}
       try {
         var p = JSON.parse(localStorage.getItem('greenpulse-display') || '{}'), d = document.documentElement
         d.dataset.motion = p.reduceMotion ? 'reduced' : 'full'
