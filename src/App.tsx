@@ -2879,7 +2879,7 @@ function App() {
                 <label className="select-wrap"><span className="sr-only">Filter by category</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>All categories</option>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={13} /></label>
                 <label className="select-wrap"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All statuses</option>{statusOptions.filter((status) => status !== 'Duplicate').map((status) => <option key={status}>{status}</option>)}</select><ChevronDown size={13} /></label>
               </div>
-              <div className="filter-row" style={{ gridTemplateColumns: '1fr' }}>
+              <div className="filter-row filter-row-single">
                 <label className="select-wrap"><span className="sr-only">Filter by barangay</span><select value={barangayFilter} onChange={(event) => chooseBarangayFilter(event.target.value)}><option value="">All barangays</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay} value={barangay}>{barangay}</option>)}</select><ChevronDown size={13} /></label>
               </div>
             </div>

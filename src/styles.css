@@ -356,6 +356,14 @@ h1 em { color: #bfe8c0; font-family: 'Newsreader', serif; font-weight: 500; font
 .staff-description { margin: 15px 0 9px; color: var(--text-body); font-size: var(--fs-sm); line-height: 1.6; }
 .staff-location { display: flex; align-items: center; gap: 6px; margin-bottom: 15px; color: var(--text-subtle); font-size: var(--fs-md); }
 .staff-location span { color: var(--text-faint); }
+/* Exact address and coordinates: staff detail and the reporter's own report only. */
+.exact-location { display: grid; justify-items: start; gap: 3px; margin: 0 0 15px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-sunken); }
+.exact-location .field-label { color: var(--text-muted); font-size: var(--fs-xs); letter-spacing: .06em; text-transform: uppercase; }
+.exact-location .workflow-meta { align-items: flex-start; color: var(--text-2); overflow-wrap: anywhere; }
+.exact-location .workflow-meta svg { flex: 0 0 auto; margin-top: 3px; color: var(--accent-line); }
+.exact-location .section-caption { margin: 0; color: var(--text-subtle); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+.exact-location .text-button { padding: 2px 0; }
+.exact-location .workflow-hint { font-size: var(--fs-xs); }
 .staff-photo-link { display: inline-flex; align-items: center; gap: 8px; margin-bottom: 12px; color: var(--accent-text); font-size: var(--fs-sm); text-decoration: none; }
 .staff-photo-link img { width: 54px; height: 42px; border-radius: var(--radius-xs); object-fit: cover; }
 .workflow-form { display: grid; grid-template-columns: 1fr 1fr; align-items: end; gap: 12px; padding-top: 15px; border-top: 1px solid var(--divider); }
@@ -655,6 +663,7 @@ html[data-motion="reduced"] .map-pin-urgent::after, html[data-motion="reduced"] 
 .search-box input::placeholder { color: var(--text-faint); }
 .search-box button { display: grid; place-items: center; padding: 2px; border: 0; color: var(--text-faint); background: none; cursor: pointer; }
 .filter-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.filter-row-single { grid-template-columns: 1fr; }
 .select-wrap { height: 36px; position: relative; display: flex; align-items: center; border: 1px solid var(--control-border); border-radius: var(--radius-sm); background: var(--surface-sunken); }
 .select-wrap select { width: 100%; height: 100%; appearance: none; padding: 0 24px 0 8px; border: 0; outline: 0; color: var(--text-body); background: transparent; font-size: var(--fs-sm); cursor: pointer; }
 .select-wrap > svg { position: absolute; right: 7px; color: var(--text-faint); pointer-events: none; }
@@ -1101,6 +1110,8 @@ html[data-motion="reduced"] .map-pin-urgent::after, html[data-motion="reduced"] 
 .map-sheet-discussion { justify-self: start; margin-top: 8px; }
 .own-report-card { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-2); }
 .own-report-card > span { display: flex; flex-direction: column; min-width: 0; }
+.own-report-card { flex-wrap: wrap; }
+.own-report-card .exact-location { flex: 1 0 100%; margin: 0; }
 .own-report-card strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); }
 .own-report-card small { color: var(--text-subtle); font-size: var(--fs-sm); }
 
