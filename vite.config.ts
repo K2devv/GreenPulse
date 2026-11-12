@@ -79,7 +79,8 @@ export default defineConfig(({ mode }) => ({
         manualChunks(id) {
           if (!id.includes('node_modules')) return
           if (id.includes('@supabase/')) return 'supabase'
-          if (id.includes('leaflet') || id.includes('react-leaflet')) return 'maps'
+          // The map library is not listed here on purpose: it is only reached through the lazily
+          // imported map components, and a manual chunk would pull it into the first load.
           if (id.includes('react-dom') || id.includes('/react/')) return 'react'
         },
       },

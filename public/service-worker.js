@@ -1,5 +1,5 @@
 const CACHE_PREFIX = 'greenpulse-shell-'
-const CACHE_NAME = `${CACHE_PREFIX}v1`
+const CACHE_NAME = `${CACHE_PREFIX}v2`
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(['/', '/index.html'])))
@@ -27,7 +27,8 @@ self.addEventListener('fetch', (event) => {
     return
   }
 
-  if (!['script', 'style', 'font', 'image'].includes(request.destination)) return
+  // 'worker' covers the map library's web worker, which is a separate script file.
+  if (!['script', 'style', 'font', 'image', 'worker'].includes(request.destination)) return
   event.respondWith(caches.match(request).then(async (cached) => {
     if (cached) return cached
     const response = await fetch(request)
