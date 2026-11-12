@@ -16,7 +16,7 @@ The Vite dev server includes server-side adapters for responder invitations, gue
 1. Create a Supabase project and copy its project URL and publishable/anon key.
 2. Copy `.env.example` to `.env.local` and set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_APP_URL`.
 3. In the Supabase SQL Editor, run the migration files in `supabase/migrations/` in filename order. For an existing project, also apply `202610010001_admin_responder_provisioning.sql` before creating responders.
-4. In Authentication settings, enable email/password and phone sign-in. Configure email confirmation and an SMS provider for phone OTP; the app offers both verification choices during signup.
+4. Configure Supabase Auth for code sign-up. New accounts are created by a one-time code sent by email or text message, not with a password; see [Sign-up and sign-in codes](#sign-up-and-sign-in-codes) for the settings.
 5. Sign up using your own account. Promote the first administrator from the SQL Editor, replacing the email:
 
    ```sql
@@ -62,14 +62,28 @@ Reports are accepted for District 5 only. The form refuses a searched place, GPS
 
 Photo category suggestions send a resized copy of a selected image to Google Gemini through the Vercel `/api/classify-photo` endpoint. Add `GEMINI_API_KEY` to the Vercel production environment; keep it server-side and never use a `VITE_` prefix. The endpoint also validates the signed-in Supabase session. Users are notified before analysis that the image is sent to Google.
 
-Signup confirmations and responder invitations use `VITE_APP_URL`, falling back to the current site's origin when it is not set. Loopback URLs that do not match the current origin are ignored. Set `VITE_APP_URL` to `https://greenpulse-district5.vercel.app` in Vercel and configure Supabase **Authentication → URL Configuration** with this Site URL and these allowed redirect URLs. Previously sent invitation emails keep their original redirect, so resend the invite after correcting the URL:
+Sign-in links in code emails and responder invitations use `VITE_APP_URL`, falling back to the current site's origin when it is not set. Loopback URLs that do not match the current origin are ignored. Set `VITE_APP_URL` to `https://greenpulse-district5.vercel.app` in Vercel and configure Supabase **Authentication → URL Configuration** with this Site URL and these allowed redirect URLs. Previously sent invitation emails keep their original redirect, so resend the invite after correcting the URL:
 
 - `https://greenpulse-district5.vercel.app/**`
 - `http://localhost:5173/**`
 
-Responder invitations do not assign a password. After accepting the link and signing in, responders can choose one under Profile settings → Sign-in password.
+Responder invitations do not assign a password. After accepting the link, responders can sign in with an email code, or choose a password under Profile settings → Sign-in password and then sign in with email and password.
 
-The Supabase built-in email sender is rate-limited. For pilot signups, configure a custom SMTP provider under Supabase Auth email settings. The app displays confirmation state and offers a resend action, but it cannot bypass Supabase delivery limits.
+### Sign-up and sign-in codes
+
+Residents create an account with their name and either an email address (**Email code**, the default) or a mobile number (**Phone code (SMS)**). The app requests a one-time code with `signInWithOtp` and confirms the account when the code is entered. Supabase adds the unconfirmed user, and the trigger its profile, when the first code is sent. Signing in offers **Email and password**, **Email code**, and **Phone code**; code sign-in never creates an account, and an unknown email or number is pointed to sign-up. Signing up with an email or number that already has an account signs that person in and says so. Anyone with an email address can add a password later under Profile settings → Sign-in password. The profile is created by the `create_profile_for_new_user` trigger with the resident role; sign-up metadata only carries the display name.
+
+The resend button waits 60 seconds between codes, and longer when Supabase reports a longer wait. Wrong and expired codes keep the person on the code screen. Supabase errors are shown as plain-language messages from `src/lib/auth-otp.ts`.
+
+Required Supabase dashboard settings:
+
+- **Authentication → Sign In / Providers → Email**: enabled, with **Confirm email** on so a new email address is confirmed by its code.
+- **Authentication → Sign In / Providers → Phone**: enabled, with an SMS provider (for example Twilio, MessageBird, Vonage, or Textlocal) and its credentials. Until this is set, phone codes fail and the app shows that phone sign-in isn't available yet.
+- **Authentication → Emails → Templates**: the **Confirm signup** template (first code for a new account) and the **Magic Link** template (code sign-in, and sign-up with an existing email) must include `{{ .Token }}`. They may keep `{{ .ConfirmationURL }}`; the link signs the person in as well. The app's copy describes a 6-digit code.
+- **OTP expiry and length**: set the email OTP expiry under the Email provider and the SMS OTP expiry and length under the Phone provider. Keep the length at 6 digits to match the app's copy; the code field accepts 6 to 10 digits.
+- **Authentication → Rate Limits**: the hourly email and SMS limits cap how many codes the whole project can send. The per-address limit between codes is about 60 seconds, which the resend countdown follows.
+- **Custom SMTP** (Authentication → Emails → SMTP Settings): the built-in sender only delivers to project team members and has a very low hourly limit. Configure a custom SMTP provider before inviting residents. The app cannot bypass Supabase delivery limits.
+- **Test phone numbers** (optional, Phone provider settings): fixed number and code pairs for testing without sending SMS. Use them only in non-production projects.
 
 ## Deployment and operations
 
@@ -82,7 +96,7 @@ The Supabase built-in email sender is rate-limited. For pilot signups, configure
 - Set `RESEND_API_KEY` and a verified `NOTIFICATION_FROM_EMAIL` as server-only Vercel variables to enable notification email delivery. The endpoint validates the signed-in user and report access before sending, and respects each recipient's email preference.
 - Set `CRON_SECRET` as a server-only Vercel variable to authorize scheduled deadline processing. The included daily Vercel cron is a backup. The `Deadline checks` workflow runs every 15 minutes once the `GREENPULSE_APP_URL` repository variable and `CRON_SECRET` repository secret are set, so a 12-hour high-urgency deadline is not left until the next midnight run. An administrator can also run a check from the staff dashboard. A second escalation is sent to admins after the configured multiplier of the initial deadline.
 - Add `GEMINI_API_KEY` as a server-only Vercel environment variable for photo suggestions. Create a key at https://aistudio.google.com/apikey, then redeploy after adding it. Signed-in photo analysis is limited to 12 requests an hour and 40 a day per account.
-- Configure the production site URL and allowed redirect URLs in Supabase Authentication settings, enable email confirmation and phone sign-in, configure an SMS provider for OTP delivery, and use HTTPS.
+- Configure the production site URL and allowed redirect URLs in Supabase Authentication settings, apply the [sign-up and sign-in code settings](#sign-up-and-sign-in-codes) (email confirmation, phone provider with an SMS provider, email templates with `{{ .Token }}`, custom SMTP), and use HTTPS.
 - Keep Supabase database backups/PITR enabled according to the project plan. Periodically test restoring a backup to a separate project. Export and retain migration files alongside source control; storage objects need a separate retention/backup plan because database backups do not contain their bytes.
 - Back up private report photos separately with `node scripts/storage-backup.mjs <new-backup-folder>` after setting `VITE_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in the process environment. Keep the backup encrypted and access-controlled. To recover, create an empty private bucket in the recovery project with the same name, set `REPORT_PHOTO_BUCKET` to that name, run `node scripts/storage-restore.mjs <backup-folder>` first for its integrity-checked dry run, then set `CONFIRM_STORAGE_RESTORE=RESTORE:<bucket-name>` and rerun. Restore never overwrites objects. Run `npm run test:storage-recovery` with a non-production service-role key to test a temporary `greenpulse-recovery-test-*` bucket; do not point that test at production photo data. Photos remain stored until the participating QC office sets a retention policy.
 - Before a real pilot, validate the provisional PSA/GeoRisk boundary geometry and barangay assignments with the participating Quezon City office, set an approved retention period, review consent wording, configure the operational deadlines, and test every role with separate accounts. Until that retention policy is approved, GreenPulse keeps records and photos without automatic deletion.
