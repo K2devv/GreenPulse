@@ -77,6 +77,9 @@ import { ExactLocation } from './ExactLocation'
 import { formatPlaceLabel } from './lib/place-label'
 import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, clearFilter, countActiveFilters, defaultReportFilters, describeActiveFilters, detectBarangay, formatReportId, loadSavedFilters, saveFilters, type ReportFilters } from './lib/report-filters'
 import { BOUNDARY_EDGE_TOLERANCE_METERS, findBarangayAt, loadBundledBarangayBoundaries, toBarangayBoundaries, type BarangayBoundary } from './lib/barangay-lookup'
+import { barangayPinPoint } from './lib/barangay-center'
+import { canHandleEscalation, type SlaEscalation } from './lib/sla-escalations'
+import { EscalationList } from './EscalationList'
 import { buildDistrictOutline } from './lib/district-outline'
 import { spreadCoincident } from './lib/map-clusters'
 import type { HeatCell } from './lib/map-style'
@@ -160,7 +163,6 @@ type InboxNotification = {
 }
 
 type ResponseSettings = { response_sla_hours: number; high_urgency_sla_hours: number; second_escalation_multiplier: number }
-type SlaEscalation = { report_id: string; stage: number; escalated_at: string; acknowledged_at: string | null; report?: { title: string; status: string; assigned_to: string | null; assigned_team_id: string | null } }
 type DeliveryFailure = { id: string; report_id: string; title: string; attempts: number; last_error: string | null; channel: string; status: 'Sent' | 'Failed' | 'Suppressed' | 'Pending'; attempted_at: string | null }
 type PilotOutcomes = { totalReports: number; reopenedReports: number; byBarangay: Array<{ label: string; reports: number; resolved: number; reopened: number; averageFirstResponseMs: number | null; averageResolutionMs: number | null }> }
 
@@ -548,6 +550,9 @@ function App() {
     setReportBarangay(match ?? '')
     setBarangayAutofill(match ? 'matched' : 'outside')
   }, [reporting, location, locationConfirmed, barangayBoundaries, boundaryTolerance])
+  // Where the pin was placed when the reporter picked a barangay by hand; the note stays until the pin moves.
+  const [barangayPin, setBarangayPin] = useState<{ barangay: string; point: [number, number] }>()
+  const pinAtBarangayCenter = Boolean(barangayPin && barangayPin.point[0] === location[0] && barangayPin.point[1] === location[1])
   // Fallback while no outlines are loaded: use a barangay named in the place label, if any.
   function fillBarangayFromLabel(label: string) {
     if (barangayBoundariesRef.current) return
@@ -1903,13 +1908,19 @@ function App() {
     )
   }
 
-  /** A barangay picked by hand moves the form map to it, unless the pin already lies inside it. Autofill never calls this. */
+  /**
+   * A barangay picked by hand moves the pin to the middle of that barangay and fits the form map to it,
+   * unless the pin already lies inside it. Autofill never calls this.
+   */
   function changeReportBarangay(barangay: string) {
     setReportBarangay(barangay)
     setBarangayAutofill('')
     if (!barangay) return
     const pinnedIn = locationConfirmed && barangayBoundaries ? findBarangayAt(location, barangayBoundaries, boundaryTolerance) : undefined
-    if (pinnedIn !== barangay) setReportBarangayFit((current) => ({ seq: (current?.seq ?? 0) + 1, barangay }))
+    if (pinnedIn === barangay) return
+    setReportBarangayFit((current) => ({ seq: (current?.seq ?? 0) + 1, barangay }))
+    const point = barangayBoundaries ? barangayPinPoint(barangayBoundaries, barangay) : undefined
+    if (point && selectMapLocation(point)) setBarangayPin({ barangay, point })
   }
 
   /** Pins a spot chosen on the report-form map. Returns false when the spot is outside District 5. */
@@ -2660,12 +2671,7 @@ function App() {
               <div><p className="eyebrow">FOLLOW-UP CONTROL</p><h3>Escalations</h3><p>Stage 1 goes to admins and the assigned responder. Stage 2 asks admins to review the task plan. Staff can acknowledge the escalation.</p></div>
               <button className="secondary-button" type="button" onClick={() => void runEscalationCheck()} disabled={escalationRunBusy}>{escalationRunBusy ? 'Checking…' : 'Check deadlines now'}</button>
               {slaEscalationMessage && <p className="workflow-hint" role="status">{slaEscalationMessage}</p>}
-              <div className="workload-list escalation-list">{slaEscalations.length ? slaEscalations.slice(0, 8).map((item) => {
-                const report = Array.isArray(item.report) ? item.report[0] : item.report
-                const canAcknowledge = profile.role === 'admin' || report?.assigned_to === session?.user.id
-                  || Boolean(report?.assigned_team_id && teams.find((team) => team.id === report.assigned_team_id)?.memberIds.includes(session?.user.id ?? ''))
-                return <div className="workload-row escalation-row" key={`${item.report_id}-${item.stage}`}><span><strong>Stage {item.stage}: {report?.title ?? 'Report'}</strong><small>{formatCreatedAt(item.escalated_at)} · {item.acknowledged_at ? 'Acknowledged' : 'Needs acknowledgement'}</small></span>{!item.acknowledged_at && canAcknowledge && <button className="text-button" type="button" onClick={() => void acknowledgeSlaEscalation(item)}>Acknowledge</button>}</div>
-              }) : <span className="workflow-hint">No SLA escalations recorded.</span>}</div>
+              <EscalationList items={slaEscalations} limit={8} emptyText="No SLA escalations recorded." canAcknowledge={(item) => canHandleEscalation(item, { role: profile.role, userId: session?.user.id, teams })} onAcknowledge={(item) => void acknowledgeSlaEscalation(item)} />
             </section>
             <section className="admin-operation-card" aria-label="Email notification delivery">
               <div><p className="eyebrow">NOTIFICATION DELIVERY</p><h3>Email delivery history</h3><p>Recent sent and failed deliveries are recorded. Retries use stable idempotency keys.</p></div>
@@ -2685,19 +2691,7 @@ function App() {
           <div className="staff-workbench-heading"><div><p className="eyebrow">RESPONSE MANAGEMENT</p><h2>Staff desk</h2><p>Review incoming reports, assign responders, and record outcomes.</p></div><div className="staff-workbench-actions">{profile.role === 'admin' && <button className="secondary-button add-responder-button" type="button" onClick={() => { setResponderMessage(''); setResponderModalOpen(true) }}><Plus size={14} /> Add responder</button>}{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => { setTeamMessage(''); setTeamModalOpen(true) }}><Users size={14} /> Manage teams</button>}{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => setStaffDashboardOpen(true)}><BarChart3 size={14} /> Dashboard</button>}<span className="role-chip"><ShieldCheck size={14} />{profile.role}</span></div></div>
           <section className="admin-operation-card staff-escalation-panel" aria-label="My deadline escalations">
             <div><p className="eyebrow">FOLLOW-UP CONTROL</p><h3>Deadline escalations</h3><p>Review reports assigned to you or your team and acknowledge the follow-up.</p></div>
-            <div className="workload-list escalation-list">{slaEscalations.filter((item) => {
-              const report = Array.isArray(item.report) ? item.report[0] : item.report
-              return profile.role === 'admin' || report?.assigned_to === session?.user.id
-                || Boolean(report?.assigned_team_id && teams.find((team) => team.id === report.assigned_team_id)?.memberIds.includes(session?.user.id ?? ''))
-            }).slice(0, 10).map((item) => {
-              const report = Array.isArray(item.report) ? item.report[0] : item.report
-              return <div className="workload-row escalation-row" key={`${item.report_id}-${item.stage}`}><span><strong>Stage {item.stage}: {report?.title ?? 'Report'}</strong><small>{formatCreatedAt(item.escalated_at)} · {item.acknowledged_at ? 'Acknowledged' : 'Needs acknowledgement'}</small></span>{!item.acknowledged_at && <button className="text-button" type="button" onClick={() => void acknowledgeSlaEscalation(item)}>Acknowledge</button>}</div>
-            })}</div>
-            {!slaEscalations.some((item) => {
-              const report = Array.isArray(item.report) ? item.report[0] : item.report
-              return profile.role === 'admin' || report?.assigned_to === session?.user.id
-                || Boolean(report?.assigned_team_id && teams.find((team) => team.id === report.assigned_team_id)?.memberIds.includes(session?.user.id ?? ''))
-            }) && <span className="workflow-hint">No escalations are assigned to you or your team.</span>}
+            <EscalationList items={slaEscalations.filter((item) => canHandleEscalation(item, { role: profile.role, userId: session?.user.id, teams }))} limit={10} emptyText="No escalations are assigned to you or your team." canAcknowledge={() => true} onAcknowledge={(item) => void acknowledgeSlaEscalation(item)} onOpen={(reportId) => setStaffReportId(reportId)} />
             {slaEscalationMessage && <p className="workflow-hint" role="status">{slaEscalationMessage}</p>}
           </section>
           <section className="recurrence-panel" aria-label="Recurring issue inspections">
@@ -2901,7 +2895,9 @@ function App() {
             </div>
             <div className="barangay-field">
               <label className="field-label">{t('barangay')}<select name="barangay" className={barangayAutofill === 'matched' ? 'is-autofilled' : undefined} value={reportBarangay} onChange={(event) => { changeReportBarangay(event.target.value) }} aria-describedby={barangayAutofill ? 'barangay-autofill-note' : undefined} required><option value="">Select barangay</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay}>{barangay}</option>)}</select></label>
-              {barangayAutofill === 'matched' && <p className="barangay-autofill-note" id="barangay-autofill-note" role="status" key={reportBarangay}><Check size={13} />Filled in from the pinned location. Change it if it looks wrong.</p>}
+              {pinAtBarangayCenter && barangayPin
+                ? <p className="barangay-autofill-note" id="barangay-autofill-note" role="status" key={`pin-${reportBarangay}`}><MapPin size={13} />Pin moved to the middle of Barangay {barangayPin.barangay}. Drag it or tap the map to mark the exact spot.</p>
+                : barangayAutofill === 'matched' && <p className="barangay-autofill-note" id="barangay-autofill-note" role="status" key={reportBarangay}><Check size={13} />Filled in from the pinned location. Change it if it looks wrong.</p>}
               {barangayAutofill === 'outside' && <p className="barangay-autofill-note is-outside" id="barangay-autofill-note" role="status"><AlertTriangle size={13} />This spot is outside District 5, so the report cannot be submitted. Move the pin inside the district.</p>}
             </div>
             <div className="location-picker-heading"><MapPin size={15} /><strong>{t('pinExactSpot')}</strong><span>{t('clickDragMap')}</span><button className="text-button" type="button" onClick={() => requestLocation()}><Crosshair size={14} /> {t('useMyLocation')}</button></div>

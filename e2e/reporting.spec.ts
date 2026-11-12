@@ -150,6 +150,20 @@ test.describe('District 5 limit', () => {
     return saved.some((report) => report.title === reportTitle)
   }, title)
 
+  test('pins the middle of a barangay picked by hand and fills in its address', async ({ page }) => {
+    await page.route('https://photon.komoot.io/reverse?**', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ features: [{ properties: { name: 'Gulod Covered Court', street: 'Quirino Highway', district: 'Gulod', city: 'Quezon City' } }] }),
+    }))
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Report an issue' }).click()
+    const dialog = page.getByRole('dialog', { name: 'What did you notice?' })
+    await dialog.locator('select[name="barangay"]').selectOption('Gulod')
+    await expect(dialog.getByText('Pin moved to the middle of Barangay Gulod', { exact: false })).toBeVisible()
+    await expect(dialog.locator('input[name="location"]')).toHaveValue('Gulod Covered Court, Quirino Highway, Barangay Gulod, Quezon City')
+    await expect(dialog.locator('select[name="barangay"]')).toHaveValue('Gulod')
+  })
+
   test('lists a place outside District 5 but does not let it be chosen or submitted', async ({ page }) => {
     await page.route('https://photon.komoot.io/api/?**', (route) => route.fulfill({
       contentType: 'application/json',
@@ -171,7 +185,7 @@ test.describe('District 5 limit', () => {
     expect(await savedReport(page, title)).toBe(false)
   })
 
-  test('refuses to submit a restored draft whose pin is outside District 5', async ({ page }) => {
+  test('flags a restored draft whose pin is outside District 5 and moves the pin into a barangay picked by hand', async ({ page }) => {
     // A draft is the one way a confirmed location can reach the form without passing the
     // search, GPS, or map checks, so it exercises the check made at submission.
     const title = 'Outside district draft report'
@@ -201,12 +215,14 @@ test.describe('District 5 limit', () => {
     await expect(dialog.locator('input[name="title"]')).toHaveValue(title)
     await expect(dialog.getByText('This spot is outside District 5', { exact: false })).toBeVisible()
 
-    // Even with a barangay picked by hand, the report is not accepted.
+    // An empty barangay keeps the report from being submitted while the pin is outside.
+    await expect(dialog.locator('select[name="barangay"]')).toHaveValue('')
+
+    // Picking a barangay by hand moves the pin to the middle of that barangay, inside the district.
     await dialog.locator('select[name="barangay"]').selectOption('Fairview')
-    await dialog.locator('input[name="public_display_consent"]').check()
-    await dialog.getByRole('button', { name: 'Submit report' }).click()
-    await expect(dialog.getByRole('alert')).toContainText('outside District 5')
-    await expect(dialog).toBeVisible()
+    await expect(dialog.getByText('Pin moved to the middle of Barangay Fairview', { exact: false })).toBeVisible()
+    await expect(dialog.getByText('This spot is outside District 5', { exact: false })).toHaveCount(0)
+    await expect(dialog.locator('select[name="barangay"]')).toHaveValue('Fairview')
     expect(await savedReport(page, title)).toBe(false)
   })
 
