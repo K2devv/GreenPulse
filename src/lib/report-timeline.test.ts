@@ -24,7 +24,7 @@ describe('comments', () => {
     expect(allowedCommentKinds({ role: 'resident', status: 'Closed', isReporter: true, isOnTask: false })).toEqual([])
     expect(allowedCommentKinds({ role: 'responder', status: 'In progress', isReporter: false, isOnTask: false })).toEqual([])
     expect(allowedCommentKinds({ role: 'responder', status: 'In progress', isReporter: false, isOnTask: true })).toEqual(['comment'])
-    expect(allowedCommentKinds({ role: 'admin', status: 'Under review', isReporter: false, isOnTask: false })).toEqual(['comment', 'info_request'])
+    expect(allowedCommentKinds({ role: 'admin', status: 'Under review', isReporter: false, isOnTask: false })).toEqual(['status_update', 'comment', 'info_request'])
   })
 
   it('validates messages', () => {

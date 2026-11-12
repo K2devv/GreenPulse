@@ -1,0 +1,198 @@
+-- Admin status updates in the report conversation, and live delivery of report messages.
+--
+-- Requires 202610150001_report_communication.sql, which creates public.report_comments.
+-- Apply that file first, then this one.
+--
+-- 1. Adds the 'status_update' message kind. Only admins post it, and not on Rejected or
+--    Duplicate reports. A closing note on a Resolved or Closed report is allowed.
+-- 2. Records "Status update posted" on the report timeline and notifies the reporter and the
+--    assigned responder.
+-- 3. Adds report_comments to the supabase_realtime publication, so the conversation updates
+--    live for staff and reporters. Realtime still applies the table's select policy, so each
+--    subscriber only receives messages on reports they can read.
+
+do $$
+begin
+  if to_regclass('public.report_comments') is null then
+    raise exception 'public.report_comments is missing. Apply 202610150001_report_communication.sql before 202611120002_report_comments_status_updates_realtime.sql.';
+  end if;
+end;
+$$;
+
+-- The kind check was declared inline, so its name was generated. Find it by the column it covers.
+do $$
+declare
+  kind_check record;
+begin
+  for kind_check in
+    select constraints.conname
+    from pg_constraint as constraints
+    join pg_attribute as attributes
+      on attributes.attrelid = constraints.conrelid and attributes.attnum = any (constraints.conkey)
+    where constraints.conrelid = 'public.report_comments'::regclass
+      and constraints.contype = 'c'
+      and attributes.attname = 'kind'
+  loop
+    execute format('alter table public.report_comments drop constraint %I', kind_check.conname);
+  end loop;
+end;
+$$;
+
+alter table public.report_comments
+  add constraint report_comments_kind_check
+  check (kind in ('status_update', 'comment', 'info_request', 'reply'));
+
+-- Author identity and permissions are decided here, never by the client.
+create or replace function public.prepare_report_comment()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor uuid := (select auth.uid());
+  actor_role text;
+  actor_name text;
+  target record;
+  actor_on_task boolean;
+begin
+  if actor is null then
+    return new;
+  end if;
+
+  select role, display_name into actor_role, actor_name from public.profiles where id = actor;
+  select reporter_id, assigned_to, assigned_team_id, status into target from public.reports where id = new.report_id;
+  if actor_role is null or target is null then
+    raise exception 'This report is not available.';
+  end if;
+
+  new.author_id := actor;
+  new.author_role := actor_role;
+  new.author_name := coalesce(nullif(btrim(actor_name), ''), case actor_role when 'resident' then 'Reporter' when 'admin' then 'Administrator' else 'Responder' end);
+  new.message := btrim(new.message);
+
+  if actor_role = 'resident' then
+    -- "is distinct from" also refuses guest reports, whose reporter_id is null.
+    if target.reporter_id is distinct from actor then
+      raise exception 'You can only reply to your own reports.';
+    end if;
+    if new.kind <> 'reply' then
+      raise exception 'Reporters can only post replies.';
+    end if;
+    if target.status in ('Closed', 'Rejected', 'Duplicate') then
+      raise exception 'This report is closed to new replies.';
+    end if;
+    if exists (select 1 from unnest(new.photo_paths) as path where path not like actor::text || '/%') then
+      raise exception 'Photos must be uploaded to your own folder.';
+    end if;
+  else
+    if new.kind = 'reply' then
+      raise exception 'Staff cannot post reporter replies.';
+    end if;
+    if cardinality(new.photo_paths) > 0 then
+      raise exception 'Only reporters can attach photos to a reply.';
+    end if;
+    if new.kind = 'status_update' and actor_role <> 'admin' then
+      raise exception 'Only administrators can post status updates.';
+    end if;
+    if actor_role = 'responder' then
+      actor_on_task := coalesce(target.assigned_to = actor, false) or exists (
+        select 1 from public.team_members
+        where team_members.team_id = target.assigned_team_id and team_members.profile_id = actor
+      );
+      if not actor_on_task then
+        raise exception 'Only the assigned responder or team can comment on this report.';
+      end if;
+      if new.kind <> 'comment' then
+        raise exception 'Only administrators can request additional information.';
+      end if;
+    elsif new.kind = 'info_request' and target.status in ('Closed', 'Rejected', 'Duplicate', 'Resolved') then
+      raise exception 'Information cannot be requested on a finished report.';
+    elsif new.kind = 'status_update' and target.status in ('Rejected', 'Duplicate') then
+      raise exception 'Status updates cannot be posted on rejected or duplicate reports.';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+create or replace function public.record_report_comment()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  target record;
+  event_label text;
+  notice_title text;
+begin
+  select reports.title, reports.reporter_id, reports.assigned_to into target from public.reports where reports.id = new.report_id;
+
+  if new.kind = 'status_update' then
+    insert into public.report_events (report_id, actor_id, event_type, message)
+    values (new.report_id, new.author_id, 'status_update_posted', 'Status update posted');
+
+    insert into public.notifications (recipient_id, report_id, event_type, title, message)
+    select recipients.id, new.report_id, 'report_status_update', recipients.title,
+      '"' || target.title || '": ' || left(new.message, 140)
+    from (
+      select target.reporter_id as id, 'Status update on your report' as title
+      union
+      select target.assigned_to, 'Status update on an assigned report' where target.assigned_to is distinct from target.reporter_id
+    ) as recipients
+    where recipients.id is not null and recipients.id is distinct from new.author_id;
+
+    return new;
+  end if;
+
+  event_label := case
+    when new.kind = 'info_request' then 'Additional information requested from the reporter'
+    when new.kind = 'reply' then 'Reporter replied' || case when cardinality(new.photo_paths) > 0 then ' with ' || cardinality(new.photo_paths) || ' photo(s)' else '' end
+    when new.author_role = 'admin' then 'Admin comment added'
+    else 'Responder comment added'
+  end;
+
+  insert into public.report_events (report_id, actor_id, event_type, message)
+  values (new.report_id, new.author_id, case new.kind when 'info_request' then 'information_requested' when 'reply' then 'reporter_replied' else 'comment_added' end, event_label);
+
+  notice_title := case new.kind
+    when 'info_request' then 'Additional information requested'
+    when 'reply' then 'Reporter replied'
+    else 'New comment on your report'
+  end;
+
+  insert into public.notifications (recipient_id, report_id, event_type, title, message)
+  select recipients.id, new.report_id,
+    case new.kind when 'info_request' then 'additional_information_requested' when 'reply' then 'reporter_replied' else 'report_comment' end,
+    notice_title,
+    '"' || target.title || '": ' || left(new.message, 140)
+  from (
+    select target.reporter_id as id where new.kind <> 'reply'
+    union
+    select profiles.id from public.profiles where profiles.role = 'admin' and new.kind in ('reply', 'comment') and new.author_role <> 'admin'
+    union
+    select target.assigned_to where target.assigned_to is not null and new.author_role <> 'responder' and new.kind <> 'info_request' and new.kind <> 'reply'
+    union
+    select target.assigned_to where target.assigned_to is not null and new.kind = 'reply'
+  ) as recipients
+  where recipients.id is not null and recipients.id is distinct from new.author_id;
+
+  return new;
+end;
+$$;
+
+-- Live delivery. Adding a table that is already published raises an error, so check first.
+do $$
+begin
+  if not exists (select 1 from pg_publication where pubname = 'supabase_realtime') then
+    raise notice 'The supabase_realtime publication does not exist; report messages will not update live.';
+  elsif not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'report_comments'
+  ) then
+    alter publication supabase_realtime add table public.report_comments;
+  end if;
+end;
+$$;
