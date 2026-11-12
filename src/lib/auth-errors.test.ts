@@ -49,6 +49,13 @@ describe('describeAuthError', () => {
     expect(describeAuthError({ code: 'over_email_send_rate_limit', message: 'email rate limit exceeded' }, { step: 'sign-up' }).retryAfterSeconds).toBe(CONFIRMATION_RESEND_COOLDOWN_SECONDS)
   })
 
+  it('treats a wrong or expired confirmation code as rejected', () => {
+    const expired = describeAuthError({ code: 'otp_expired', message: 'Token has expired or is invalid', status: 403 }, { step: 'verify' })
+    expect(expired).toMatchObject({ codeRejected: true })
+    expect(expired.message).toMatch(/incorrect or has expired/)
+    expect(describeAuthError({ message: 'Token has expired or is invalid' }, { step: 'verify' })).toMatchObject({ codeRejected: true })
+  })
+
   it('handles sign-ups that are turned off', () => {
     expect(describeAuthError({ code: 'signup_disabled', message: 'Signups not allowed for this instance' }, { step: 'sign-up' }).message).toMatch(/can't be created/)
   })

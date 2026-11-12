@@ -4,11 +4,9 @@ import {
   ArrowDownUp,
   ArrowLeft,
   BarChart3,
-  Bell,
   CalendarDays,
   Camera,
   Check,
-  CheckCheck,
   ChevronDown,
   Clock3,
   FileSearch,
@@ -42,7 +40,7 @@ import type { Session } from '@supabase/supabase-js'
 import { Capacitor } from '@capacitor/core'
 import { App as NativeApp } from '@capacitor/app'
 import { Geolocation } from '@capacitor/geolocation'
-import { topBackLayer, type BackLayer } from './lib/native-back'
+import { topBackLayer, topEscapeLayer, type BackLayer } from './lib/native-back'
 import { attachReporterNames, getAuthRedirectUrl, isSupabaseConfigured, reporterIdsOf, supabase, toReport, type EnvironmentalFollowUp, type NotificationRow, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
 import { apiUrl } from './lib/api-url'
 import { THEME_CHOICE_KEY, oppositeTheme, readThemeChoice, resolveTheme, type Theme } from './lib/theme-preference'
@@ -56,7 +54,7 @@ import { AdminSectionNav, adminTabId, type AdminSection } from './AdminSectionNa
 import { FilterChips } from './FilterChips'
 import { ToastViewport, toneForMessage, useToasts } from './Toaster'
 import { ViewLoader, useViewTransition } from './ViewLoader'
-import { useDisplayPrefs } from './display-prefs'
+import { motionIsReduced, useDisplayPrefs } from './display-prefs'
 import { DisplaySettings } from './DisplaySettings'
 import { SyncStatus } from './SyncStatus'
 import { resolveSyncState } from './lib/sync-status'
@@ -80,6 +78,8 @@ import { BOUNDARY_EDGE_TOLERANCE_METERS, findBarangayAt, loadBundledBarangayBoun
 import { barangayPinPoint } from './lib/barangay-center'
 import { canHandleEscalation, type SlaEscalation } from './lib/sla-escalations'
 import { EscalationList } from './EscalationList'
+import { EmailCodeStep, type CodeStatus } from './EmailCodeStep'
+import { NotificationBell, NotificationPanel } from './NotificationPanel'
 import { buildDistrictOutline } from './lib/district-outline'
 import { spreadCoincident } from './lib/map-clusters'
 import type { HeatCell } from './lib/map-style'
@@ -367,6 +367,12 @@ function App() {
   // A sign-up waiting for its confirmation link. `sentAt` and `cooldownSeconds` drive the resend countdown.
   const [pendingConfirmation, setPendingConfirmation] = useState<{ email: string; sentAt: number; cooldownSeconds: number } | null>(null)
   const [resendClock, setResendClock] = useState(() => Date.now())
+  // The 6-digit code step: what the boxes show, the latest error, and a counter that clears and shakes them.
+  const [codeStatus, setCodeStatus] = useState<CodeStatus>('waiting')
+  const [codeError, setCodeError] = useState('')
+  const [codeErrorNonce, setCodeErrorNonce] = useState(0)
+  const [codeNotice, setCodeNotice] = useState('')
+  const [codeResendBusy, setCodeResendBusy] = useState(false)
   const [authSuggestion, setAuthSuggestion] = useState<'sign-in' | 'sign-up' | null>(null)
   const [authPrefill, setAuthPrefill] = useState<{ email?: string; displayName?: string }>({})
   const [passwordSaving, setPasswordSaving] = useState(false)
@@ -386,9 +392,10 @@ function App() {
     return () => window.clearInterval(timer)
   }, [pendingConfirmation])
 
-  // A confirmation link opened from the email signs the person in; close the modal then.
+  // A sign-in from elsewhere (another tab, or a link in an older email) closes the modal. While a code is
+  // being checked or celebrated, the code step closes the modal itself after its success animation.
   useEffect(() => {
-    if (session) closeAuthModal()
+    if (session && codeStatus !== 'verifying' && codeStatus !== 'success') closeAuthModal()
   }, [session])
 
   useEffect(() => {
@@ -1346,6 +1353,8 @@ function App() {
 
   // Android back button closes the topmost open layer, then minimizes the app.
   const nativeBackRef = useRef<() => void>(() => undefined)
+  // Escape closes the topmost overlay on desktop (see topEscapeLayer); returns whether it closed one.
+  const escapeRef = useRef<() => boolean>(() => false)
   useEffect(() => {
     const isAdmin = profile?.role === 'admin'
     const open: Record<BackLayer, boolean> = {
@@ -1385,7 +1394,20 @@ function App() {
       if (layer) close[layer]()
       else void NativeApp.minimizeApp()
     }
+    escapeRef.current = () => {
+      const layer = topEscapeLayer(open)
+      if (layer) close[layer]()
+      return Boolean(layer)
+    }
   })
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return
+      if (escapeRef.current()) event.preventDefault()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return
     const listener = NativeApp.addListener('backButton', () => nativeBackRef.current())
@@ -1435,10 +1457,69 @@ function App() {
     openAuthModal(authSuggestion, { prefill: authPrefill })
   }
 
-  /** Shows the "confirm your email" step. `sentAt` 0 allows an immediate resend (the link was sent earlier). */
+  /** Shows the 6-digit code step. `sentAt` 0 allows an immediate resend. */
   function awaitConfirmation(email: string, sentAt: number) {
     setResendClock(Date.now())
     setPendingConfirmation({ email, sentAt, cooldownSeconds: CONFIRMATION_RESEND_COOLDOWN_SECONDS })
+    setCodeStatus('waiting')
+    setCodeError('')
+    setCodeNotice('')
+    setAuthMessage('')
+    setAuthSuggestion(null)
+  }
+
+  /** Emails a new confirmation code and restarts the resend countdown. */
+  async function sendConfirmationCode(email: string) {
+    if (!supabase) return
+    setCodeResendBusy(true)
+    setCodeNotice('')
+    try {
+      const { error } = await supabase.auth.resend({ type: 'signup', email, options: { emailRedirectTo: getAuthRedirectUrl() } })
+      const now = Date.now()
+      setResendClock(now)
+      if (error) {
+        const described = describeAuthError(error, { step: 'resend' })
+        setCodeError(described.message)
+        setCodeStatus('error')
+        if (described.retryAfterSeconds) setPendingConfirmation((pending) => pending && { ...pending, sentAt: now, cooldownSeconds: described.retryAfterSeconds ?? CONFIRMATION_RESEND_COOLDOWN_SECONDS })
+        return
+      }
+      setPendingConfirmation((pending) => pending && { ...pending, sentAt: now, cooldownSeconds: CONFIRMATION_RESEND_COOLDOWN_SECONDS })
+      setCodeStatus('waiting')
+      setCodeError('')
+      setCodeNotice(`A new code is on its way to ${email}.`)
+    } catch (error) {
+      setCodeError(describeAuthError(error, { step: 'resend' }).message)
+      setCodeStatus('error')
+    } finally {
+      setCodeResendBusy(false)
+    }
+  }
+
+  async function verifyEmailCode(code: string) {
+    if (!supabase || !pendingConfirmation) return
+    setCodeStatus('verifying')
+    setCodeError('')
+    setCodeNotice('')
+    try {
+      const { error } = await supabase.auth.verifyOtp({ email: pendingConfirmation.email, token: code, type: 'email' })
+      if (error) {
+        setCodeError(describeAuthError(error, { step: 'verify' }).message)
+        setCodeStatus('error')
+        setCodeErrorNonce((current) => current + 1)
+        return
+      }
+      setCodeStatus('success')
+      // Let the success animation play before the modal closes.
+      window.setTimeout(() => {
+        closeAuthModal()
+        pushToast({ message: 'Email confirmed. Welcome to GreenPulse.' })
+      }, motionIsReduced() ? 0 : 1100)
+    } catch (error) {
+      setCodeError(describeAuthError(error, { step: 'verify' }).message)
+      setCodeStatus('error')
+      setCodeErrorNonce((current) => current + 1)
+    }
   }
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
@@ -1460,7 +1541,11 @@ function App() {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) {
           const described = showAuthError(error, { step: 'sign-in' })
-          if (described.needsConfirmation) awaitConfirmation(email, 0)
+          // An unconfirmed account gets a fresh code and goes straight to the code step.
+          if (described.needsConfirmation) {
+            awaitConfirmation(email, 0)
+            void sendConfirmationCode(email)
+          }
           return
         }
         closeAuthModal()
@@ -1488,8 +1573,6 @@ function App() {
         return
       }
       awaitConfirmation(email, Date.now())
-      setAuthMessage(`We sent a confirmation link to ${email}.`)
-      setAuthMessageSuccess(true)
     } catch (error) {
       showAuthError(error, { step: mode })
     } finally {
@@ -1497,41 +1580,15 @@ function App() {
     }
   }
 
-  async function resendConfirmation() {
-    if (!supabase || !pendingConfirmation || authBusy) return
+  function resendConfirmation() {
+    if (!pendingConfirmation || codeResendBusy) return
     if (secondsUntilResend(pendingConfirmation.sentAt, Date.now(), pendingConfirmation.cooldownSeconds) > 0) return
-    const current = pendingConfirmation
-    setAuthBusy(true)
-    setAuthMessage('')
-    setAuthMessageSuccess(false)
-    setAuthSuggestion(null)
-    try {
-      const { error } = await supabase.auth.resend({ type: 'signup', email: current.email, options: { emailRedirectTo: getAuthRedirectUrl() } })
-      const now = Date.now()
-      if (error) {
-        const described = showAuthError(error, { step: 'resend' })
-        if (described.retryAfterSeconds) {
-          setResendClock(now)
-          setPendingConfirmation((pending) => pending && { ...pending, sentAt: now, cooldownSeconds: described.retryAfterSeconds ?? CONFIRMATION_RESEND_COOLDOWN_SECONDS })
-        }
-        return
-      }
-      setResendClock(now)
-      setPendingConfirmation((pending) => pending && { ...pending, sentAt: now, cooldownSeconds: CONFIRMATION_RESEND_COOLDOWN_SECONDS })
-      setAuthMessage(`A new confirmation link was sent to ${current.email}.`)
-      setAuthMessageSuccess(true)
-    } catch (error) {
-      showAuthError(error, { step: 'resend' })
-    } finally {
-      setAuthBusy(false)
-    }
+    void sendConfirmationCode(pendingConfirmation.email)
   }
 
   const confirmationResendSeconds = pendingConfirmation ? secondsUntilResend(pendingConfirmation.sentAt, resendClock, pendingConfirmation.cooldownSeconds) : 0
-  const authTitle = pendingConfirmation ? 'Confirm your email' : authModal === 'sign-up' ? 'Create your account' : 'Welcome back'
-  const authSubtitle = pendingConfirmation
-    ? `Open the link we sent to ${pendingConfirmation.email} to finish setting up your account. Check your spam folder if it isn't in your inbox.`
-    : authModal === 'sign-up'
+  const authTitle = authModal === 'sign-up' ? 'Create your account' : 'Welcome back'
+  const authSubtitle = authModal === 'sign-up'
       ? 'Create an account with your email address and a password.'
       : 'Sign in with your email and password. You can also submit a guest report with a tracking code.'
 
@@ -2561,7 +2618,7 @@ function App() {
           {savedDraftAvailable && <button className="text-button resume-draft-button" type="button" onClick={() => void restoreReportDraft(false)}>Resume draft</button>}
           <button className="icon-button theme-toggle" type="button" role="switch" onClick={() => toggleTheme()} aria-label="Dark mode" aria-checked={theme === 'dark'} title={`Turn dark mode ${theme === 'dark' ? 'off' : 'on'}`}><span className="theme-toggle-thumb" aria-hidden="true">{theme === 'dark' ? <Moon size={12} /> : <Sun size={12} />}</span></button>
           {isSupabaseConfigured && <button className="secondary-button track-report-button" type="button" aria-label="Track a report" title="Track a report" onClick={() => { setGuestTrackingToken(undefined); setGuestTrackingEmailSent(false); setGuestTrackingOpen(true) }}><FileSearch size={15} /><span className="track-report-label">Track report</span></button>}
-          {session && <button className={`icon-button notification-toggle ${notificationPanelOpen ? 'active' : ''}`} type="button" onClick={() => setNotificationPanelOpen((open) => !open)} aria-label={`Notifications${unreadNotificationCount ? `, ${unreadNotificationCount} unread` : ''}`} aria-expanded={notificationPanelOpen} title="Notifications"><Bell size={16} />{unreadNotificationCount > 0 && <span className="notification-count">{unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}</span>}</button>}
+          {session && <NotificationBell unread={unreadNotificationCount} open={notificationPanelOpen} onToggle={() => setNotificationPanelOpen((open) => !open)} />}
           {session ? <>
             {(profile?.role === 'responder' || profile?.role === 'admin') && <button className={`text-button staff-toggle ${staffMode ? 'active' : ''}`} type="button" title={staffMode ? 'Return to community view' : 'Open staff desk'} aria-label={staffMode ? 'Return to community view' : 'Open staff desk'} onClick={() => { setStaffMode((current) => !current); setStaffDashboardOpen(true) }}><ClipboardCheck size={15} /><span>{staffMode ? 'Community view' : 'Staff desk'}</span></button>}
             <button className="profile-button" type="button" onClick={() => { setProfileAvatarPreview(profileAvatarUrl); setProfileModal(true) }} aria-label="Open profile settings"><span className="avatar">{profileAvatarUrl ? <img src={profileAvatarUrl} alt="" /> : (profile?.display_name || session.user.email || session.user.phone || 'R').slice(0, 1).toUpperCase()}</span><span className="profile-label">{profile?.display_name || session.user.email || session.user.phone}</span>{profile && <span className={`profile-role-badge role-${profile.role}`}>{getRoleLabel(profile.role)}</span>}</button>
@@ -2570,17 +2627,14 @@ function App() {
         </div>
       </header>
 
-      {notificationPanelOpen && <section className="notification-panel" aria-label="Notifications">
-        <div className="notification-panel-heading"><div><strong>Notifications</strong><span>{unreadNotificationCount ? `${unreadNotificationCount} unread` : 'All caught up'}</span></div><button className="icon-button" type="button" onClick={() => setNotificationPanelOpen(false)} aria-label="Close notifications"><X size={15} /></button></div>
-        <div className="notification-list">
-          {inboxNotifications.length === 0 ? <p className="notification-empty">No notifications yet.</p> : inboxNotifications.slice(0, 40).map((notification) => <button className="notification-item" type="button" key={notification.id} onClick={() => markNotificationRead(notification)}>
-            <span className={`notification-marker ${notification.read_at ? '' : 'is-new'}`} />
-            <span><strong>{notification.title}</strong><small>{notification.message} · {formatCreatedAt(notification.created_at)}</small></span>
-            {!notification.read_at && <em>NEW</em>}
-          </button>)}
-        </div>
-        <div className="notification-panel-footer"><span>In-app alerts · email updates in profile</span><button type="button" onClick={markAllNotificationsRead} disabled={unreadNotificationCount === 0}><CheckCheck size={13} />Mark all read</button></div>
-      </section>}
+      {notificationPanelOpen && <NotificationPanel
+        notifications={inboxNotifications}
+        unread={unreadNotificationCount}
+        onSelect={markNotificationRead}
+        onMarkAllRead={markAllNotificationsRead}
+        onClose={() => setNotificationPanelOpen(false)}
+        onOpenSettings={profile ? () => { setNotificationPanelOpen(false); setProfileAvatarPreview(profileAvatarUrl); setProfileModal(true) } : undefined}
+      />}
 
       <main id="home" className={`workspace ${viewTransition.entering ? 'view-entering' : ''}`} tabIndex={-1}>
         <HeroPanel
@@ -2963,21 +3017,33 @@ function App() {
       </div>}
 
       {authModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeAuthModal() }}>
-        <section className="report-modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+        {pendingConfirmation ? <section className="report-modal auth-modal auth-code-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+          <button className="icon-button auth-code-close" type="button" onClick={closeAuthModal} aria-label="Close sign-in form"><X size={19} /></button>
+          <EmailCodeStep
+            key={pendingConfirmation.email}
+            email={pendingConfirmation.email}
+            status={codeStatus}
+            errorMessage={codeError}
+            errorNonce={codeErrorNonce}
+            notice={codeNotice}
+            resendSeconds={confirmationResendSeconds}
+            cooldownSeconds={pendingConfirmation.cooldownSeconds}
+            resendBusy={codeResendBusy}
+            onComplete={(code) => void verifyEmailCode(code)}
+            onResend={resendConfirmation}
+            onChangeEmail={() => openAuthModal('sign-up', { prefill: { ...authPrefill, email: pendingConfirmation.email } })}
+          />
+        </section> : <section className="report-modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
           <div className="modal-header"><div><p className="eyebrow">DISTRICT 5 COMMUNITY ACCOUNT</p><h2 id="auth-title">{authTitle}</h2><p>{authSubtitle}</p></div><button className="icon-button" type="button" onClick={closeAuthModal} aria-label="Close sign-in form"><X size={19} /></button></div>
           <form onSubmit={submitAuth}>
-            {!pendingConfirmation && <>
-              {authModal === 'sign-up' && <label className="field-label">Name<input name="display_name" autoComplete="name" maxLength={80} defaultValue={authPrefill.displayName} required /></label>}
-              <label className="field-label">Email<input name="email" type="email" autoComplete="email" maxLength={254} defaultValue={authPrefill.email} required /></label>
-              <label className="field-label">Password<input name="password" type="password" autoComplete={authModal === 'sign-up' ? 'new-password' : 'current-password'} minLength={authModal === 'sign-up' ? 8 : undefined} placeholder={authModal === 'sign-up' ? 'At least 8 characters' : undefined} required /></label>
-            </>}
+            {authModal === 'sign-up' && <label className="field-label">Name<input name="display_name" autoComplete="name" maxLength={80} defaultValue={authPrefill.displayName} required /></label>}
+            <label className="field-label">Email<input name="email" type="email" autoComplete="email" maxLength={254} defaultValue={authPrefill.email} required /></label>
+            <label className="field-label">Password<input name="password" type="password" autoComplete={authModal === 'sign-up' ? 'new-password' : 'current-password'} minLength={authModal === 'sign-up' ? 8 : undefined} placeholder={authModal === 'sign-up' ? 'At least 8 characters' : undefined} required /></label>
             {authMessage && <p className={authMessageSuccess ? 'auth-success' : 'form-error'} role={authMessageSuccess ? 'status' : 'alert'}>{authMessage}</p>}
             {authSuggestion && <button className="text-button" type="button" onClick={followAuthSuggestion} disabled={authBusy}>{authSuggestion === 'sign-up' ? 'Create an account instead' : 'Sign in instead'}</button>}
-            <div className="modal-actions">{pendingConfirmation
-              ? <><button className="text-button" type="button" onClick={() => openAuthModal('sign-in', { prefill: { email: pendingConfirmation.email } })} disabled={authBusy}>Back to sign in</button><button className="primary-button" type="button" onClick={() => void resendConfirmation()} disabled={authBusy || confirmationResendSeconds > 0}>{authBusy ? 'Please wait…' : confirmationResendSeconds > 0 ? `Resend email in ${confirmationResendSeconds} s` : 'Resend confirmation email'}</button></>
-              : <><button className="text-button" type="button" onClick={() => openAuthModal(authModal === 'sign-up' ? 'sign-in' : 'sign-up', { prefill: authPrefill })} disabled={authBusy}>{authModal === 'sign-up' ? 'Already have an account? Sign in' : 'Create an account'}</button><button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? 'Please wait…' : authModal === 'sign-up' ? 'Create account' : 'Sign in'}</button></>}</div>
+            <div className="modal-actions"><button className="text-button" type="button" onClick={() => openAuthModal(authModal === 'sign-up' ? 'sign-in' : 'sign-up', { prefill: authPrefill })} disabled={authBusy}>{authModal === 'sign-up' ? 'Already have an account? Sign in' : 'Create an account'}</button><button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? 'Please wait…' : authModal === 'sign-up' ? 'Create account' : 'Sign in'}</button></div>
           </form>
-        </section>
+        </section>}
       </div>}
 
       {profileModal && profile && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileModal(false) }}>

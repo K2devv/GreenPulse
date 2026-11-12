@@ -62,7 +62,7 @@ Reports are accepted for District 5 only. The form refuses a searched place, GPS
 
 Photo category suggestions send a resized copy of a selected image to Google Gemini through the Vercel `/api/classify-photo` endpoint. Add `GEMINI_API_KEY` to the Vercel production environment; keep it server-side and never use a `VITE_` prefix. The endpoint also validates the signed-in Supabase session. Users are notified before analysis that the image is sent to Google.
 
-Confirmation links and responder invitations use `VITE_APP_URL`, falling back to the current site's origin when it is not set. Loopback URLs that do not match the current origin are ignored. Set `VITE_APP_URL` to `https://greenpulse-district5.vercel.app` in Vercel and configure Supabase **Authentication → URL Configuration** with this Site URL and these allowed redirect URLs. Previously sent invitation emails keep their original redirect, so resend the invite after correcting the URL:
+Responder invitations use `VITE_APP_URL`, falling back to the current site's origin when it is not set. Loopback URLs that do not match the current origin are ignored. Set `VITE_APP_URL` to `https://greenpulse-district5.vercel.app` in Vercel and configure Supabase **Authentication → URL Configuration** with this Site URL and these allowed redirect URLs. Previously sent invitation emails keep their original redirect, so resend the invite after correcting the URL:
 
 - `https://greenpulse-district5.vercel.app/**`
 - `http://localhost:5173/**`
@@ -71,15 +71,15 @@ Responder invitations do not assign a password. After accepting the link, respon
 
 ### Accounts and sign-in
 
-Residents create an account with their name, email address, and a password of at least 8 characters, then open the confirmation link Supabase emails them. Sign-in is by email and password only; there is no phone or one-time-code sign-in. The confirmation step offers a resend button that waits 60 seconds between emails, or longer when Supabase reports a longer wait, and signing in with an unconfirmed address leads back to that step. Signing up with an address that already has an account points the person to sign-in. Profile settings → Sign-in password changes the password. The profile is created by the `create_profile_for_new_user` trigger with the resident role; sign-up metadata only carries the display name. Supabase errors are shown as plain-language messages from `src/lib/auth-errors.ts`.
+Residents create an account with their name, email address, and a password of at least 8 characters. Supabase then emails a 6-digit code (no link), and the sign-up window asks for it in six boxes: typing, pasting the whole code, and the phone's code suggestion all work, and the code is checked as soon as the last digit is entered (`verifyOtp` with `type: 'email'`). A wrong or expired code clears the boxes with a message; a new code can be requested after a 60-second countdown. Signing in with an unconfirmed address sends a fresh code and opens the same step. Signing up with an address that already has an account points the person to sign-in. Sign-in is by email and password only. Profile settings → Sign-in password changes the password. The profile is created by the `create_profile_for_new_user` trigger with the resident role; sign-up metadata only carries the display name. Supabase errors are shown as plain-language messages from `src/lib/auth-errors.ts`.
 
 Required Supabase dashboard settings:
 
-- **Authentication → Sign In / Providers → Email**: enabled, with **Confirm email** on. The Phone provider is not used.
-- **Authentication → Emails → Templates**: the default **Confirm signup** template works; it must keep `{{ .ConfirmationURL }}`.
-- **Authentication → URL Configuration**: the Site URL and redirect URLs listed above, so the confirmation link returns to the app.
+- **Authentication → Sign In / Providers → Email**: enabled, with **Confirm email** on and **Email OTP Length** set to 6. The Phone provider is not used.
+- **Authentication → Emails → Templates → Confirm signup**: paste `supabase/templates/confirm-signup.html` as the message body and use the subject `Your GreenPulse code is {{ .Token }}`. The template shows `{{ .Token }}` and has no confirmation link.
+- **Authentication → URL Configuration**: the Site URL and redirect URLs listed above.
 - **Custom SMTP** (Authentication → Emails → SMTP Settings): the built-in sender only delivers to project team members and has a very low hourly limit. Configure a custom SMTP provider before inviting residents. The app cannot bypass Supabase delivery limits.
-- **Authentication → Rate Limits**: the hourly email limit caps how many confirmation emails the whole project can send.
+- **Authentication → Rate Limits**: the hourly email limit caps how many codes the whole project can send.
 
 ## Deployment and operations
 

@@ -1,6 +1,6 @@
 /** Email and password sign-in helpers: confirmation resend cooldowns, repeat sign-ups, and user-facing auth error messages. */
 
-export type AuthStep = 'sign-in' | 'sign-up' | 'resend' | 'set-password'
+export type AuthStep = 'sign-in' | 'sign-up' | 'resend' | 'verify' | 'set-password'
 
 export type AuthErrorDescription = {
   message: string
@@ -9,6 +9,8 @@ export type AuthErrorDescription = {
   suggestSignIn?: boolean
   /** The account exists but its email address is not confirmed yet. */
   needsConfirmation?: boolean
+  /** The confirmation code was wrong or has expired. */
+  codeRejected?: boolean
 }
 
 /** Supabase sends at most about one confirmation email per address per minute. */
@@ -62,6 +64,11 @@ export function describeAuthError(error: unknown, context: { step: AuthStep }): 
       return { message: `Too many emails were requested. You can ask for another one in ${retryAfterSeconds} seconds.`, retryAfterSeconds }
     }
     return { message: `Too many attempts. Wait ${retryAfterSeconds} seconds and try again.`, retryAfterSeconds }
+  }
+
+  // Supabase answers a wrong code and an expired code the same way.
+  if (code === 'otp_expired' || /token has expired or is invalid/i.test(message)) {
+    return { message: 'That code is incorrect or has expired. Check the email, or send a new code.', codeRejected: true }
   }
 
   if (code === 'signup_disabled' || /signups not allowed/i.test(message)) {
