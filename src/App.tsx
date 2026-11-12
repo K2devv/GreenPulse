@@ -1772,7 +1772,6 @@ function App() {
     )
   }
 
-  /** Pins a spot chosen on the report-form map. Returns false when the spot is outside District 5. */
   /** A barangay picked by hand moves the form map to it, unless the pin already lies inside it. Autofill never calls this. */
   function changeReportBarangay(barangay: string) {
     setReportBarangay(barangay)
@@ -1782,6 +1781,7 @@ function App() {
     if (pinnedIn !== barangay) setReportBarangayFit((current) => ({ seq: (current?.seq ?? 0) + 1, barangay }))
   }
 
+  /** Pins a spot chosen on the report-form map. Returns false when the spot is outside District 5. */
   function selectMapLocation(coordinates: [number, number]): boolean {
     const preciseCoordinates: [number, number] = [Number(coordinates[0].toFixed(6)), Number(coordinates[1].toFixed(6))]
     // The map is blank outside the district, so a click or drag there is refused.
