@@ -1265,8 +1265,6 @@ h1 { font-weight: 650; }
 .primary-button:hover:not(:disabled) { background: linear-gradient(180deg, #357650, #285c3d); box-shadow: 0 1px 0 rgba(255, 255, 255, .22) inset, 0 10px 22px -4px rgba(46, 105, 71, .55); transform: translateY(-2px); }
 .primary-button:hover:not(:disabled)::after { animation: sheen var(--dur-slow) var(--ease-out); }
 .primary-button:active:not(:disabled) { transform: translateY(0) scale(.97); }
-.primary-button svg { transition: transform var(--dur-med) var(--ease-spring); }
-.primary-button:hover svg { transform: rotate(90deg); }
 .primary-button:disabled { opacity: .6; cursor: not-allowed; }
 .theme-dark .primary-button { box-shadow: 0 1px 0 rgba(255, 255, 255, .12) inset, 0 6px 18px -4px rgba(0, 0, 0, .5); }
 
@@ -1427,7 +1425,9 @@ h1 { font-weight: 650; }
 
 /* ---------- Primary call to action ---------- */
 .primary-button svg { transition: transform var(--dur-med) var(--ease-spring); }
-.primary-button:hover:not(:disabled) svg { transform: rotate(90deg) scale(1.1); }
+.primary-button:hover:not(:disabled) svg { transform: scale(1.1); }
+/* Only the plus spins: a quarter turn leaves it unchanged, but turns a check into a back chevron. */
+.primary-button:hover:not(:disabled) svg.lucide-plus { transform: rotate(90deg) scale(1.1); }
 .icon-button:active, .sort-button:active, .map-action-button:active, .map-location-button:active { transform: scale(.92); }
 
 /* ---------- Status pills ---------- */
