@@ -47,7 +47,7 @@ import { attachReporterNames, getAuthRedirectUrl, isSupabaseConfigured, reporter
 import { apiUrl } from './lib/api-url'
 import { THEME_CHOICE_KEY, oppositeTheme, readThemeChoice, resolveTheme, type Theme } from './lib/theme-preference'
 import { normalizePhoneNumber } from './lib/phone-number'
-import { OTP_RESEND_COOLDOWN_SECONDS, describeAuthError, isLikelyExistingAccount, normalizeOtpCode, secondsUntilResend, type OtpChannel } from './lib/auth-otp'
+import { CONFIRMATION_RESEND_COOLDOWN_SECONDS, describeAuthError, isExistingAccountSignUp, secondsUntilResend } from './lib/auth-errors'
 import { StaffWorkflowPanel } from './StaffWorkflowPanel'
 import { AnimatedNumber } from './AnimatedNumber'
 import { HeroPanel, type HeroStat } from './HeroPanel'
@@ -362,32 +362,29 @@ function App() {
   const [authMessage, setAuthMessage] = useState('')
   const [authMessageSuccess, setAuthMessageSuccess] = useState(false)
   const [authBusy, setAuthBusy] = useState(false)
-  const [signUpMethod, setSignUpMethod] = useState<'email-code' | 'phone-code'>('email-code')
-  const [signInMethod, setSignInMethod] = useState<'password' | 'email-code' | 'phone-code'>('password')
-  // A code request in flight. `sentAt` and `cooldownSeconds` drive the resend countdown; `firstSentAt` is when
-  // the account row would have been created, used to tell a new sign-up from an existing account.
-  const [pendingOtp, setPendingOtp] = useState<{ channel: OtpChannel; destination: string; purpose: 'sign-in' | 'sign-up'; sentAt: number; firstSentAt: number; cooldownSeconds: number; displayName?: string } | null>(null)
-  const [otpClock, setOtpClock] = useState(() => Date.now())
+  // A sign-up waiting for its confirmation link. `sentAt` and `cooldownSeconds` drive the resend countdown.
+  const [pendingConfirmation, setPendingConfirmation] = useState<{ email: string; sentAt: number; cooldownSeconds: number } | null>(null)
+  const [resendClock, setResendClock] = useState(() => Date.now())
   const [authSuggestion, setAuthSuggestion] = useState<'sign-in' | 'sign-up' | null>(null)
-  const [authPrefill, setAuthPrefill] = useState<{ email?: string; phone?: string; displayName?: string }>({})
+  const [authPrefill, setAuthPrefill] = useState<{ email?: string; displayName?: string }>({})
   const [passwordSaving, setPasswordSaving] = useState(false)
   const [passwordMessage, setPasswordMessage] = useState('')
   const [passwordMessageSuccess, setPasswordMessageSuccess] = useState(false)
 
-  // Resend countdown: ticks once a second until the cooldown ends; cleared when the code screen closes or on unmount.
+  // Resend countdown: ticks once a second until the cooldown ends; cleared when the modal closes or on unmount.
   useEffect(() => {
-    if (!pendingOtp) return
-    const endsAt = pendingOtp.sentAt + pendingOtp.cooldownSeconds * 1000
+    if (!pendingConfirmation) return
+    const endsAt = pendingConfirmation.sentAt + pendingConfirmation.cooldownSeconds * 1000
     if (Date.now() >= endsAt) return
     const timer = window.setInterval(() => {
       const now = Date.now()
-      setOtpClock(now)
+      setResendClock(now)
       if (now >= endsAt) window.clearInterval(timer)
     }, 1000)
     return () => window.clearInterval(timer)
-  }, [pendingOtp])
+  }, [pendingConfirmation])
 
-  // A sign-in link opened from the email (in this tab or another) signs the person in; close the code screen then.
+  // A confirmation link opened from the email signs the person in; close the modal then.
   useEffect(() => {
     if (session) closeAuthModal()
   }, [session])
@@ -1403,10 +1400,8 @@ function App() {
     .sort((first, second) => new Date(second.created_at).getTime() - new Date(first.created_at).getTime())
   const unreadNotificationCount = inboxNotifications.filter((notification) => !notification.read_at).length
 
-  function openAuthModal(mode: 'sign-in' | 'sign-up', options: { method?: 'password' | 'email-code' | 'phone-code'; prefill?: { email?: string; phone?: string; displayName?: string } } = {}) {
-    setPendingOtp(null)
-    setSignUpMethod(options.method === 'phone-code' ? 'phone-code' : 'email-code')
-    setSignInMethod(options.method ?? 'password')
+  function openAuthModal(mode: 'sign-in' | 'sign-up', options: { prefill?: { email?: string; displayName?: string } } = {}) {
+    setPendingConfirmation(null)
     setAuthPrefill(options.prefill ?? {})
     setAuthSuggestion(null)
     setAuthModal(mode)
@@ -1416,7 +1411,7 @@ function App() {
 
   function closeAuthModal() {
     setAuthModal(null)
-    setPendingOtp(null)
+    setPendingConfirmation(null)
     setAuthSuggestion(null)
     setAuthMessage('')
     setAuthMessageSuccess(false)
@@ -1430,170 +1425,110 @@ function App() {
     return described
   }
 
-  // Sign-up and code sign-in both use signInWithOtp; only sign-up may create the account. The role is never
-  // taken from metadata: the database trigger creates every new profile as a resident.
-  function requestOtpCode(request: { channel: OtpChannel; destination: string; purpose: 'sign-in' | 'sign-up'; displayName?: string }) {
-    if (!supabase) throw new Error('Sign-in is not available.')
-    const shouldCreateUser = request.purpose === 'sign-up'
-    const data = shouldCreateUser ? { data: { display_name: request.displayName ?? '' } } : {}
-    return request.channel === 'sms'
-      ? supabase.auth.signInWithOtp({ phone: request.destination, options: { shouldCreateUser, channel: 'sms', ...data } })
-      : supabase.auth.signInWithOtp({ email: request.destination, options: { shouldCreateUser, emailRedirectTo: getAuthRedirectUrl(), ...data } })
-  }
-
   function followAuthSuggestion() {
     if (!authModal || !authSuggestion) return
-    const currentMethod = authModal === 'sign-up' ? signUpMethod : signInMethod
-    openAuthModal(authSuggestion, { method: currentMethod === 'password' ? 'email-code' : currentMethod, prefill: authPrefill })
+    openAuthModal(authSuggestion, { prefill: authPrefill })
   }
 
-  function changeOtpDestination() {
-    setPendingOtp(null)
-    setAuthMessage('')
-    setAuthMessageSuccess(false)
-    setAuthSuggestion(null)
+  /** Shows the "confirm your email" step. `sentAt` 0 allows an immediate resend (the link was sent earlier). */
+  function awaitConfirmation(email: string, sentAt: number) {
+    setResendClock(Date.now())
+    setPendingConfirmation({ email, sentAt, cooldownSeconds: CONFIRMATION_RESEND_COOLDOWN_SECONDS })
   }
 
   async function submitAuth(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!supabase || !authModal) return
+    if (!supabase || !authModal || pendingConfirmation) return
     const mode = authModal
-    const form = event.currentTarget
-    const formData = new FormData(form)
+    const formData = new FormData(event.currentTarget)
+    const email = String(formData.get('email') ?? '').trim()
+    const password = String(formData.get('password') ?? '')
+    const displayName = mode === 'sign-up' ? String(formData.get('display_name') ?? '').trim() : undefined
+    setAuthPrefill({ email: email || authPrefill.email, displayName: displayName || authPrefill.displayName })
     setAuthMessage('')
     setAuthMessageSuccess(false)
     setAuthSuggestion(null)
     setBackendError('')
-
-    if (pendingOtp) {
-      const codeInput = form.elements.namedItem('otp_code')
-      const token = normalizeOtpCode(String(formData.get('otp_code') ?? ''))
-      if (!token) {
-        setAuthMessage(`Enter the 6-digit code from the ${pendingOtp.channel === 'sms' ? 'text message' : 'email'}.`)
-        if (codeInput instanceof HTMLInputElement) codeInput.focus()
-        return
-      }
-      setAuthBusy(true)
-      try {
-        const { data, error } = pendingOtp.channel === 'sms'
-          ? await supabase.auth.verifyOtp({ phone: pendingOtp.destination, token, type: 'sms' })
-          : await supabase.auth.verifyOtp({ email: pendingOtp.destination, token, type: 'email' })
-        if (error) {
-          showAuthError(error, { channel: pendingOtp.channel, step: 'verify', purpose: pendingOtp.purpose })
-          if (codeInput instanceof HTMLInputElement) {
-            codeInput.value = ''
-            codeInput.focus()
-          }
-          return
-        }
-        const destinationLabel = pendingOtp.channel === 'sms' ? 'number' : 'email'
-        const alreadyHadAccount = pendingOtp.purpose === 'sign-up' && isLikelyExistingAccount(data.user, pendingOtp.firstSentAt)
-        closeAuthModal()
-        if (alreadyHadAccount) pushToast({ tone: 'info', message: `You already had an account with this ${destinationLabel}, so you're now signed in.` })
-        else if (pendingOtp.purpose === 'sign-up') pushToast({ message: 'Your account is ready. Welcome to GreenPulse.' })
-      } catch (error) {
-        showAuthError(error, { channel: pendingOtp.channel, step: 'verify', purpose: pendingOtp.purpose })
-      } finally {
-        setAuthBusy(false)
-      }
-      return
-    }
-
-    const method = mode === 'sign-up' ? signUpMethod : signInMethod
-    const email = String(formData.get('email') ?? '').trim()
-    const enteredPhone = String(formData.get('phone') ?? '').trim()
-    const displayName = mode === 'sign-up' ? String(formData.get('display_name') ?? '').trim() : undefined
-    setAuthPrefill({ email: email || authPrefill.email, phone: enteredPhone || authPrefill.phone, displayName: displayName || authPrefill.displayName })
-
-    if (method === 'password') {
-      const password = String(formData.get('password') ?? '')
-      setAuthBusy(true)
-      try {
-        const { error } = await supabase.auth.signInWithPassword({ email, password })
-        if (error) {
-          showAuthError(error, { channel: 'email', step: 'password', purpose: 'sign-in' })
-          return
-        }
-        closeAuthModal()
-      } catch (error) {
-        showAuthError(error, { channel: 'email', step: 'password', purpose: 'sign-in' })
-      } finally {
-        setAuthBusy(false)
-      }
-      return
-    }
-
-    const channel: OtpChannel = method === 'phone-code' ? 'sms' : 'email'
-    const destination = channel === 'sms' ? normalizePhoneNumber(enteredPhone) : email
-    if (!destination) {
-      setAuthMessage(channel === 'sms' ? 'Enter a valid mobile number, such as 09XXXXXXXXX or +639XXXXXXXXX.' : 'Enter your email address.')
-      return
-    }
-    const request = { channel, destination, purpose: mode, displayName }
     setAuthBusy(true)
     try {
-      const { error } = await requestOtpCode(request)
-      if (error) {
-        showAuthError(error, { channel, step: 'send', purpose: mode })
+      if (mode === 'sign-in') {
+        const { error } = await supabase.auth.signInWithPassword({ email, password })
+        if (error) {
+          const described = showAuthError(error, { step: 'sign-in' })
+          if (described.needsConfirmation) awaitConfirmation(email, 0)
+          return
+        }
+        closeAuthModal()
         return
       }
-      const now = Date.now()
-      setOtpClock(now)
-      setPendingOtp({ ...request, sentAt: now, firstSentAt: now, cooldownSeconds: OTP_RESEND_COOLDOWN_SECONDS })
-      setAuthMessage(`Code sent to ${destination}.`)
+
+      // The role is never taken from metadata: the database trigger creates every new profile as a resident.
+      const { data, error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: { emailRedirectTo: getAuthRedirectUrl(), data: { display_name: displayName ?? '' } },
+      })
+      if (error) {
+        showAuthError(error, { step: 'sign-up' })
+        return
+      }
+      if (isExistingAccountSignUp(data.user)) {
+        setAuthMessage('An account already uses this email address. Sign in instead.')
+        setAuthSuggestion('sign-in')
+        return
+      }
+      if (data.session) {
+        closeAuthModal()
+        pushToast({ message: 'Your account is ready. Welcome to GreenPulse.' })
+        return
+      }
+      awaitConfirmation(email, Date.now())
+      setAuthMessage(`We sent a confirmation link to ${email}.`)
       setAuthMessageSuccess(true)
     } catch (error) {
-      showAuthError(error, { channel, step: 'send', purpose: mode })
+      showAuthError(error, { step: mode })
     } finally {
       setAuthBusy(false)
     }
   }
 
-  async function resendOtpCode() {
-    if (!supabase || !pendingOtp || authBusy) return
-    if (secondsUntilResend(pendingOtp.sentAt, Date.now(), pendingOtp.cooldownSeconds) > 0) return
-    const current = pendingOtp
+  async function resendConfirmation() {
+    if (!supabase || !pendingConfirmation || authBusy) return
+    if (secondsUntilResend(pendingConfirmation.sentAt, Date.now(), pendingConfirmation.cooldownSeconds) > 0) return
+    const current = pendingConfirmation
     setAuthBusy(true)
     setAuthMessage('')
     setAuthMessageSuccess(false)
     setAuthSuggestion(null)
     try {
-      const { error } = await requestOtpCode(current)
+      const { error } = await supabase.auth.resend({ type: 'signup', email: current.email, options: { emailRedirectTo: getAuthRedirectUrl() } })
       const now = Date.now()
       if (error) {
-        const described = showAuthError(error, { channel: current.channel, step: 'resend', purpose: current.purpose })
+        const described = showAuthError(error, { step: 'resend' })
         if (described.retryAfterSeconds) {
-          setOtpClock(now)
-          setPendingOtp((pending) => pending && { ...pending, sentAt: now, cooldownSeconds: described.retryAfterSeconds ?? OTP_RESEND_COOLDOWN_SECONDS })
+          setResendClock(now)
+          setPendingConfirmation((pending) => pending && { ...pending, sentAt: now, cooldownSeconds: described.retryAfterSeconds ?? CONFIRMATION_RESEND_COOLDOWN_SECONDS })
         }
         return
       }
-      setOtpClock(now)
-      setPendingOtp((pending) => pending && { ...pending, sentAt: now, cooldownSeconds: OTP_RESEND_COOLDOWN_SECONDS })
-      setAuthMessage(`A new code was sent to ${current.destination}.`)
+      setResendClock(now)
+      setPendingConfirmation((pending) => pending && { ...pending, sentAt: now, cooldownSeconds: CONFIRMATION_RESEND_COOLDOWN_SECONDS })
+      setAuthMessage(`A new confirmation link was sent to ${current.email}.`)
       setAuthMessageSuccess(true)
     } catch (error) {
-      showAuthError(error, { channel: current.channel, step: 'resend', purpose: current.purpose })
+      showAuthError(error, { step: 'resend' })
     } finally {
       setAuthBusy(false)
     }
   }
 
-  const otpResendSeconds = pendingOtp ? secondsUntilResend(pendingOtp.sentAt, otpClock, pendingOtp.cooldownSeconds) : 0
-  const authMethod = authModal === 'sign-up' ? signUpMethod : signInMethod
-  const authTitle = pendingOtp
-    ? pendingOtp.channel === 'sms' ? 'Check your phone' : 'Check your email'
-    : authModal === 'sign-up' ? 'Create your account' : 'Welcome back'
-  const authSubtitle = pendingOtp
-    ? pendingOtp.channel === 'sms'
-      ? `Enter the 6-digit code we sent by text message to ${pendingOtp.destination}.`
-      : `Enter the 6-digit code we emailed to ${pendingOtp.destination}. The email may also include a sign-in link, which works too.`
+  const confirmationResendSeconds = pendingConfirmation ? secondsUntilResend(pendingConfirmation.sentAt, resendClock, pendingConfirmation.cooldownSeconds) : 0
+  const authTitle = pendingConfirmation ? 'Confirm your email' : authModal === 'sign-up' ? 'Create your account' : 'Welcome back'
+  const authSubtitle = pendingConfirmation
+    ? `Open the link we sent to ${pendingConfirmation.email} to finish setting up your account. Check your spam folder if it isn't in your inbox.`
     : authModal === 'sign-up'
-      ? "We'll send a 6-digit code to your email or mobile number to confirm it. No password needed."
-      : 'Sign in with your password or a one-time code. You can also submit a guest report with a tracking code.'
-  const authSubmitLabel = authBusy ? 'Please wait…'
-    : pendingOtp ? pendingOtp.purpose === 'sign-up' ? 'Verify and create account' : 'Verify and sign in'
-    : authMethod === 'password' ? 'Sign in' : authMethod === 'phone-code' ? 'Text me a code' : 'Email me a code'
+      ? 'Create an account with your email address and a password.'
+      : 'Sign in with your email and password. You can also submit a guest report with a tracking code.'
 
   async function savePassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -3035,27 +2970,16 @@ function App() {
         <section className="report-modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
           <div className="modal-header"><div><p className="eyebrow">DISTRICT 5 COMMUNITY ACCOUNT</p><h2 id="auth-title">{authTitle}</h2><p>{authSubtitle}</p></div><button className="icon-button" type="button" onClick={closeAuthModal} aria-label="Close sign-in form"><X size={19} /></button></div>
           <form onSubmit={submitAuth}>
-            {pendingOtp ? <>
-              <label className="field-label">{pendingOtp.channel === 'sms' ? 'Code from the text message' : 'Code from the email'}<input name="otp_code" type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={14} placeholder="123456" required autoFocus /></label>
-              <button className="resend-confirmation" type="button" onClick={() => void resendOtpCode()} disabled={authBusy || otpResendSeconds > 0}>{otpResendSeconds > 0 ? `Resend code in ${otpResendSeconds} s` : 'Resend code'}</button>
-            </> : authModal === 'sign-up' ? <>
-              <label className="field-label">Verify with<select value={signUpMethod} onChange={(event) => { setSignUpMethod(event.target.value as 'email-code' | 'phone-code'); setAuthMessage(''); setAuthSuggestion(null) }}><option value="email-code">Email code</option><option value="phone-code">Phone code (SMS)</option></select></label>
-              <label className="field-label">Name<input name="display_name" autoComplete="name" maxLength={80} defaultValue={authPrefill.displayName} required /></label>
-              {signUpMethod === 'email-code'
-                ? <label key="email" className="field-label">Email<input name="email" type="email" autoComplete="email" maxLength={254} defaultValue={authPrefill.email} required /></label>
-                : <label key="phone" className="field-label">Mobile number<input name="phone" type="tel" autoComplete="tel" inputMode="tel" maxLength={24} placeholder="09XXXXXXXXX or +639XXXXXXXXX" defaultValue={authPrefill.phone} required /></label>}
-            </> : <>
-              <label className="field-label">Sign-in method<select value={signInMethod} onChange={(event) => { setSignInMethod(event.target.value as 'password' | 'email-code' | 'phone-code'); setAuthMessage(''); setAuthSuggestion(null) }}><option value="password">Email and password</option><option value="email-code">Email code</option><option value="phone-code">Phone code</option></select></label>
-              {signInMethod === 'phone-code'
-                ? <label key="phone" className="field-label">Mobile number<input name="phone" type="tel" autoComplete="tel" inputMode="tel" maxLength={24} placeholder="09XXXXXXXXX or +639XXXXXXXXX" defaultValue={authPrefill.phone} required /></label>
-                : <label key="email" className="field-label">Email<input name="email" type="email" autoComplete="email" maxLength={254} defaultValue={authPrefill.email} required /></label>}
-              {signInMethod === 'password' && <label className="field-label">Password<input name="password" type="password" autoComplete="current-password" required /></label>}
+            {!pendingConfirmation && <>
+              {authModal === 'sign-up' && <label className="field-label">Name<input name="display_name" autoComplete="name" maxLength={80} defaultValue={authPrefill.displayName} required /></label>}
+              <label className="field-label">Email<input name="email" type="email" autoComplete="email" maxLength={254} defaultValue={authPrefill.email} required /></label>
+              <label className="field-label">Password<input name="password" type="password" autoComplete={authModal === 'sign-up' ? 'new-password' : 'current-password'} minLength={authModal === 'sign-up' ? 8 : undefined} placeholder={authModal === 'sign-up' ? 'At least 8 characters' : undefined} required /></label>
             </>}
             {authMessage && <p className={authMessageSuccess ? 'auth-success' : 'form-error'} role={authMessageSuccess ? 'status' : 'alert'}>{authMessage}</p>}
             {authSuggestion && <button className="text-button" type="button" onClick={followAuthSuggestion} disabled={authBusy}>{authSuggestion === 'sign-up' ? 'Create an account instead' : 'Sign in instead'}</button>}
-            <div className="modal-actions">{pendingOtp
-              ? <button className="text-button" type="button" onClick={changeOtpDestination} disabled={authBusy}>{pendingOtp.channel === 'sms' ? 'Use a different number' : 'Use a different email'}</button>
-              : <button className="text-button" type="button" onClick={() => openAuthModal(authModal === 'sign-up' ? 'sign-in' : 'sign-up')} disabled={authBusy}>{authModal === 'sign-up' ? 'Already have an account? Sign in' : 'Create an account'}</button>}<button className="primary-button" type="submit" disabled={authBusy}>{authSubmitLabel}</button></div>
+            <div className="modal-actions">{pendingConfirmation
+              ? <><button className="text-button" type="button" onClick={() => openAuthModal('sign-in', { prefill: { email: pendingConfirmation.email } })} disabled={authBusy}>Back to sign in</button><button className="primary-button" type="button" onClick={() => void resendConfirmation()} disabled={authBusy || confirmationResendSeconds > 0}>{authBusy ? 'Please wait…' : confirmationResendSeconds > 0 ? `Resend email in ${confirmationResendSeconds} s` : 'Resend confirmation email'}</button></>
+              : <><button className="text-button" type="button" onClick={() => openAuthModal(authModal === 'sign-up' ? 'sign-in' : 'sign-up', { prefill: authPrefill })} disabled={authBusy}>{authModal === 'sign-up' ? 'Already have an account? Sign in' : 'Create an account'}</button><button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? 'Please wait…' : authModal === 'sign-up' ? 'Create account' : 'Sign in'}</button></>}</div>
           </form>
         </section>
       </div>}
