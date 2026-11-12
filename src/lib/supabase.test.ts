@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toReport, type ReportRow } from './supabase'
+import { attachReporterNames, reporterIdsOf, toReport, type ReportRow } from './supabase'
 
 describe('toReport', () => {
   it('maps database columns to the community report shape', () => {
@@ -62,5 +62,25 @@ describe('toReport', () => {
     }
 
     expect(toReport(row)).toMatchObject({ location: 'Community location', photoPath: undefined, photoPaths: [], assignedTo: undefined, observedAt: row.created_at })
+  })
+})
+describe('attachReporterNames', () => {
+  const base = { title: 'Report', category: 'Waste', status: 'Submitted', urgency: 'Low', description: 'Something to report.', location_label: 'Near the hall', latitude: 14.72, longitude: 121.05, created_at: '2026-11-12T08:00:00.000Z' } as const
+  const rows: ReportRow[] = [
+    { ...base, id: 'a', reporter_id: 'user-1' },
+    { ...base, id: 'b', reporter_id: 'user-2' },
+    { ...base, id: 'c', reporter_id: 'user-1' },
+    { ...base, id: 'd', reporter_id: null },
+  ]
+
+  it('lists each reporter once and skips guest reports', () => {
+    expect(reporterIdsOf(rows)).toEqual(['user-1', 'user-2'])
+  })
+
+  it('adds the reporter name that toReport reads', () => {
+    const named = attachReporterNames(rows, [{ id: 'user-1', display_name: 'Ana Cruz' }])
+    expect(named.map((row) => toReport(row).reporterName)).toEqual(['Ana Cruz', undefined, 'Ana Cruz', 'Guest reporter'])
+    // Rows without a matching profile are returned unchanged.
+    expect(named[1]).toBe(rows[1])
   })
 })

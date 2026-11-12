@@ -109,6 +109,20 @@ export type ReportEvent = {
   created_at: string
 }
 
+/** Reporter ids to look up in `profiles`, without blanks or repeats. */
+export function reporterIdsOf(rows: readonly Pick<ReportRow, 'reporter_id'>[]): string[] {
+  return [...new Set(rows.map((row) => row.reporter_id).filter((id): id is string => Boolean(id)))]
+}
+
+/**
+ * Adds each report's reporter name from `profiles` rows. Reports and profiles both reference
+ * auth.users rather than each other, so the database cannot join them in one query.
+ */
+export function attachReporterNames(rows: readonly ReportRow[], profiles: ReadonlyArray<{ id: string; display_name?: string | null }>): ReportRow[] {
+  const names = new Map(profiles.map((profile) => [profile.id, profile.display_name ?? null]))
+  return rows.map((row) => (row.reporter_id && names.has(row.reporter_id) ? { ...row, reporter: { display_name: names.get(row.reporter_id) } } : row))
+}
+
 export function toReport(row: ReportRow) {
   const reporterName = row.reporter_display_name || row.reporter?.display_name || (row.reporter_id === null ? 'Guest reporter' : undefined)
   return {

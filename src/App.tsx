@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type ReactNode } from 'react'
 import {
   AlertTriangle,
   ArrowDownUp,
@@ -38,21 +38,18 @@ import {
   Waves,
   X,
 } from 'lucide-react'
-import { renderToStaticMarkup } from 'react-dom/server'
-import MarkerClusterGroup from 'react-leaflet-cluster'
-import { Circle, MapContainer, Marker, Polygon, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet'
-import { divIcon, latLngBounds, type LatLngExpression } from 'leaflet'
 import type { Session } from '@supabase/supabase-js'
 import { Capacitor } from '@capacitor/core'
 import { App as NativeApp } from '@capacitor/app'
 import { Geolocation } from '@capacitor/geolocation'
 import { topBackLayer, type BackLayer } from './lib/native-back'
-import { getAuthRedirectUrl, isSupabaseConfigured, supabase, toReport, type EnvironmentalFollowUp, type NotificationRow, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
+import { attachReporterNames, getAuthRedirectUrl, isSupabaseConfigured, reporterIdsOf, supabase, toReport, type EnvironmentalFollowUp, type NotificationRow, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
 import { apiUrl } from './lib/api-url'
 import { THEME_CHOICE_KEY, oppositeTheme, readThemeChoice, resolveTheme, type Theme } from './lib/theme-preference'
 import { normalizePhoneNumber } from './lib/phone-number'
 import { StaffWorkflowPanel } from './StaffWorkflowPanel'
-import { AnimatedNumber, StatNumber } from './AnimatedNumber'
+import { AnimatedNumber } from './AnimatedNumber'
+import { HeroPanel, type HeroStat } from './HeroPanel'
 import { AdminBarChart, AdminTrendChart, ChartEmpty, ChartSkeleton } from './AdminCharts'
 import { AdminSectionNav, adminTabId, type AdminSection } from './AdminSectionNav'
 import { FilterChips } from './FilterChips'
@@ -71,8 +68,17 @@ import { useFlip } from './useFlip'
 import { useStatusChanges } from './useStatusChanges'
 import { EnvironmentalReports } from './EnvironmentalReports'
 import { CommunityReportDiscussion, ReportConversation, ReportTimeline, ResidentReportModal } from './ReportCommunication'
+import { ReportFeedCard } from './ReportFeedCard'
+import { ENGAGEMENT_BATCH_LIMIT, indexEngagement, type ReportEngagement } from './lib/report-engagement'
 import { isOpenStatus } from './lib/report-workflow'
 import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, clearFilter, countActiveFilters, defaultReportFilters, describeActiveFilters, detectBarangay, formatReportId, loadSavedFilters, saveFilters, type ReportFilters } from './lib/report-filters'
+import { BOUNDARY_EDGE_TOLERANCE_METERS, findBarangayAt, loadBundledBarangayBoundaries, toBarangayBoundaries, type BarangayBoundary } from './lib/barangay-lookup'
+import { buildDistrictOutline } from './lib/district-outline'
+import { spreadCoincident } from './lib/map-clusters'
+import type { HeatCell } from './lib/map-style'
+import type { Bounds } from './lib/map-viewport'
+import { MapSkeleton } from './MapParts'
+import type { MapReport } from './ReportMap'
 import { needsImmediateAttention } from './lib/report-escalation'
 import { reportDeadline } from './lib/report-deadline'
 import { formatDuration } from './lib/report-summary'
@@ -83,6 +89,10 @@ import { GuestReportTracking } from './GuestReportTracking'
 import { MAX_REPORT_PHOTOS, prepareReportPhoto } from './lib/report-photos'
 import { translate } from './lib/ui-copy'
 import { deleteLocalReportDraft, getLocalReportDraft, saveLocalReportDraft, type LocalReportDraft } from './lib/report-drafts'
+
+// The map library is large, so both maps load after the rest of the app.
+const ReportMap = lazy(() => import('./ReportMap'))
+const LocationPickerMap = lazy(() => import('./LocationPickerMap'))
 
 type Category = 'Waste' | 'Pollution' | 'Flooding' | 'Drainage' | 'Water pollution' | 'Air pollution'
 type Status = 'Submitted' | 'Under review' | 'Additional information requested' | 'Verified' | 'In progress' | 'Awaiting verification' | 'Resolved' | 'Rejected' | 'Closed' | 'Duplicate'
@@ -194,28 +204,19 @@ const categoryColors: Record<Category, string> = {
 const districtCenter: [number, number] = [14.7222, 121.0545]
 // Padded bounding box around Quezon City District 5 (south-west, north-east).
 const districtBounds: [[number, number], [number, number]] = [[14.675, 121.005], [14.775, 121.105]]
-const districtMapProps = { maxBounds: districtBounds, maxBoundsViscosity: 1, zoomSnap: 0.25, maxZoom: 19 }
+// The same box as [west, south, east, north]: what the maps show if no barangay outlines can be loaded.
+const districtBoundsBox: Bounds = [districtBounds[0][1], districtBounds[0][0], districtBounds[1][1], districtBounds[1][0]]
+// How long the maps wait for outlines imported into the database before using the bundled ones.
+const BOUNDARY_QUERY_TIMEOUT_MS = 2500
+const NO_HEAT_CELLS: HeatCell[] = []
 const isInsideDistrict = ([latitude, longitude]: [number, number]) =>
   latitude >= districtBounds[0][0] && latitude <= districtBounds[1][0] && longitude >= districtBounds[0][1] && longitude <= districtBounds[1][1]
 const outsideDistrictMessage = 'That location is outside District 5, Quezon City.'
+const outsideDistrictSubmitMessage = 'This report cannot be submitted because its location is outside District 5, Quezon City. Move the pin inside the district.'
 const categoryOptions: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage', 'Water pollution', 'Air pollution']
 const intakeCategories: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage']
 const STAFF_PAGE_SIZE = 50
 const statusOptions: Status[] = ['Submitted', 'Under review', 'Additional information requested', 'Verified', 'In progress', 'Awaiting verification', 'Resolved', 'Rejected', 'Closed', 'Duplicate']
-function createReportMarker(report: Report, selected: boolean) {
-  const categoryClass = report.category.toLowerCase().replace(/[^a-z]/g, '-')
-  const statusClass = report.status.toLowerCase().replace(/ /g, '-')
-  const Icon = categoryIcon(report.category)
-  const iconMarkup = renderToStaticMarkup(<Icon size={18} strokeWidth={2.2} aria-hidden="true" />)
-  return divIcon({
-    className: 'incident-marker-shell',
-    html: `<span class="incident-marker incident-marker-${categoryClass}${report.urgency === 'High' ? ' incident-marker-urgent' : ''}${selected ? ' incident-marker-selected' : ''}"><span class="incident-marker-icon">${iconMarkup}</span><i class="incident-marker-status status-${statusClass}"></i>${report.urgency === 'High' ? '<i class="incident-marker-urgency"></i>' : ''}</span>`,
-    iconSize: [42, 48],
-    iconAnchor: [21, 42],
-    popupAnchor: [0, -39],
-  })
-}
-
 function placeLabel(report: Pick<Report, 'barangay' | 'location'>) {
   return report.barangay ? `Barangay ${report.barangay}` : report.location || 'District 5, Quezon City'
 }
@@ -308,56 +309,6 @@ const categoryIcon = (category: Category) => {
   if (category === 'Air pollution') return Trees
   if (category === 'Drainage') return Filter
   return Leaf
-}
-
-function MapFocus({ report, center }: { report: Report | undefined; center: [number, number] }) {
-  const map = useMap()
-  useEffect(() => {
-    map.flyTo(report ? approximateCoordinates(report.coordinates) : center, report ? Math.max(map.getZoom(), 16) : map.getZoom(), { duration: 0.65 })
-  }, [center, map, report])
-  return null
-}
-
-function LocationPickerFocus({ center }: { center: [number, number] }) {
-  const map = useMap()
-  useEffect(() => {
-    map.flyTo(center, Math.max(map.getZoom(), 16), { duration: 0.35 })
-  }, [center, map])
-  return null
-}
-
-type DistrictRing = [number, number][]
-const worldRing: DistrictRing = [[-90, -180], [-90, 180], [90, 180], [90, -180]]
-const fallbackDistrictRing: DistrictRing = [
-  districtBounds[0], [districtBounds[0][0], districtBounds[1][1]], districtBounds[1], [districtBounds[1][0], districtBounds[0][1]],
-]
-
-// Dims everything outside District 5, outlines the district, and keeps the map from leaving it.
-function DistrictBoundary({ rings }: { rings: DistrictRing[] | null }) {
-  const map = useMap()
-  const districtRings = useMemo(() => rings?.length ? rings : [fallbackDistrictRing], [rings])
-  const bounds = useMemo(() => latLngBounds(districtRings.flat()), [districtRings])
-  useEffect(() => {
-    const lockMinZoom = () => map.setMinZoom(map.getBoundsZoom(bounds, false))
-    map.setMaxBounds(bounds)
-    map.fitBounds(bounds, { animate: false })
-    lockMinZoom()
-    map.on('resize', lockMinZoom)
-    return () => { map.off('resize', lockMinZoom) }
-  }, [bounds, map])
-  return <>
-    <Polygon positions={[worldRing, ...districtRings]} interactive={false} className="district-mask" pathOptions={{ stroke: false, fillOpacity: 0.97, fillRule: 'evenodd' }} />
-    {districtRings.map((ring, index) => <Polygon key={index} positions={ring} interactive={false} className="district-outline" pathOptions={{ fill: false, color: '#3f9d63', weight: 2.5, opacity: 0.95 }} />)}
-  </>
-}
-
-function LocationPickerEvents({ onSelect }: { onSelect: (coordinates: [number, number]) => void }) {
-  useMapEvents({
-    click(event) {
-      onSelect([event.latlng.lat, event.latlng.lng])
-    },
-  })
-  return null
 }
 
 function ReportListSkeleton({ rows = 4, variant = 'report' }: { rows?: number; variant?: 'report' | 'queue' }) {
@@ -471,6 +422,9 @@ function App() {
   const [selectedId, setSelectedId] = useState<string>()
   const [communityDiscussionId, setCommunityDiscussionId] = useState<string>()
   const [newestFirst, setNewestFirst] = useState(true)
+  const [reportEngagement, setReportEngagement] = useState<ReadonlyMap<string, ReportEngagement>>(() => new Map())
+  const [confirmedReportIds, setConfirmedReportIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [confirmingReportId, setConfirmingReportId] = useState<string>()
   const [mapSearchQuery, setMapSearchQuery] = useState('')
   const [mapSearchSuggestions, setMapSearchSuggestions] = useState<LocationSuggestion[]>([])
   const [mapSearchBusy, setMapSearchBusy] = useState(false)
@@ -479,18 +433,57 @@ function App() {
   const [legendOpen, setLegendOpen] = useState(false)
   const [nearbyOnly, setNearbyOnly] = useState(false)
   const [gpsLocation, setGpsLocation] = useState<[number, number]>()
-  const [districtRings, setDistrictRings] = useState<DistrictRing[] | null>(null)
+  // Barangay outlines. They cut both maps down to District 5 and fill in a report's barangay
+  // from its pin. Polygons imported into the database win, because the database trigger assigns
+  // the barangay from those; otherwise the bundled OpenStreetMap outlines are used.
+  const [importedBarangayBoundaries, setImportedBarangayBoundaries] = useState<BarangayBoundary[] | null>(null)
+  const [bundledBarangayBoundaries, setBundledBarangayBoundaries] = useState<BarangayBoundary[] | null>(null)
+  // The maps wait until both sources have answered (or given up), so the outline is drawn once and does not jump.
+  const [importedBoundariesSettled, setImportedBoundariesSettled] = useState(!supabase)
+  const [bundledBoundariesSettled, setBundledBoundariesSettled] = useState(false)
+  const barangayBoundaries = importedBarangayBoundaries ?? bundledBarangayBoundaries
+  // Polygons imported into the database are enforced there exactly, so the form is just as
+  // strict with them. The bundled outlines are simplified, so they get a few meters of slack.
+  const boundaryTolerance = importedBarangayBoundaries ? 0 : BOUNDARY_EDGE_TOLERANCE_METERS
+  const barangayBoundariesRef = useRef(barangayBoundaries)
+  const boundaryToleranceRef = useRef(boundaryTolerance)
   useEffect(() => {
-    if (!supabase) return
-    void supabase.from('district5_barangay_boundaries').select('geometry_geojson').then(({ data }) => {
-      const rings: DistrictRing[] = []
-      for (const row of data ?? []) {
-        const polygons = (row.geometry_geojson as { coordinates?: number[][][][] } | null)?.coordinates ?? []
-        for (const polygon of polygons) if (polygon[0]?.length) rings.push(polygon[0].map(([longitude, latitude]) => [latitude, longitude] as [number, number]))
-      }
-      if (rings.length) setDistrictRings(rings)
-    })
+    barangayBoundariesRef.current = barangayBoundaries
+    boundaryToleranceRef.current = boundaryTolerance
+  }, [barangayBoundaries, boundaryTolerance])
+  /**
+   * Whether a report may be placed at a point: inside a District 5 barangay. Only the coarse
+   * bounding box can be checked while no outlines are loaded (offline on a first visit).
+   */
+  function isReportableLocation(point: [number, number]) {
+    if (!isInsideDistrict(point)) return false
+    const boundaries = barangayBoundariesRef.current
+    return !boundaries || Boolean(findBarangayAt(point, boundaries, boundaryToleranceRef.current))
+  }
+  useEffect(() => {
+    let active = true
+    void loadBundledBarangayBoundaries().then((boundaries) => { if (active) setBundledBarangayBoundaries(boundaries) }).catch(() => {
+      // Offline before the outlines were ever cached: the maps show the district's bounding box
+      // and the report form falls back to the place label.
+    }).finally(() => { if (active) setBundledBoundariesSettled(true) })
+    if (!supabase) return () => { active = false }
+    const giveUp = window.setTimeout(() => setImportedBoundariesSettled(true), BOUNDARY_QUERY_TIMEOUT_MS)
+    void supabase.from('district5_barangay_boundaries').select('barangay, geometry_geojson').then(({ data }) => {
+      if (!active) return
+      const boundaries = toBarangayBoundaries(data ?? [])
+      if (boundaries.length) setImportedBarangayBoundaries(boundaries)
+      setImportedBoundariesSettled(true)
+    }, () => { if (active) setImportedBoundariesSettled(true) })
+    return () => {
+      active = false
+      window.clearTimeout(giveUp)
+    }
   }, [])
+  // The district's outer edge, merged from the barangay outlines. An incomplete database import
+  // is not used for it, because it would cut the map down to only the imported barangays.
+  const districtOutline = useMemo(() => (importedBoundariesSettled && bundledBoundariesSettled
+    ? buildDistrictOutline([importedBarangayBoundaries?.length === DISTRICT_5_BARANGAYS.length ? importedBarangayBoundaries : null, bundledBarangayBoundaries], districtBoundsBox)
+    : null), [bundledBarangayBoundaries, bundledBoundariesSettled, importedBarangayBoundaries, importedBoundariesSettled])
   const [mapLocationError, setMapLocationError] = useState('')
   const [reporting, setReporting] = useState(false)
   const reportFormRef = useRef<HTMLFormElement>(null)
@@ -513,6 +506,23 @@ function App() {
   const [locationSearchBusy, setLocationSearchBusy] = useState(false)
   const [locationSearchMessage, setLocationSearchMessage] = useState('')
   const [locationConfirmed, setLocationConfirmed] = useState(false)
+  // 'matched': the barangay was filled in from the pin. 'outside': the pin is outside every District 5 barangay.
+  const [barangayAutofill, setBarangayAutofill] = useState<'' | 'matched' | 'outside'>('')
+  // The barangay follows the pin: a search pick, map click, drag, or GPS fix all re-derive it.
+  useEffect(() => {
+    if (!reporting || !locationConfirmed || !barangayBoundaries) return
+    const match = findBarangayAt(location, barangayBoundaries, boundaryTolerance)
+    setReportBarangay(match ?? '')
+    setBarangayAutofill(match ? 'matched' : 'outside')
+  }, [reporting, location, locationConfirmed, barangayBoundaries, boundaryTolerance])
+  // Fallback while no outlines are loaded: use a barangay named in the place label, if any.
+  function fillBarangayFromLabel(label: string) {
+    if (barangayBoundariesRef.current) return
+    const detected = detectBarangay(label)
+    if (!detected) return
+    setReportBarangay(detected)
+    setBarangayAutofill('matched')
+  }
   const [guestTrackingOpen, setGuestTrackingOpen] = useState(false)
   const [guestTrackingToken, setGuestTrackingToken] = useState<string>()
   const [guestTrackingEmailSent, setGuestTrackingEmailSent] = useState(false)
@@ -539,8 +549,12 @@ function App() {
   const [clock, setClock] = useState(() => Date.now())
   const { prefs: displayPrefs, update: updateDisplayPrefs } = useDisplayPrefs()
   const [scrolledPastHeading, setScrolledPastHeading] = useState(false)
+  const [scrolledPastHero, setScrolledPastHero] = useState(false)
   useEffect(() => {
-    const onScroll = () => setScrolledPastHeading(window.scrollY > 160)
+    const onScroll = () => {
+      setScrolledPastHeading(window.scrollY > 160)
+      setScrolledPastHero(window.scrollY > 420)
+    }
     onScroll()
     window.addEventListener('scroll', onScroll, { passive: true })
     return () => window.removeEventListener('scroll', onScroll)
@@ -754,22 +768,32 @@ function App() {
         return
       }
       let privateRows: ReportRow[] = []
+      let privateError = ''
       if (session?.user) {
         const loadAllForAdminOverview = profile?.role === 'admin' && staffMode && staffDashboardOpen
         const query = loadAllForAdminOverview
-          ? supabase!.from('reports').select('*, reporter:profiles!reports_reporter_id_fkey(display_name)').order('created_at', { ascending: false })
-          : supabase!.from('reports').select('*, reporter:profiles!reports_reporter_id_fkey(display_name)').eq('reporter_id', session.user.id).order('created_at', { ascending: false })
+          ? supabase!.from('reports').select('*').order('created_at', { ascending: false })
+          : supabase!.from('reports').select('*').eq('reporter_id', session.user.id).order('created_at', { ascending: false })
         const { data, error } = await query
-        if (error) {
-          if (active) setBackendError(`Could not load your reports: ${error.message}`)
-        } else privateRows = (data ?? []) as ReportRow[]
+        if (error) privateError = `Could not load your reports: ${error.message}`
+        else {
+          privateRows = (data ?? []) as ReportRow[]
+          // Reporter names come from profiles, which residents can read only for themselves and
+          // staff for everyone. A failed lookup just leaves the names out.
+          const reporterIds = reporterIdsOf(privateRows)
+          for (let start = 0; start < reporterIds.length; start += 100) {
+            const { data: profileRows } = await supabase!.from('profiles').select('id, display_name').in('id', reporterIds.slice(start, start + 100))
+            if (profileRows) privateRows = attachReporterNames(privateRows, profileRows)
+          }
+        }
       }
       if (!active) return
       const combined = new Map<string, Report>()
       for (const row of (communityRows ?? []) as ReportRow[]) combined.set(row.id, toReport(row))
       for (const row of privateRows) combined.set(row.id, toReport(row))
       setReports([...combined.values()].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()))
-      setBackendError('')
+      // Community reports still load when the private query fails, but the problem stays visible.
+      setBackendError(privateError)
       reportsLoaded.current = true
       setLastSyncedAt(new Date())
       setLoadingReports(false)
@@ -1088,16 +1112,40 @@ function App() {
   const mapReports = nearbyOnly ? nearbyReports : visibleReports
   const orderedReports = newestFirst ? mapReports : [...mapReports].reverse()
   const heatmapCells = useMemo(() => {
-    const cells = new Map<string, { coordinates: [number, number]; count: number }>()
-    for (const report of orderedReports) {
-      const coordinates = approximateCoordinates(report.coordinates)
-      const key = coordinates.join(',')
+    const cells = new Map<string, HeatCell>()
+    for (const report of mapReports) {
+      const [latitude, longitude] = approximateCoordinates(report.coordinates)
+      const key = `${latitude},${longitude}`
       const cell = cells.get(key)
       if (cell) cell.count += 1
-      else cells.set(key, { coordinates, count: 1 })
+      else cells.set(key, { latitude, longitude, count: 1 })
     }
     return [...cells.values()]
-  }, [orderedReports])
+  }, [mapReports])
+  // Public coordinates are rounded, so reports often share a point. Each gets its own spot
+  // nearby, worked out over every loaded report so pins do not move when a filter changes.
+  const pinPositions = useMemo(() => spreadCoincident(reports.map((report) => {
+    const [latitude, longitude] = approximateCoordinates(report.coordinates)
+    return { id: report.id, latitude, longitude }
+  })), [reports])
+  const mapPins = useMemo(() => mapReports.filter((report) => isInsideDistrict(report.coordinates)).map((report): MapReport => {
+    const open = isOpenStatus(report.status)
+    return {
+      id: report.id,
+      title: report.title,
+      category: report.category,
+      status: report.status,
+      description: report.description,
+      reporterName: report.reporterName,
+      place: placeLabel(report),
+      createdLabel: formatCreatedAt(report.createdAt),
+      position: pinPositions.get(report.id) ?? approximateCoordinates(report.coordinates),
+      urgent: report.urgency === 'High' && open,
+      open,
+      color: categoryColors[report.category],
+      icon: categoryIcon(report.category),
+    }
+  }), [mapReports, pinPositions])
   const activeFilterCount = countActiveFilters(staffFilters)
   const staffFilterChips = describeActiveFilters(staffFilters, { people: new Map(staffUsers.map((user) => [user.id, user.display_name || 'Unnamed staff member'])), teams: new Map(teams.map((team) => [team.id, team.name])) })
   const adminAnalytics = useMemo(() => buildReportAnalytics(reports), [reports])
@@ -1106,6 +1154,18 @@ function App() {
   const reportListRef = useRef<HTMLDivElement>(null)
   const staffQueueRef = useRef<HTMLDivElement>(null)
   useFlip(reportListRef, orderedReports.map((report) => report.id).join('|'))
+
+  // Public "still there" and comment counts for the report cards. Until the engagement
+  // migration is applied the RPC fails, and the cards simply leave the counts out.
+  const engagementReportIds = useMemo(() => reports.slice(0, ENGAGEMENT_BATCH_LIMIT).map((report) => report.id).join(','), [reports])
+  useEffect(() => {
+    if (!supabase || !engagementReportIds || communityDiscussionId) return
+    let active = true
+    void supabase.rpc('community_report_engagement', { report_ids: engagementReportIds.split(',') }).then(({ data, error }) => {
+      if (active && !error) setReportEngagement(indexEngagement(data))
+    })
+    return () => { active = false }
+  }, [engagementReportIds, reportRefreshToken, communityDiscussionId])
   useFlip(staffQueueRef, staffQueue.map((report) => report.id).join('|'))
   const allKnownReports = useMemo(() => [...reports, ...staffQueue], [reports, staffQueue])
   const changedStatuses = useStatusChanges(allKnownReports)
@@ -1122,6 +1182,18 @@ function App() {
     query.addEventListener('change', onChange)
     return () => query.removeEventListener('change', onChange)
   }, [])
+  // Bring the expanded card into view inside the list (for example after a map pin is chosen)
+  // without scrolling the page. Phones show the map sheet instead, so they are left alone.
+  useEffect(() => {
+    const list = reportListRef.current
+    if (!selectedId || !list || mobileMap) return
+    const card = Array.from(list.children).find((element) => (element as HTMLElement).dataset.flipId === selectedId)
+    if (!card) return
+    const listBox = list.getBoundingClientRect()
+    const cardBox = card.getBoundingClientRect()
+    if (cardBox.top < listBox.top) list.scrollTop += cardBox.top - listBox.top - 8
+    else if (cardBox.bottom > listBox.bottom) list.scrollTop += Math.min(cardBox.bottom - listBox.bottom + 8, cardBox.top - listBox.top - 8)
+  }, [selectedId, mobileMap])
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'k') {
@@ -1432,20 +1504,49 @@ function App() {
     setFormNotice('You are following this report. Status and assignment changes will appear in your notifications.')
   }
 
+  async function sendReportConfirmation(reportId: string) {
+    const response = await fetch(apiUrl('/api/confirm-report'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      body: JSON.stringify({ reportId }),
+    })
+    const result = await response.json().catch(() => ({})) as { error?: string }
+    return { ok: response.ok, status: response.status, error: result.error }
+  }
+
   async function confirmNearbyReport(report: Report) {
     setFormError('')
     setFormNotice('')
     try {
-      const response = await fetch(apiUrl('/api/confirm-report'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
-        body: JSON.stringify({ reportId: report.id }),
-      })
-      const result = await response.json() as { error?: string }
-      if (!response.ok) throw new Error(result.error || 'Your confirmation could not be saved.')
+      const result = await sendReportConfirmation(report.id)
+      if (!result.ok) throw new Error(result.error || 'Your confirmation could not be saved.')
       setFormNotice('Thanks. The response team has been told that this issue is still present.')
     } catch (error) {
       setFormError(error instanceof Error ? error.message : 'Your confirmation could not be saved.')
+    }
+  }
+
+  async function confirmStillThere(report: Report) {
+    setConfirmingReportId(report.id)
+    try {
+      const result = await sendReportConfirmation(report.id)
+      const alreadyConfirmed = result.status === 409 && /already confirmed/i.test(result.error ?? '')
+      if (!result.ok && !alreadyConfirmed) throw new Error(result.error || 'Your confirmation could not be saved.')
+      setConfirmedReportIds((current) => new Set(current).add(report.id))
+      if (alreadyConfirmed) {
+        pushToast({ tone: 'info', message: 'You already confirmed this report.' })
+        return
+      }
+      setReportEngagement((current) => {
+        const counts = current.get(report.id)
+        if (!counts) return current
+        return new Map(current).set(report.id, { ...counts, stillThere: counts.stillThere + 1 })
+      })
+      pushToast({ message: 'Thanks. The response team now knows this issue is still there.' })
+    } catch (error) {
+      pushToast({ tone: 'error', message: error instanceof Error ? error.message : 'Your confirmation could not be saved.' })
+    } finally {
+      setConfirmingReportId(undefined)
     }
   }
 
@@ -1514,6 +1615,7 @@ function App() {
     setReportSubmissionId(crypto.randomUUID())
     setReportCategory('Waste')
     setReportBarangay('')
+    setBarangayAutofill('')
     setPhotoPreviews([])
     setPhotoFiles([])
     setObservedAt(toLocalDateTimeInput(new Date()))
@@ -1575,6 +1677,7 @@ function App() {
       setReportSubmissionId(draft.submissionId)
       setReportCategory((draft.formValues.category as Category) || 'Waste')
       setReportBarangay(draft.formValues.barangay || '')
+      setBarangayAutofill('')
       setObservedAt(draft.formValues.observed_at || toLocalDateTimeInput(new Date()))
       setLocationQuery(draft.formValues.location || '')
       setLocation(draft.coordinates)
@@ -1611,7 +1714,7 @@ function App() {
 
     const handlePosition = (coords: { latitude: number; longitude: number }) => {
       const currentLocation: [number, number] = [coords.latitude, coords.longitude]
-      if (!isInsideDistrict(currentLocation)) {
+      if (!isReportableLocation(currentLocation)) {
         setMapLocationError(outsideDistrictMessage)
         if (reporting) setFormError(outsideDistrictMessage)
         return
@@ -1631,7 +1734,7 @@ function App() {
       void reverseGeocode(currentLocation).then((label) => {
         if (request === geocodeRequest.current) {
           setLocationQuery(label)
-          setReportBarangay((current) => detectBarangay(label) ?? current)
+          fillBarangayFromLabel(label)
         }
       }).catch((error: unknown) => {
         if (request === geocodeRequest.current) {
@@ -1661,11 +1764,13 @@ function App() {
     )
   }
 
-  function selectMapLocation(coordinates: [number, number]) {
+  /** Pins a spot chosen on the report-form map. Returns false when the spot is outside District 5. */
+  function selectMapLocation(coordinates: [number, number]): boolean {
     const preciseCoordinates: [number, number] = [Number(coordinates[0].toFixed(6)), Number(coordinates[1].toFixed(6))]
-    if (!isInsideDistrict(preciseCoordinates)) {
+    // The map is blank outside the district, so a click or drag there is refused.
+    if (!isReportableLocation(preciseCoordinates)) {
       setFormError(outsideDistrictMessage)
-      return
+      return false
     }
     setLocation(preciseCoordinates)
     setMapCenter(preciseCoordinates)
@@ -1677,7 +1782,7 @@ function App() {
     void reverseGeocode(preciseCoordinates).then((label) => {
       if (request === geocodeRequest.current) {
         setLocationQuery(label)
-        setReportBarangay((current) => detectBarangay(label) ?? current)
+        fillBarangayFromLabel(label)
         setLocationSearchMessage('')
       }
     }).catch((error: unknown) => {
@@ -1686,6 +1791,7 @@ function App() {
         setLocationSearchMessage(`${error instanceof Error ? error.message : 'Address lookup is temporarily unavailable.'} Coordinates are still selected.`)
       }
     })
+    return true
   }
 
   async function handlePhotos(fileList: FileList | null) {
@@ -1752,6 +1858,12 @@ function App() {
       setFormError('Choose a suggested place or use your current location before submitting.')
       return
     }
+    // Reports are accepted for District 5 only, however the location was chosen (search, GPS,
+    // map, or a restored draft). The guest API and the database check this again.
+    if (!isReportableLocation(location)) {
+      setFormError(outsideDistrictSubmitMessage)
+      return
+    }
     if (title.length < 3 || description.length < 8) {
       setFormError('Add a title of at least 3 characters and a description of at least 8 characters.')
       return
@@ -1815,7 +1927,7 @@ function App() {
       }
       if (error || !data) {
         if (photoPaths.length) await supabase.storage.from('report-photos').remove(photoPaths)
-        setFormError(error?.message ?? 'The report could not be saved. Please try again.')
+        setFormError(error?.code === '22023' ? outsideDistrictSubmitMessage : error?.message ?? 'The report could not be saved. Please try again.')
         return
       }
       report = toReport(data as ReportRow)
@@ -1921,6 +2033,7 @@ function App() {
     setPhotoFiles([])
     setFormError('')
     setReportBarangay('')
+    setBarangayAutofill('')
     form.reset()
     if (guestTrackingCode) {
       setGuestTrackingToken(guestTrackingCode)
@@ -2223,6 +2336,18 @@ function App() {
   const syncState = resolveSyncState({ configured: isSupabaseConfigured, online: isOnline, syncing: reportsSyncing || staffQueueLoading, queued: Boolean(queuedUploadId), failed: reportsFailed })
   const urgentOpenCount = reports.filter((report) => report.urgency === 'High' && isOpenStatus(report.status)).length
   const contextTitle = activeViewKey === 'community' ? 'Community map' : activeViewKey === 'dashboard' ? 'Admin dashboard' : 'Staff desk'
+  // Phones only (see .report-fab): shown once the hero's button is out of view, and never over the form or the map's report sheet.
+  const fabVisible = scrolledPastHero && !reporting && !(mobileMap && selectedId)
+  const heroStats: HeroStat[] = staffMode ? [
+    { icon: ClipboardCheck, tone: 'leaf', value: openReports, label: 'Open queue' },
+    { icon: AlertTriangle, tone: 'coral', value: reports.filter((report) => report.urgency === 'High' && report.status !== 'Resolved' && report.status !== 'Rejected').length, label: 'Urgent' },
+    { icon: Clock3, tone: 'sky', value: reports.filter((report) => report.status === 'In progress').length, label: 'In progress' },
+    { icon: Check, tone: 'amber', value: reports.filter((report) => report.status === 'Resolved').length, label: 'Resolved' },
+  ] : [
+    { icon: Leaf, tone: 'leaf', value: openReports, label: 'Open reports', note: 'needs attention' },
+    { icon: ShieldCheck, tone: 'sky', value: verifiedReports, label: 'Verified or assigned', note: 'being followed up' },
+    { icon: Clock3, tone: 'amber', value: reports.length, label: 'Community reports', note: 'all time' },
+  ]
   const isStaffRole = profile?.role === 'admin' || profile?.role === 'responder'
   const paletteCommands: PaletteCommand[] = [
     { id: 'go-community', group: 'Go to', label: 'Community map', keywords: 'home public view', run: () => { setStaffMode(false); setStaffDashboardOpen(true) } },
@@ -2287,32 +2412,22 @@ function App() {
       </section>}
 
       <main id="home" className={`workspace ${viewTransition.entering ? 'view-entering' : ''}`} tabIndex={-1}>
-        <section className="page-heading">
-          <div>
-            <p className="eyebrow">COMMUNITY ENVIRONMENT DESK <span>•</span> DISTRICT 5, QUEZON CITY</p>
-            <h1>{staffMode ? <>Coordinate the response. <em>Close the loop.</em></> : <>See it. Report it. <em>Restore it.</em></>}</h1>
-            <p className="page-subtitle">{staffMode ? 'A focused queue for reviewing reports and coordinating community response.' : t('communitySubtitle')}</p>
-          </div>
-          <div className="page-heading-actions"><button className="primary-button" type="button" onClick={startReport}><Plus size={17} /> {t('reportIssue')}</button></div>
-        </section>
+        <HeroPanel
+          title={staffMode ? <>Coordinate the response. <em>Close the loop.</em></> : <>See it. Report it. <em>Restore it.</em></>}
+          subtitle={staffMode ? 'A focused queue for reviewing reports and coordinating community response.' : t('communitySubtitle')}
+          action={<button className="primary-button" type="button" onClick={startReport}><Plus size={17} /> {t('reportIssue')}</button>}
+          hint={staffMode ? undefined : 'No account needed. Takes about a minute.'}
+          stats={heroStats}
+          statsLabel={staffMode ? 'Staff response summary' : 'Community report summary'}
+          loading={loadingReports}
+          footer={!staffMode && isSupabaseConfigured ? <div className="hero-sync" aria-live="polite"><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} />{lastSyncedAt ? `Synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Syncing reports…'}<button className="text-button" type="button" disabled={!isOnline || loadingReports} onClick={() => setReportRefreshToken((current) => current + 1)}>Refresh</button></div> : undefined}
+        />
 
         {isSupabaseConfigured && !isOnline && <div className="connection-banner error-banner" role="status"><span><strong>You’re offline.</strong> Showing the last synced reports; you can save a report on this device and queue it for upload when you reconnect.{lastSyncedAt ? ` Last synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : ''}</span></div>}
         {draftMessage && <div className="connection-banner" role="status"><span>{draftMessage}</span>{savedDraftAvailable && <button className="text-button" type="button" onClick={() => void deleteSavedDraft()}>Delete saved draft</button>}</div>}
         {backendError && <div className="connection-banner error-banner" role="alert"><AlertTriangle size={16} /><span>{backendError}</span><button type="button" onClick={() => setBackendError('')} aria-label="Dismiss message"><X size={14} /></button></div>}
 
         {!staffMode && tourOpen && <WelcomeTour onDismiss={dismissTour} onSeen={markTourSeen} />}
-
-        {staffMode ? <section className="stats-row staff-stats" aria-label="Staff response summary">
-          <div className="stat-item"><span className="stat-icon stat-leaf"><ClipboardCheck size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={openReports} /></strong><span>Open queue</span></span></div>
-          <div className="stat-item"><span className="stat-icon stat-clock"><AlertTriangle size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={reports.filter((report) => report.urgency === 'High' && report.status !== 'Resolved' && report.status !== 'Rejected').length} /></strong><span>Urgent</span></span></div>
-          <div className="stat-item"><span className="stat-icon stat-verify"><Clock3 size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={reports.filter((report) => report.status === 'In progress').length} /></strong><span>In progress</span></span></div>
-          <div className="stat-item"><span className="stat-icon stat-leaf"><Check size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={reports.filter((report) => report.status === 'Resolved').length} /></strong><span>Resolved</span></span></div>
-        </section> : <section className="stats-row" aria-label="Community report summary">
-          <div className="stat-item"><span className="stat-icon stat-leaf"><Leaf size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={openReports} /></strong><span>Open reports</span></span><span className="stat-note">needs attention</span></div>
-          <div className="stat-item"><span className="stat-icon stat-verify"><ShieldCheck size={18} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={verifiedReports} /></strong><span>Verified or assigned</span></span><span className="stat-note">being followed up</span></div>
-          <div className="stat-item"><span className="stat-icon stat-clock"><Clock3 size={17} /></span><span className="stat-copy"><strong><StatNumber loading={loadingReports} value={reports.length} /></strong><span>Community reports</span></span><span className="stat-note">all time</span></div>
-          {isSupabaseConfigured && <div className="stat-updated" aria-live="polite"><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} />{lastSyncedAt ? `Synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Syncing reports…'}<button className="text-button" type="button" disabled={!isOnline || loadingReports} onClick={() => setReportRefreshToken((current) => current + 1)}>Refresh</button></div>}
-        </section>}
 
         {staffMode && profile?.role === 'admin' && staffDashboardOpen && <section className="admin-overview" aria-label="Admin dashboard" aria-busy={loadingReports}>
           <div className="analytics-heading">
@@ -2486,29 +2601,22 @@ function App() {
               <button className={`map-location-button ${nearbyOnly ? 'active' : ''}`} type="button" onClick={() => nearbyOnly ? setNearbyOnly(false) : requestLocation(true)} title={nearbyOnly ? 'Show all filtered reports' : 'Show reports near my current location'}><Crosshair size={15} /><span>{nearbyOnly ? 'All reports' : 'Nearby'}</span></button>
             </div>
             <div className="map-frame">
-              <MapContainer center={mapCenter as LatLngExpression} zoom={13} scrollWheelZoom className="leaflet-map" {...districtMapProps} zoomSnap={0}>
-                              <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" maxZoom={19} maxNativeZoom={19} />
-                              <DistrictBoundary rings={districtRings} />
-                              <MapFocus report={selectedReport} center={mapCenter} />
-                {heatmapEnabled && heatmapCells.map((cell) => {
-                  const density = cell.count >= 6 ? 'high' : cell.count >= 3 ? 'moderate' : 'low'
-                  const color = density === 'high' ? '#c94c3c' : density === 'moderate' ? '#df9638' : '#65a36e'
-                  return <Circle key={cell.coordinates.join(',')} center={cell.coordinates} radius={cell.count >= 6 ? 190 : cell.count >= 3 ? 140 : 95} pathOptions={{ color, fillColor: color, fillOpacity: 0.22, opacity: 0.38, weight: 1 }} />
-                })}
-                <MarkerClusterGroup chunkedLoading spiderfyOnMaxZoom showCoverageOnHover={false}>
-                  {orderedReports.filter((report) => isInsideDistrict(report.coordinates)).map((report) => (
-                    <Marker
-                      key={report.id}
-                      position={approximateCoordinates(report.coordinates)}
-                      icon={createReportMarker(report, selectedId === report.id)}
-                      eventHandlers={{ click: () => setSelectedId(report.id) }}
-                    >
-                      {!mobileMap && <Popup className="report-map-popup"><div><span>{report.category} · {report.status}</span><strong>{report.title}</strong><small className="popup-reporter"><UserRound size={12} />Reported by {report.reporterName || 'Community resident'}</small><small><MapPin size={12} />{placeLabel(report)}</small><p>{report.description}</p><button className="popup-discussion-button" type="button" onClick={() => setCommunityDiscussionId(report.id)}><MessageSquare size={12} /> Comments and discussion</button></div></Popup>}
-                    </Marker>
-                  ))}
-                </MarkerClusterGroup>
-                {gpsLocation && <Circle center={gpsLocation} radius={55} pathOptions={{ color: '#3979bd', fillColor: '#4388cc', fillOpacity: 0.28, weight: 2 }} />}
-              </MapContainer>
+              <Suspense fallback={<MapSkeleton />}>
+                {districtOutline ? <ReportMap
+                  theme={theme}
+                  outline={districtOutline}
+                  reports={mapPins}
+                  categoryColors={categoryColors}
+                  categoryOrder={categoryOptions}
+                  selectedId={selectedId}
+                  focus={mapCenter === districtCenter ? undefined : mapCenter}
+                  heatCells={heatmapEnabled ? heatmapCells : NO_HEAT_CELLS}
+                  gpsLocation={gpsLocation}
+                  compact={mobileMap}
+                  onSelect={setSelectedId}
+                  onDiscuss={setCommunityDiscussionId}
+                /> : <MapSkeleton />}
+              </Suspense>
               {mobileMap && selectedReport && <div className="map-sheet" role="dialog" aria-label="Selected report" key={selectedReport.id}>
                 <button className="icon-button map-sheet-close" type="button" onClick={() => setSelectedId(undefined)} aria-label="Close report preview"><X size={15} /></button>
                 <span className="map-sheet-meta">{selectedReport.category} · {selectedReport.status}</span>
@@ -2528,16 +2636,16 @@ function App() {
                                 <button className="map-action-button" type="button" onClick={() => requestLocation(false)} title="Center the map on my current location"><LocateFixed size={14} />My location</button>
                               </div>
               <div className="map-label"><MapPin size={13} /> District 5, Quezon City</div>
-              <div className={`map-legend ${legendOpen ? 'is-open' : 'is-collapsed'}`}><button className="legend-toggle" type="button" aria-expanded={legendOpen} onClick={() => setLegendOpen((open) => !open)}><Layers size={13} />Legend<ChevronDown size={12} className="legend-chevron" /></button>{legendOpen && <div className="legend-body"><span className="legend-title">CATEGORY</span>{categoryOptions.map((category) => <button type="button" className={`legend-item legend-filter ${categoryFilter === category ? 'is-active' : ''}`} key={category} aria-pressed={categoryFilter === category} title={categoryFilter === category ? 'Show all categories' : `Show only ${category}`} onClick={() => setCategoryFilter(categoryFilter === category ? 'All categories' : category)}><i style={{ backgroundColor: categoryColors[category] }} />{category}</button>)}<span className="legend-divider" /><span className="legend-title">STATUS DOT</span><span className="legend-item"><i className="status-dot status-submitted" />Submitted</span><span className="legend-item"><i className="status-dot status-under-review" />Under review</span><span className="legend-item"><i className="status-dot status-in-progress" />In progress</span><span className="legend-item"><i className="status-dot status-resolved" />Resolved</span><span className="legend-divider" /><span className="legend-title">REPORT DENSITY</span><span className="legend-item"><i className="density-low" />Low · 1–2</span><span className="legend-item"><i className="density-moderate" />Moderate · 3–5</span><span className="legend-item"><i className="density-high" />High · 6+</span></div>}</div>
+              <div className={`map-legend ${legendOpen ? 'is-open' : 'is-collapsed'}`}><button className="legend-toggle" type="button" aria-expanded={legendOpen} onClick={() => setLegendOpen((open) => !open)}><Layers size={13} />Legend<ChevronDown size={12} className="legend-chevron" /></button>{legendOpen && <div className="legend-body"><span className="legend-title">CATEGORY</span>{categoryOptions.map((category) => <button type="button" className={`legend-item legend-filter ${categoryFilter === category ? 'is-active' : ''}`} key={category} aria-pressed={categoryFilter === category} title={categoryFilter === category ? 'Show all categories' : `Show only ${category}`} onClick={() => setCategoryFilter(categoryFilter === category ? 'All categories' : category)}><i style={{ backgroundColor: categoryColors[category] }} />{category}</button>)}<span className="legend-divider" /><span className="legend-title">STATUS DOT</span><span className="legend-item"><i className="status-dot" data-status="submitted" />Submitted</span><span className="legend-item"><i className="status-dot" data-status="under-review" />Under review</span><span className="legend-item"><i className="status-dot" data-status="in-progress" />In progress</span><span className="legend-item"><i className="status-dot" data-status="resolved" />Resolved</span><span className="legend-divider" /><span className="legend-title">PINS</span><span className="legend-item"><i className="legend-urgent-ring" />High urgency</span><span className="legend-item"><i className="legend-muted-pin" />Resolved, smaller</span><span className="legend-item" title="The ring shows the mix of categories in the group"><i className="legend-cluster-ring" />Grouped reports</span><span className="legend-divider" /><span className="legend-title">REPORT DENSITY</span><span className="legend-item"><i className="density-low" />Low · 1–2</span><span className="legend-item"><i className="density-moderate" />Moderate · 3–5</span><span className="legend-item"><i className="density-high" />High · 6+</span></div>}</div>
               {mapLocationError && <p className="map-search-feedback map-search-error map-location-error" role="status">{mapLocationError}</p>}
             </div>
-            <div className="map-footnote"><MapPin size={13} /> Pins are approximate locations · Status dots match report progress <span>·</span> Select a pin for details</div>
+            <div className="map-footnote"><MapPin size={13} /><p>Pins are approximate locations <i>·</i> Status dots match report progress <i>·</i> Select a pin for details <i>·</i> Boundaries are indicative</p></div>
           </div>
 
           <aside className="reports-panel" aria-label="Recent environmental reports">
             <div className="reports-heading">
-              <div><div className="reports-title-line"><h2>{nearbyOnly ? t('nearbyReports') : t('recentReports')}</h2><span className="count-badge">{mapReports.length}</span></div><span className="section-caption">Community-submitted concerns</span></div>
-              <button className="icon-button sort-button" title={`Sort ${newestFirst ? 'oldest' : 'newest'} first`} aria-label={`Sort ${newestFirst ? 'oldest' : 'newest'} first`} onClick={() => setNewestFirst((current) => !current)} type="button"><ArrowDownUp size={16} /></button>
+              <div><div className="reports-title-line"><h2>{nearbyOnly ? t('nearbyReports') : t('recentReports')}</h2><span className="count-badge">{mapReports.length}</span></div><span className="section-caption">{[nearbyOnly ? 'Within 1 km' : null, categoryFilter, statusFilter].filter(Boolean).join(' · ')}</span></div>
+              <label className="feed-sort"><span>Sort</span><span className="select-wrap"><select value={newestFirst ? 'newest' : 'oldest'} onChange={(event) => setNewestFirst(event.target.value === 'newest')} aria-label="Sort reports"><option value="newest">Newest</option><option value="oldest">Oldest</option></select><ChevronDown size={13} /></span></label>
             </div>
             <div className="report-controls">
               <label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('searchReports')} aria-label={t('searchReports')} />{search && <button type="button" onClick={() => setSearch('')} aria-label="Clear search"><X size={13} /></button>}</label>
@@ -2548,22 +2656,39 @@ function App() {
             </div>
             {selectedOwnReport && <div className="own-report-card"><span><strong>{selectedOwnReport.title}</strong><small>Your report · {selectedOwnReport.status}</small></span><button className="secondary-button" type="button" onClick={() => setFollowUpId(selectedOwnReport.id)}><MessageSquare size={14} /> Updates and replies</button></div>}
             {selectedOwnReport && session && ['Resolved', 'Closed'].includes(selectedOwnReport.status) && <section className="own-report-feedback"><div><strong>Was this issue fixed?</strong><small>Let the response team know if it is still happening.</small></div>{selectedOwnFeedback && <p className="workflow-hint">Your last response: {selectedOwnFeedback.feedback === 'fixed' ? 'You confirmed it was fixed.' : 'You said it still needs attention.'}</p>}<label className="field-label">Optional note<textarea rows={2} maxLength={500} value={feedbackNote} onChange={(event) => setFeedbackNote(event.target.value)} placeholder="Add a short update for the response team" /></label><div className="workflow-actions"><button className="primary-button" type="button" disabled={feedbackBusy} onClick={() => void submitResidentFeedback('fixed')}>{feedbackBusy ? 'Saving…' : 'It was fixed'}</button><button className="secondary-button" type="button" disabled={feedbackBusy} onClick={() => void submitResidentFeedback('still_there')}>Still needs attention</button></div></section>}
-            <div className="report-list" ref={reportListRef}>
-              {loadingReports ? <ReportListSkeleton /> : orderedReports.length === 0 ? <div className="empty-state"><EmptyIllustration variant={isSupabaseConfigured && !isOnline ? 'offline' : 'search'} /><strong>{isSupabaseConfigured && !isOnline ? 'You are offline' : 'No matching reports'}</strong><span>{isSupabaseConfigured && !isOnline ? 'Reconnect to load the latest reports.' : 'Try changing a filter or search term.'}</span></div> : orderedReports.map((report) => {
-                const Icon = categoryIcon(report.category)
-                return <button type="button" data-flip-id={report.id} className={`report-item ${selectedId === report.id ? 'is-selected' : ''}`} key={report.id} onClick={() => setSelectedId(report.id)}>
-                  <span className="report-category-icon" style={{ color: categoryColors[report.category], backgroundColor: `${categoryColors[report.category]}14` }}><Icon size={17} /></span>
-                  <span className="report-main"><span className="report-title">{report.title}</span><span className="report-meta"><MapPin size={12} />{placeLabel(report)}<span>·</span>{formatCreatedAt(report.createdAt)}</span><span className="report-tags"><span key={report.status} className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')} ${changedStatuses.has(report.id) ? 'pill-changed' : ''}`}><i />{report.status}</span>{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}</span></span>
-                  <span className="report-id">{formatReportId(report.id)}</span>
-                </button>
-              })}
+            <div className="report-list feed-card-list" ref={reportListRef}>
+              {loadingReports ? <ReportListSkeleton /> : orderedReports.length === 0 ? <div className="empty-state"><EmptyIllustration variant={isSupabaseConfigured && !isOnline ? 'offline' : 'search'} /><strong>{isSupabaseConfigured && !isOnline ? 'You are offline' : 'No matching reports'}</strong><span>{isSupabaseConfigured && !isOnline ? 'Reconnect to load the latest reports.' : 'Try changing a filter or search term.'}</span></div> : orderedReports.map((report) => <ReportFeedCard
+                key={report.id}
+                report={report}
+                icon={categoryIcon(report.category)}
+                color={categoryColors[report.category]}
+                place={placeLabel(report)}
+                createdLabel={formatCreatedAt(report.createdAt)}
+                selected={selectedId === report.id}
+                statusChanged={changedStatuses.has(report.id)}
+                engagement={reportEngagement.get(report.id)}
+                canConfirm={isSupabaseConfigured && isOnline && isOpenStatus(report.status) && !(session && report.reporterId === session.user.id)}
+                confirmState={confirmedReportIds.has(report.id) ? 'done' : confirmingReportId === report.id ? 'busy' : 'idle'}
+                onToggle={() => setSelectedId((current) => current === report.id ? undefined : report.id)}
+                onConfirm={() => void confirmStillThere(report)}
+                userId={session?.user.id}
+                canComment={profile?.role === 'resident'}
+                onDiscuss={() => setCommunityDiscussionId(report.id)}
+                onSignIn={() => openAuthModal('sign-in')}
+                onCommentPosted={() => setReportEngagement((current) => {
+                  const counts = current.get(report.id)
+                  return counts ? new Map(current).set(report.id, { ...counts, comments: counts.comments + 1 }) : current
+                })}
+              />)}
             </div>
             <div className="panel-footer">{isSupabaseConfigured ? <span><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} /> Live community feed</span> : <span>Sample reports on this device</span>}<button type="button" onClick={() => { setCategoryFilter('All categories'); setStatusFilter('All statuses'); setSearch('') }}>{t('resetFilters')}</button></div>
           </aside>
         </section>}
 
-        <footer className="page-footer"><span>GREENPULSE <i>·</i> COMMUNITY ENVIRONMENT MONITORING · DISTRICT 5</span></footer>
+        <footer className="page-footer"><span className="footer-brand"><span className="brand-mark"><Leaf size={13} strokeWidth={2.2} /></span>GreenPulse</span><span>Community environment monitoring <i>·</i> District 5, Quezon City</span></footer>
       </main>
+
+      {!staffMode && <button className={`report-fab ${fabVisible ? 'is-visible' : ''}`} type="button" onClick={startReport} aria-label="New report" aria-hidden={!fabVisible} tabIndex={fabVisible ? 0 : -1}><Plus size={19} />Report</button>}
 
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
       <CommandPalette open={paletteOpen} commands={paletteCommands} onClose={() => setPaletteOpen(false)} />
@@ -2601,27 +2726,32 @@ function App() {
                 {locationSearchBusy && <span className="search-spinner" aria-label="Searching locations" />}
                 {locationConfirmed && <Check size={16} className="location-check" />}
               </div>
-              {locationSuggestions.length > 0 && <ul className="location-suggestions" id="location-suggestions" role="listbox" aria-label="Suggested places">{locationSuggestions.map((suggestion) => <li key={`${suggestion.label}-${suggestion.coordinates.join(',')}`}><button type="button" role="option" aria-selected="false" onClick={() => { geocodeRequest.current += 1; setLocation(suggestion.coordinates); setMapCenter(suggestion.coordinates); setLocationQuery(suggestion.label); setReportBarangay((current) => detectBarangay(suggestion.label) ?? current); setLocationConfirmed(true); setLocationSuggestions([]); setLocationSearchMessage(''); setFormError('') }}><MapPin size={15} /><span>{suggestion.label}<small>{suggestion.coordinates[0].toFixed(5)}, {suggestion.coordinates[1].toFixed(5)}</small></span></button></li>)}</ul>}
+              {locationSuggestions.length > 0 && <ul className="location-suggestions" id="location-suggestions" role="listbox" aria-label="Suggested places">{locationSuggestions.map((suggestion) => {
+                const suggestionBarangay = barangayBoundaries ? findBarangayAt(suggestion.coordinates, barangayBoundaries, boundaryTolerance) ?? null : undefined
+                return <li key={`${suggestion.label}-${suggestion.coordinates.join(',')}`}><button type="button" role="option" aria-selected="false" disabled={suggestionBarangay === null} title={suggestionBarangay === null ? 'Outside District 5. Reports are accepted for District 5 only.' : undefined} onClick={() => { geocodeRequest.current += 1; setLocation(suggestion.coordinates); setMapCenter(suggestion.coordinates); setLocationQuery(suggestion.label); fillBarangayFromLabel(suggestion.label); setLocationConfirmed(true); setLocationSuggestions([]); setLocationSearchMessage(''); setFormError('') }}><MapPin size={15} /><span>{suggestion.label}<small>{suggestionBarangay ? <b className="suggestion-barangay">Brgy. {suggestionBarangay}</b> : suggestionBarangay === null ? <b className="suggestion-barangay is-outside">Outside District 5</b> : null}{suggestion.coordinates[0].toFixed(5)}, {suggestion.coordinates[1].toFixed(5)}</small></span></button></li>
+              })}</ul>}
               {locationSearchBusy && <p className="location-feedback" role="status">Searching nearby places…</p>}
               {!locationSearchBusy && locationSearchMessage && <p className="location-feedback location-search-error" role="status">{locationSearchMessage}</p>}
               {!locationSearchBusy && locationQuery.trim().length >= 3 && !locationConfirmed && !locationSearchMessage && locationSuggestions.length === 0 && <p className="location-feedback" role="status">No matches yet. Try another nearby name or use your current location.</p>}
               <p className="location-attribution">Place suggestions by Photon · OpenStreetMap contributors</p>
             </div>
-<label className="field-label">{t('barangay')}<select name="barangay" value={reportBarangay} onChange={(event) => setReportBarangay(event.target.value)} required><option value="">Select barangay</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay}>{barangay}</option>)}</select></label>
+            <div className="barangay-field">
+              <label className="field-label">{t('barangay')}<select name="barangay" className={barangayAutofill === 'matched' ? 'is-autofilled' : undefined} value={reportBarangay} onChange={(event) => { setReportBarangay(event.target.value); setBarangayAutofill('') }} aria-describedby={barangayAutofill ? 'barangay-autofill-note' : undefined} required><option value="">Select barangay</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay}>{barangay}</option>)}</select></label>
+              {barangayAutofill === 'matched' && <p className="barangay-autofill-note" id="barangay-autofill-note" role="status" key={reportBarangay}><Check size={13} />Filled in from the pinned location. Change it if it looks wrong.</p>}
+              {barangayAutofill === 'outside' && <p className="barangay-autofill-note is-outside" id="barangay-autofill-note" role="status"><AlertTriangle size={13} />This spot is outside District 5, so the report cannot be submitted. Move the pin inside the district.</p>}
+            </div>
             <div className="location-picker-heading"><MapPin size={15} /><strong>{t('pinExactSpot')}</strong><span>{t('clickDragMap')}</span><button className="text-button" type="button" onClick={() => requestLocation()}><Crosshair size={14} /> {t('useMyLocation')}</button></div>
             <div className="report-location-map">
-              <MapContainer center={location as LatLngExpression} zoom={15} scrollWheelZoom className="leaflet-map" {...districtMapProps}>
-                <TileLayer attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" maxZoom={19} maxNativeZoom={19} />
-                <DistrictBoundary rings={districtRings} />
-                <LocationPickerFocus center={location} />
-                <LocationPickerEvents onSelect={selectMapLocation} />
-                <Marker
-                  position={location}
-                  draggable
-                  icon={divIcon({ className: 'location-pin-shell', html: '<span class="location-pin"></span>', iconSize: [24, 30], iconAnchor: [12, 28] })}
-                  eventHandlers={{ dragend: (event) => { const point = event.target.getLatLng(); selectMapLocation([point.lat, point.lng]) } }}
-                />
-              </MapContainer>
+              <Suspense fallback={<MapSkeleton />}>
+                {districtOutline ? <LocationPickerMap
+                  theme={theme}
+                  outline={districtOutline}
+                  location={location}
+                  color={categoryColors[reportCategory]}
+                  icon={categoryIcon(reportCategory)}
+                  onSelect={selectMapLocation}
+                /> : <MapSkeleton />}
+              </Suspense>
             </div>
             <div className="location-field"><div className="location-copy"><MapPin size={16} /><span><strong>{locationConfirmed ? 'Selected location' : 'Choose a map location'}</strong><small>{locationConfirmed ? `${location[0].toFixed(5)}, ${location[1].toFixed(5)}` : 'Pick a search suggestion or use GPS'}</small></span></div></div>
             {isSupabaseConfigured && <p className="privacy-note">{session ? 'Your account identity stays private. The public map shows approximate report locations.' : 'Your email and phone number stay private. The public map shows approximate report locations.'}</p>}

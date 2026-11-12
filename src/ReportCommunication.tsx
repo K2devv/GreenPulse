@@ -145,13 +145,20 @@ type CommunityReportComment = {
 const COMMUNITY_COMMENT_FIELDS = 'id, author_name, message, created_at'
 const CLOSED_FOR_COMMUNITY_COMMENTS = ['Closed', 'Rejected', 'Duplicate']
 
-export function CommunityReportDiscussion({ report, userId, canComment, onSignIn, onClose }: {
-  report: { id: string; title: string; status: string }
+type CommunityCommentsProps = {
+  report: { id: string; status: string }
   userId?: string
   canComment: boolean
   onSignIn: () => void
-  onClose: () => void
-}) {
+  /** Show only the newest comments, with a link to the full discussion. */
+  latest?: number
+  onShowAll?: () => void
+  onPosted?: () => void
+  compact?: boolean
+}
+
+/** Public comments for one report: the list, the comment form, and why posting is unavailable. */
+export function CommunityComments({ report, userId, canComment, onSignIn, latest, onShowAll, onPosted, compact = false }: CommunityCommentsProps) {
   const [comments, setComments] = useState<CommunityReportComment[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
@@ -202,26 +209,43 @@ export function CommunityReportDiscussion({ report, userId, canComment, onSignIn
     setMessage('')
     await load()
     setBusy(false)
+    onPosted?.()
   }
 
+  const shown = latest ? comments.slice(-latest) : comments
+  const hiddenCount = comments.length - shown.length
+
+  return <>
+    {!supabase ? null : loading ? <p className="workflow-hint">Loading comments…</p> : comments.length === 0 ? <p className="workflow-hint">No comments yet. Start the conversation.</p> : <ul className="conversation-list">
+      {shown.map((comment) => <li key={comment.id} className="conversation-item">
+        <div className="conversation-head"><strong>{comment.author_name}</strong><small>{formatTimelineStamp(comment.created_at)}</small></div>
+        <p>{comment.message}</p>
+      </li>)}
+    </ul>}
+    {hiddenCount > 0 && onShowAll && <button className="text-button community-comments-more" type="button" onClick={onShowAll}>View all {comments.length} comments</button>}
+    {canPost ? <form className="conversation-form" onSubmit={(event) => void post(event)}>
+      <label className="field-label">Add a comment<textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={compact ? 2 : 3} maxLength={MAX_COMMENT_LENGTH} placeholder="Share a helpful update about this report." /></label>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="workflow-actions"><button className="primary-button" type="submit" disabled={busy}><Send size={14} /> {busy ? 'Posting…' : 'Post comment'}</button></div>
+    </form> : !supabase ? <p className="workflow-hint">Community comments are available when shared reports are configured.</p> : !userId ? <div className="community-comment-signin"><p className="workflow-hint">Sign in to add a comment.</p><button className="secondary-button" type="button" onClick={onSignIn}><LogIn size={14} /> Sign in</button></div> : !canComment ? <p className="workflow-hint">Public comments are for resident accounts. Staff can use the report conversation in the Staff desk.</p> : <p className="workflow-hint">This report is closed to new comments.</p>}
+    {error && !canPost && <p className="form-error" role="alert">{error}</p>}
+  </>
+}
+
+export function CommunityReportDiscussion({ report, userId, canComment, onSignIn, onClose }: {
+  report: { id: string; title: string; status: string }
+  userId?: string
+  canComment: boolean
+  onSignIn: () => void
+  onClose: () => void
+}) {
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
     <section className="report-modal report-updates-modal community-discussion-modal" role="dialog" aria-modal="true" aria-labelledby="community-discussion-title">
       <div className="modal-header"><div><p className="eyebrow">COMMUNITY DISCUSSION</p><h2 id="community-discussion-title">{report.title}</h2><p>Status: {report.status}</p></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close community discussion"><X size={19} /></button></div>
       <section className="conversation" aria-label="Community comments">
         <h4><MessageSquare size={14} /> Public comments</h4>
         <p className="workflow-hint">Comments here are visible to anyone viewing this report on the map. Your account name stays private.</p>
-        {loading ? <p className="workflow-hint">Loading comments…</p> : comments.length === 0 ? <p className="workflow-hint">No comments yet. Start the conversation.</p> : <ul className="conversation-list">
-          {comments.map((comment) => <li key={comment.id} className="conversation-item">
-            <div className="conversation-head"><strong>{comment.author_name}</strong><small>{formatTimelineStamp(comment.created_at)}</small></div>
-            <p>{comment.message}</p>
-          </li>)}
-        </ul>}
-        {canPost ? <form className="conversation-form" onSubmit={(event) => void post(event)}>
-          <label className="field-label">Add a comment<textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={3} maxLength={MAX_COMMENT_LENGTH} placeholder="Share a helpful update about this report." /></label>
-          {error && <p className="form-error" role="alert">{error}</p>}
-          <div className="workflow-actions"><button className="primary-button" type="submit" disabled={busy}><Send size={14} /> {busy ? 'Posting…' : 'Post comment'}</button></div>
-        </form> : !supabase ? <p className="workflow-hint">Community comments are available when shared reports are configured.</p> : !userId ? <div className="community-comment-signin"><p className="workflow-hint">Sign in to add a comment.</p><button className="secondary-button" type="button" onClick={onSignIn}><LogIn size={14} /> Sign in</button></div> : !canComment ? <p className="workflow-hint">Public comments are for resident accounts. Staff can use the report conversation in the Staff desk.</p> : <p className="workflow-hint">This report is closed to new comments.</p>}
-        {error && !canPost && <p className="form-error" role="alert">{error}</p>}
+        <CommunityComments report={report} userId={userId} canComment={canComment} onSignIn={onSignIn} />
       </section>
     </section>
   </div>

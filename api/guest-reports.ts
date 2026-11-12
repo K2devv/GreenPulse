@@ -4,6 +4,8 @@ import { publicGuestEvents, publicGuestOutcome } from '../src/lib/guest-tracking
 import { claimRateLimit, hashRateLimitSubject, rateLimitAddress } from '../server/request-safety'
 import { withAppCors } from '../server/app-cors'
 import { normalizePhoneNumber } from '../src/lib/phone-number'
+import { findBarangayAt } from '../src/lib/barangay-lookup'
+import bundledBoundaries from '../src/data/district5-barangays.json'
 
 declare const process: { env: Record<string, string | undefined> }
 
@@ -15,6 +17,7 @@ const allowedPhotoTypes: Record<string, string> = { 'image/jpeg': 'jpg', 'image/
 const maxPhotoBytes = 2_500_000
 const maxGuestPhotoCount = 5
 const maxEncodedPhotoChars = 650_000
+const outsideDistrictError = 'This report cannot be submitted because its location is outside District 5, Quezon City. Move the pin inside the district.'
 
 function jsonResponse(body: Record<string, unknown>, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -159,15 +162,18 @@ async function handler(request: Request): Promise<Response> {
   if (Number.isNaN(observedAt.getTime()) || observedAt.getTime() > Date.now() + 5 * 60_000) return jsonResponse({ error: 'Choose a valid observation date and time.' }, 400)
   if (!categories.has(category) || !urgencies.has(urgency)) return jsonResponse({ error: 'Choose a valid category and urgency.' }, 400)
   if (!Number.isFinite(latitude) || !Number.isFinite(longitude) || latitude < 14.65 || latitude > 14.82 || longitude < 120.99 || longitude > 121.13) {
-    return jsonResponse({ error: 'Choose a location within District 5, Quezon City.' }, 400)
+    return jsonResponse({ error: outsideDistrictError }, 400)
   }
   const { data: boundaryBarangay, error: boundaryError } = await admin.rpc('district5_barangay_for_point', {
     p_latitude: latitude,
     p_longitude: longitude,
   })
-  if (boundaryError?.code === '22023') return jsonResponse({ error: 'Choose a point inside a loaded District 5 barangay boundary.' }, 400)
+  if (boundaryError?.code === '22023') return jsonResponse({ error: outsideDistrictError }, 400)
   if (boundaryError) return jsonResponse({ error: 'District 5 boundary validation is unavailable. Contact the pilot administrator.' }, 503)
   if (typeof boundaryBarangay === 'string') barangay = boundaryBarangay
+  // The database answers null while no boundary polygons are imported. The bundled barangay
+  // outlines then decide, so a report outside District 5 is refused either way.
+  else if (!findBarangayAt([latitude, longitude], bundledBoundaries.barangays)) return jsonResponse({ error: outsideDistrictError }, 400)
   if (barangay && !DISTRICT_5_BARANGAYS.includes(barangay as (typeof DISTRICT_5_BARANGAYS)[number])) return jsonResponse({ error: 'Choose a listed District 5 barangay.' }, 400)
   if (email && !validEmail(email)) return jsonResponse({ error: 'Enter a valid email address or leave it blank.' }, 400)
   if (phoneInput && !phone) return jsonResponse({ error: 'Enter a valid mobile number, such as 09XXXXXXXXX or +639XXXXXXXXX.' }, 400)
