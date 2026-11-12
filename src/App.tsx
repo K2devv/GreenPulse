@@ -71,6 +71,8 @@ import { CommunityReportDiscussion, ReportConversation, ReportTimeline, Resident
 import { ReportFeedCard } from './ReportFeedCard'
 import { ENGAGEMENT_BATCH_LIMIT, indexEngagement, type ReportEngagement } from './lib/report-engagement'
 import { isOpenStatus } from './lib/report-workflow'
+import { ExactLocation } from './ExactLocation'
+import { formatPlaceLabel } from './lib/place-label'
 import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, clearFilter, countActiveFilters, defaultReportFilters, describeActiveFilters, detectBarangay, formatReportId, loadSavedFilters, saveFilters, type ReportFilters } from './lib/report-filters'
 import { BOUNDARY_EDGE_TOLERANCE_METERS, findBarangayAt, loadBundledBarangayBoundaries, toBarangayBoundaries, type BarangayBoundary } from './lib/barangay-lookup'
 import { buildDistrictOutline } from './lib/district-outline'
@@ -254,11 +256,9 @@ async function searchPlaces(query: string, center: [number, number], signal: Abo
     const coordinates = feature.geometry?.coordinates
     const properties = feature.properties
     if (!coordinates || !properties || !Number.isFinite(coordinates[0]) || !Number.isFinite(coordinates[1])) return []
-    const parts = [properties.name, properties.street, properties.district, properties.city, properties.state, properties.country]
-      .filter((part): part is string => Boolean(part))
-      .filter((part, index, allParts) => allParts.indexOf(part) === index)
+    const label = formatPlaceLabel(properties)
     const point: [number, number] = [coordinates[1], coordinates[0]]
-    return parts.length && isInsideDistrict(point) ? [{ label: parts.join(', '), coordinates: point }] : []
+    return label && isInsideDistrict(point) ? [{ label, coordinates: point }] : []
   })
 }
 
@@ -270,11 +270,9 @@ async function reverseGeocode(coordinates: [number, number], signal?: AbortSigna
     features?: Array<{ properties?: Record<string, string | undefined> }>
   }
   const properties = result.features?.[0]?.properties
-  const parts = [properties?.name, properties?.street, properties?.district, properties?.city, properties?.state]
-    .filter((part): part is string => Boolean(part))
-    .filter((part, index, allParts) => allParts.indexOf(part) === index)
-  if (!parts.length) throw new Error('No nearby address could be found.')
-  return parts.join(', ')
+  const label = formatPlaceLabel(properties)
+  if (!label) throw new Error('No nearby address could be found.')
+  return label
 }
 
 function formatCreatedAt(value: string) {
@@ -418,6 +416,14 @@ function App() {
   const [staffPhotoUrls, setStaffPhotoUrls] = useState<{ original: string[]; resolution: string[] }>({ original: [], resolution: [] })
   const [categoryFilter, setCategoryFilter] = useState('All categories')
   const [statusFilter, setStatusFilter] = useState('All statuses')
+  // '' is every barangay. Each change also asks the map to fit that barangay (seq makes a repeat count).
+  const [barangayFilter, setBarangayFilter] = useState('')
+  const [mapBarangayFit, setMapBarangayFit] = useState<{ seq: number; barangay: string }>()
+  const [reportBarangayFit, setReportBarangayFit] = useState<{ seq: number; barangay: string }>()
+  function chooseBarangayFilter(barangay: string) {
+    setBarangayFilter(barangay)
+    setMapBarangayFit((current) => ({ seq: (current?.seq ?? 0) + 1, barangay }))
+  }
   const [search, setSearch] = useState('')
   const [selectedId, setSelectedId] = useState<string>()
   const [communityDiscussionId, setCommunityDiscussionId] = useState<string>()
@@ -1104,9 +1110,11 @@ function App() {
   const visibleReports = useMemo(() => reports.filter((report) => {
     const matchesCategory = categoryFilter === 'All categories' || report.category === categoryFilter
     const matchesStatus = statusFilter === 'All statuses' || report.status === statusFilter
+    // A report without a recorded barangay (the demo reports, for one) is placed by where its pin lies.
+    const matchesBarangay = !barangayFilter || (report.barangay ?? (barangayBoundaries ? findBarangayAt(report.coordinates, barangayBoundaries, boundaryTolerance) : undefined)) === barangayFilter
     const matchesSearch = `${report.title} ${report.location} ${report.id}`.toLowerCase().includes(search.toLowerCase())
-    return matchesCategory && matchesStatus && matchesSearch
-  }), [categoryFilter, reports, search, statusFilter])
+    return matchesCategory && matchesStatus && matchesBarangay && matchesSearch
+  }), [barangayBoundaries, barangayFilter, boundaryTolerance, categoryFilter, reports, search, statusFilter])
   const nearbyCenter = gpsLocation ?? mapCenter
   const nearbyReports = useMemo(() => visibleReports.filter((report) => distanceInMeters(report.coordinates, nearbyCenter) <= 1000), [nearbyCenter, visibleReports])
   const mapReports = nearbyOnly ? nearbyReports : visibleReports
@@ -1765,6 +1773,15 @@ function App() {
   }
 
   /** Pins a spot chosen on the report-form map. Returns false when the spot is outside District 5. */
+  /** A barangay picked by hand moves the form map to it, unless the pin already lies inside it. Autofill never calls this. */
+  function changeReportBarangay(barangay: string) {
+    setReportBarangay(barangay)
+    setBarangayAutofill('')
+    if (!barangay) return
+    const pinnedIn = locationConfirmed && barangayBoundaries ? findBarangayAt(location, barangayBoundaries, boundaryTolerance) : undefined
+    if (pinnedIn !== barangay) setReportBarangayFit((current) => ({ seq: (current?.seq ?? 0) + 1, barangay }))
+  }
+
   function selectMapLocation(coordinates: [number, number]): boolean {
     const preciseCoordinates: [number, number] = [Number(coordinates[0].toFixed(6)), Number(coordinates[1].toFixed(6))]
     // The map is blank outside the district, so a click or drag there is refused.
@@ -2586,7 +2603,7 @@ function App() {
               <p className="section-caption">Observed {staffReport.observedAt ? new Date(staffReport.observedAt).toLocaleString() : 'at submission'}</p>
               {staffReport.additionalInfo && <p className="workflow-note-text"><strong>Additional information</strong>{staffReport.additionalInfo}</p>}
               <div className="meta-chips"><span className="meta-chip"><MapPin size={12} />{staffReport.barangay ? `Barangay ${staffReport.barangay}` : 'No barangay recorded'}</span></div>
-              <p className="staff-location"><MapPin size={14} />{staffReport.location} <span>({staffReport.coordinates.map((coordinate) => coordinate.toFixed(5)).join(', ')})</span></p>
+              <ExactLocation label={staffReport.location} coordinates={staffReport.coordinates} />
               {session && (profile?.role === 'admin' || profile?.role === 'responder') && <StaffWorkflowPanel report={staffReport} role={profile.role} userId={session.user.id} staffUsers={staffUsers} teams={teams} allReports={[...reports, ...staffQueue]} originalPhotoUrls={staffPhotoUrls.original} resolutionPhotoUrls={staffPhotoUrls.resolution} events={reportEvents} residentFeedback={staffResolutionFeedback} onSubmit={applyReportUpdate} />}
               {session && profile && (profile.role === 'admin' || profile.role === 'responder') && <ReportConversation key={staffReport.id} reportId={staffReport.id} status={staffReport.status} viewerRole={profile.role} userId={session.user.id} isReporter={false} isOnTask={staffOnTask} onPosted={() => void refreshStaffEvents(staffReport.id)} />}
               <ReportTimeline events={reportEvents} />
@@ -2610,6 +2627,7 @@ function App() {
                   categoryOrder={categoryOptions}
                   selectedId={selectedId}
                   focus={mapCenter === districtCenter ? undefined : mapCenter}
+                  fitBarangay={mapBarangayFit}
                   heatCells={heatmapEnabled ? heatmapCells : NO_HEAT_CELLS}
                   gpsLocation={gpsLocation}
                   compact={mobileMap}
@@ -2644,7 +2662,7 @@ function App() {
 
           <aside className="reports-panel" aria-label="Recent environmental reports">
             <div className="reports-heading">
-              <div><div className="reports-title-line"><h2>{nearbyOnly ? t('nearbyReports') : t('recentReports')}</h2><span className="count-badge">{mapReports.length}</span></div><span className="section-caption">{[nearbyOnly ? 'Within 1 km' : null, categoryFilter, statusFilter].filter(Boolean).join(' · ')}</span></div>
+              <div><div className="reports-title-line"><h2>{nearbyOnly ? t('nearbyReports') : t('recentReports')}</h2><span className="count-badge">{mapReports.length}</span></div><span className="section-caption">{[nearbyOnly ? 'Within 1 km' : null, categoryFilter, statusFilter, barangayFilter ? `Barangay ${barangayFilter}` : null].filter(Boolean).join(' · ')}</span></div>
               <label className="feed-sort"><span>Sort</span><span className="select-wrap"><select value={newestFirst ? 'newest' : 'oldest'} onChange={(event) => setNewestFirst(event.target.value === 'newest')} aria-label="Sort reports"><option value="newest">Newest</option><option value="oldest">Oldest</option></select><ChevronDown size={13} /></span></label>
             </div>
             <div className="report-controls">
@@ -2653,8 +2671,11 @@ function App() {
                 <label className="select-wrap"><span className="sr-only">Filter by category</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>All categories</option>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={13} /></label>
                 <label className="select-wrap"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All statuses</option>{statusOptions.filter((status) => status !== 'Duplicate').map((status) => <option key={status}>{status}</option>)}</select><ChevronDown size={13} /></label>
               </div>
+              <div className="filter-row" style={{ gridTemplateColumns: '1fr' }}>
+                <label className="select-wrap"><span className="sr-only">Filter by barangay</span><select value={barangayFilter} onChange={(event) => chooseBarangayFilter(event.target.value)}><option value="">All barangays</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay} value={barangay}>{barangay}</option>)}</select><ChevronDown size={13} /></label>
+              </div>
             </div>
-            {selectedOwnReport && <div className="own-report-card"><span><strong>{selectedOwnReport.title}</strong><small>Your report · {selectedOwnReport.status}</small></span><button className="secondary-button" type="button" onClick={() => setFollowUpId(selectedOwnReport.id)}><MessageSquare size={14} /> Updates and replies</button></div>}
+            {selectedOwnReport && <div className="own-report-card"><span><strong>{selectedOwnReport.title}</strong><small>Your report · {selectedOwnReport.status}</small></span><button className="secondary-button" type="button" onClick={() => setFollowUpId(selectedOwnReport.id)}><MessageSquare size={14} /> Updates and replies</button><ExactLocation label={selectedOwnReport.location} coordinates={selectedOwnReport.coordinates} /></div>}
             {selectedOwnReport && session && ['Resolved', 'Closed'].includes(selectedOwnReport.status) && <section className="own-report-feedback"><div><strong>Was this issue fixed?</strong><small>Let the response team know if it is still happening.</small></div>{selectedOwnFeedback && <p className="workflow-hint">Your last response: {selectedOwnFeedback.feedback === 'fixed' ? 'You confirmed it was fixed.' : 'You said it still needs attention.'}</p>}<label className="field-label">Optional note<textarea rows={2} maxLength={500} value={feedbackNote} onChange={(event) => setFeedbackNote(event.target.value)} placeholder="Add a short update for the response team" /></label><div className="workflow-actions"><button className="primary-button" type="button" disabled={feedbackBusy} onClick={() => void submitResidentFeedback('fixed')}>{feedbackBusy ? 'Saving…' : 'It was fixed'}</button><button className="secondary-button" type="button" disabled={feedbackBusy} onClick={() => void submitResidentFeedback('still_there')}>Still needs attention</button></div></section>}
             <div className="report-list feed-card-list" ref={reportListRef}>
               {loadingReports ? <ReportListSkeleton /> : orderedReports.length === 0 ? <div className="empty-state"><EmptyIllustration variant={isSupabaseConfigured && !isOnline ? 'offline' : 'search'} /><strong>{isSupabaseConfigured && !isOnline ? 'You are offline' : 'No matching reports'}</strong><span>{isSupabaseConfigured && !isOnline ? 'Reconnect to load the latest reports.' : 'Try changing a filter or search term.'}</span></div> : orderedReports.map((report) => <ReportFeedCard
@@ -2681,7 +2702,7 @@ function App() {
                 })}
               />)}
             </div>
-            <div className="panel-footer">{isSupabaseConfigured ? <span><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} /> Live community feed</span> : <span>Sample reports on this device</span>}<button type="button" onClick={() => { setCategoryFilter('All categories'); setStatusFilter('All statuses'); setSearch('') }}>{t('resetFilters')}</button></div>
+            <div className="panel-footer">{isSupabaseConfigured ? <span><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} /> Live community feed</span> : <span>Sample reports on this device</span>}<button type="button" onClick={() => { setCategoryFilter('All categories'); setStatusFilter('All statuses'); setSearch(''); if (barangayFilter) chooseBarangayFilter('') }}>{t('resetFilters')}</button></div>
           </aside>
         </section>}
 
@@ -2736,7 +2757,7 @@ function App() {
               <p className="location-attribution">Place suggestions by Photon · OpenStreetMap contributors</p>
             </div>
             <div className="barangay-field">
-              <label className="field-label">{t('barangay')}<select name="barangay" className={barangayAutofill === 'matched' ? 'is-autofilled' : undefined} value={reportBarangay} onChange={(event) => { setReportBarangay(event.target.value); setBarangayAutofill('') }} aria-describedby={barangayAutofill ? 'barangay-autofill-note' : undefined} required><option value="">Select barangay</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay}>{barangay}</option>)}</select></label>
+              <label className="field-label">{t('barangay')}<select name="barangay" className={barangayAutofill === 'matched' ? 'is-autofilled' : undefined} value={reportBarangay} onChange={(event) => { changeReportBarangay(event.target.value) }} aria-describedby={barangayAutofill ? 'barangay-autofill-note' : undefined} required><option value="">Select barangay</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay}>{barangay}</option>)}</select></label>
               {barangayAutofill === 'matched' && <p className="barangay-autofill-note" id="barangay-autofill-note" role="status" key={reportBarangay}><Check size={13} />Filled in from the pinned location. Change it if it looks wrong.</p>}
               {barangayAutofill === 'outside' && <p className="barangay-autofill-note is-outside" id="barangay-autofill-note" role="status"><AlertTriangle size={13} />This spot is outside District 5, so the report cannot be submitted. Move the pin inside the district.</p>}
             </div>
@@ -2749,6 +2770,7 @@ function App() {
                   location={location}
                   color={categoryColors[reportCategory]}
                   icon={categoryIcon(reportCategory)}
+                  fitBarangay={reportBarangayFit}
                   onSelect={selectMapLocation}
                 /> : <MapSkeleton />}
               </Suspense>

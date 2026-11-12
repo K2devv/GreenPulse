@@ -3,6 +3,7 @@ import { Map as MapView, Marker, type ErrorEvent as MapErrorEvent, type MapRef }
 import type { LucideIcon } from 'lucide-react'
 import { GPUInitializationError, mapLib } from './map-engine'
 import { MAP_FOCUS_ZOOM, MAP_MAX_ZOOM, MapPin, MapUnavailable, MapZoomControls, PIN_OFFSET, cameraDuration, lockNorthUp, useDistrictLock } from './MapParts'
+import { barangayBounds, barangayCamera } from './lib/barangay-camera'
 import { districtFeatures, type DistrictOutline } from './lib/district-outline'
 import { buildMapStyle, VECTOR_SOURCE_ID, type Basemap, type MapTheme } from './lib/map-style'
 import type { Padding } from './lib/map-viewport'
@@ -15,6 +16,11 @@ type LocationPickerMapProps = {
   /** The chosen category's color and icon, previewed on the pin. */
   color: string
   icon: LucideIcon
+  /**
+   * Fit the map to a barangay the reporter picked by hand. Each request has its own `seq`.
+   * The pin is never moved; a newer pin move (click, drag, search or GPS) takes the camera back.
+   */
+  fitBarangay?: { seq: number; barangay: string }
   /** Called with [latitude, longitude] after a click or drag. Return false to reject the spot. */
   onSelect: (coordinates: [number, number]) => boolean
 }
@@ -22,7 +28,7 @@ type LocationPickerMapProps = {
 const PADDING: Padding = { top: 12, right: 12, bottom: 12, left: 12 }
 
 /** The small map in the report form: click the map or drag the pin to set the report's location. */
-export default function LocationPickerMap({ theme, outline, location, color, icon, onSelect }: LocationPickerMapProps) {
+export default function LocationPickerMap({ theme, outline, location, color, icon, fitBarangay, onSelect }: LocationPickerMapProps) {
   const mapRef = useRef<MapRef>(null)
   const [ready, setReady] = useState(false)
   const [failed, setFailed] = useState(false)
@@ -39,9 +45,29 @@ export default function LocationPickerMap({ theme, outline, location, color, ico
   )
 
   const [latitude, longitude] = location
+  // The most recent user intent wins the camera: whichever of the pin and the barangay choice changed last.
+  const intentClock = useRef(0)
+  const intentStamp = useRef({ pin: 0, fit: 0 })
+  useEffect(() => { intentStamp.current.pin = ++intentClock.current }, [latitude, longitude])
+  const fitSeq = fitBarangay?.seq ?? 0
+  useEffect(() => { if (fitSeq) intentStamp.current.fit = ++intentClock.current }, [fitSeq])
+  const fittedSeq = useRef(0)
+  useEffect(() => {
+    const map = mapRef.current?.getMap()
+    if (!map || !ready || !lock || !fitBarangay || fitBarangay.seq === fittedSeq.current) return
+    fittedSeq.current = fitBarangay.seq
+    if (intentStamp.current.pin > intentStamp.current.fit) return
+    const bounds = barangayBounds(outline.barangays, fitBarangay.barangay)
+    const { clientWidth, clientHeight } = map.getContainer()
+    if (!bounds || !clientWidth || !clientHeight) return
+    const camera = barangayCamera(bounds, clientWidth, clientHeight, PADDING, lock, MAP_MAX_ZOOM)
+    map.easeTo({ center: camera.center, zoom: camera.zoom, duration: cameraDuration(500) })
+  }, [ready, lock, fitBarangay, outline.barangays])
   useEffect(() => {
     const map = mapRef.current?.getMap()
     if (!map || !ready) return
+    // A barangay choice made after this pin position keeps the camera; ready alone must not undo it.
+    if (intentStamp.current.fit > intentStamp.current.pin) return
     map.flyTo({ center: [longitude, latitude], zoom: Math.max(map.getZoom(), MAP_FOCUS_ZOOM), duration: cameraDuration(350) })
   }, [latitude, longitude, ready])
 

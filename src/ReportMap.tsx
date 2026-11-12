@@ -3,6 +3,7 @@ import { Map as MapView, Marker, Popup, type ErrorEvent as MapErrorEvent, type M
 import { MapPin as MapPinIcon, MessageSquare, UserRound, X, type LucideIcon } from 'lucide-react'
 import { GPUInitializationError, mapLib } from './map-engine'
 import { ClusterBubble, MAP_FOCUS_ZOOM, MAP_MAX_ZOOM, MapPin, MapUnavailable, MapZoomControls, PIN_OFFSET, UserDot, cameraDuration, lockNorthUp, statusSlug, useDistrictLock } from './MapParts'
+import { barangayBounds, barangayCamera } from './lib/barangay-camera'
 import { districtFeatures, type DistrictOutline } from './lib/district-outline'
 import { CLUSTER_MAX_ZOOM, clusterRingGradient, createClusterIndex, type MapClusterItem, type MapPoint } from './lib/map-clusters'
 import { buildMapStyle, VECTOR_SOURCE_ID, type Basemap, type HeatCell, type MapTheme } from './lib/map-style'
@@ -39,6 +40,11 @@ type ReportMapProps = {
   selectedId?: string
   /** A place to center on, as [latitude, longitude]. Ignored while a report is selected. */
   focus?: [number, number]
+  /**
+   * Fit the map to a barangay ('' fits the whole district). Each request has its own `seq`, so
+   * choosing the same barangay again after moving the map fits it again.
+   */
+  fitBarangay?: { seq: number; barangay: string }
   /** Report density cells; empty hides them. */
   heatCells: readonly HeatCell[]
   gpsLocation?: [number, number]
@@ -74,7 +80,7 @@ function readView(map: MapInstance): View {
   return { zoom: map.getZoom(), bounds: [bounds.getWest() - marginX, bounds.getSouth() - marginY, bounds.getEast() + marginX, bounds.getNorth() + marginY] }
 }
 
-export default function ReportMap({ theme, outline, reports, categoryColors, categoryOrder, selectedId, focus, heatCells, gpsLocation, compact, onSelect, onDiscuss }: ReportMapProps) {
+export default function ReportMap({ theme, outline, reports, categoryColors, categoryOrder, selectedId, focus, fitBarangay, heatCells, gpsLocation, compact, onSelect, onDiscuss }: ReportMapProps) {
   const mapRef = useRef<MapRef>(null)
   const [ready, setReady] = useState(false)
   const [failed, setFailed] = useState(false)
@@ -155,9 +161,22 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
 
   const selectedLatitude = selected?.position[0]
   const selectedLongitude = selected?.position[1]
+  const focusLatitude = focus?.[0]
+  const focusLongitude = focus?.[1]
+  const hasSelection = Boolean(selected)
+  const fitSeq = fitBarangay?.seq ?? 0
+  // The most recent user intent wins the camera. Each input is stamped when it changes (before the
+  // map is ready too), and an older intent does not move the camera over a newer one.
+  const intentClock = useRef(0)
+  const intentStamp = useRef({ selection: 0, focus: 0, fit: 0 })
+  useEffect(() => { if (selectedId) intentStamp.current.selection = ++intentClock.current }, [selectedId])
+  useEffect(() => { if (focusLatitude !== undefined) intentStamp.current.focus = ++intentClock.current }, [focusLatitude, focusLongitude])
+  useEffect(() => { if (fitSeq) intentStamp.current.fit = ++intentClock.current }, [fitSeq])
+
   useEffect(() => {
     const map = mapRef.current?.getMap()
     if (!map || !ready || selectedLatitude === undefined || selectedLongitude === undefined) return
+    if (intentStamp.current.fit > intentStamp.current.selection) return
     map.flyTo({
       center: [selectedLongitude, selectedLatitude],
       zoom: Math.max(map.getZoom(), MAP_FOCUS_ZOOM),
@@ -168,17 +187,38 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, selectedId, selectedLatitude, selectedLongitude])
 
-  const focusLatitude = focus?.[0]
-  const focusLongitude = focus?.[1]
-  const hasSelection = Boolean(selected)
   useEffect(() => {
     const map = mapRef.current?.getMap()
     if (!map || !ready || hasSelection || focusLatitude === undefined || focusLongitude === undefined) return
+    if (intentStamp.current.fit > intentStamp.current.focus) return
     map.flyTo({ center: [focusLongitude, focusLatitude], zoom: Math.max(map.getZoom(), MAP_FOCUS_ZOOM), duration: cameraDuration(650) })
     // Clearing a selection should not send the map back to an old search result, so the
     // selection is deliberately not a dependency.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, focusLatitude, focusLongitude])
+
+  // A barangay filter fits the map to that barangay, or back to the district for "All barangays".
+  // It runs once per request, so a resize or a new outline does not re-run it and move the map.
+  const fittedSeq = useRef(0)
+  useEffect(() => {
+    const map = mapRef.current?.getMap()
+    if (!map || !ready || !lock || !fitBarangay || fitBarangay.seq === fittedSeq.current) return
+    const stamp = intentStamp.current
+    // A newer pin selection (or search result while nothing is selected) already took the camera.
+    if ((hasSelection && stamp.selection > stamp.fit) || (!hasSelection && stamp.focus > stamp.fit)) { fittedSeq.current = fitBarangay.seq; return }
+    fittedSeq.current = fitBarangay.seq
+    if (!fitBarangay.barangay) {
+      map.easeTo({ center: lock.center, zoom: lock.zoom, duration: cameraDuration(650) })
+      return
+    }
+    const bounds = barangayBounds(outline.barangays, fitBarangay.barangay)
+    const { clientWidth, clientHeight } = map.getContainer()
+    if (!bounds || !clientWidth || !clientHeight) return
+    const camera = barangayCamera(bounds, clientWidth, clientHeight, padding, lock, MAP_MAX_ZOOM)
+    map.easeTo({ center: camera.center, zoom: camera.zoom, duration: cameraDuration(650) })
+    // Only a new request moves the camera; the layout and selection are read as they are then.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, lock, fitBarangay])
 
   // The popup belongs to the selected pin: it closes when the selection moves on or the layout turns compact.
   useEffect(() => {

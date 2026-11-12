@@ -58,3 +58,26 @@ export function fitBoundsCamera(bounds: Bounds, width: number, height: number, p
 export function pixelsPerMeter(latitude: number, zoom: number) {
   return WORLD_SIZE * 2 ** zoom / (EARTH_CIRCUMFERENCE_METERS * Math.cos(latitude * Math.PI / 180))
 }
+
+/**
+ * Moves a camera so the viewport stays inside `view` (the map's pan limit) and does not zoom out
+ * past `minZoom`. When the viewport is larger than `view` on an axis, that axis is centered, which
+ * is what MapLibre does with `maxBounds`. Returns the camera the map will actually settle on.
+ */
+export function clampCameraToView(
+  camera: Pick<FitCamera, 'center' | 'zoom'>,
+  width: number,
+  height: number,
+  view: Bounds,
+  minZoom: number,
+): Pick<FitCamera, 'center' | 'zoom'> {
+  const zoom = Math.max(camera.zoom, minZoom)
+  const worldSize = WORLD_SIZE * 2 ** zoom
+  const halfWidth = width / 2 / worldSize
+  const halfHeight = height / 2 / worldSize
+  const clampAxis = (value: number, low: number, high: number, half: number) => (high - low <= 2 * half ? (low + high) / 2 : Math.min(Math.max(value, low + half), high - half))
+  const x = clampAxis(mercatorX(camera.center[0]), mercatorX(view[0]), mercatorX(view[2]), halfWidth)
+  // Mercator y grows southward, so the view's north edge is the smaller value.
+  const y = clampAxis(mercatorY(camera.center[1]), mercatorY(view[3]), mercatorY(view[1]), halfHeight)
+  return { center: [longitudeFromX(x), latitudeFromY(y)], zoom }
+}
