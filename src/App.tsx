@@ -68,6 +68,7 @@ import { useFlip } from './useFlip'
 import { useStatusChanges } from './useStatusChanges'
 import { EnvironmentalReports } from './EnvironmentalReports'
 import { CommunityReportDiscussion, ReportConversation, ReportTimeline, ResidentReportModal } from './ReportCommunication'
+import { isViewerOnTask, mergeSavedReport, resolveStaffReport } from './lib/staff-report'
 import { ReportFeedCard } from './ReportFeedCard'
 import { ENGAGEMENT_BATCH_LIMIT, indexEngagement, type ReportEngagement } from './lib/report-engagement'
 import { isOpenStatus } from './lib/report-workflow'
@@ -984,6 +985,8 @@ function App() {
 
   useEffect(() => setStaffQueueOffset(0), [staffFilters, session, profile?.role, staffMode, staffDashboardOpen])
 
+  // What the shown queue was loaded for, so a refresh of the same rows reloads them quietly.
+  const staffQueueLoaded = useRef({ key: '', end: 0 })
   useEffect(() => {
     const isStaffUser = profile?.role === 'admin' || profile?.role === 'responder'
     const queueIsVisible = staffMode && isStaffUser && (profile?.role !== 'admin' || !staffDashboardOpen)
@@ -991,41 +994,69 @@ function App() {
       setStaffQueue([])
       setStaffQueueCount(0)
       setStaffQueueLoading(false)
+      staffQueueLoaded.current = { key: '', end: 0 }
       return
     }
     let active = true
-    setStaffQueueLoading(true)
-    supabase.rpc('staff_report_page', {
-      p_query: staffFilters.query,
-      p_status: staffFilters.status,
-      p_resolution: staffFilters.resolution,
-      p_category: staffFilters.category,
-      p_urgency: staffFilters.urgency,
-      p_barangay: staffFilters.barangay,
-      p_assignee: staffFilters.assignee,
-      p_team: staffFilters.team,
-      p_date_from: staffFilters.dateFrom || null,
-      p_date_to: staffFilters.dateTo || null,
-      p_page_size: STAFF_PAGE_SIZE,
-      p_page_offset: staffQueueOffset,
-    }).then(({ data, error }) => {
-      if (!active) return
-      if (error) {
-        setBackendError(`Could not load the staff queue: ${error.message}`)
-        if (staffQueueOffset === 0) setStaffQueue([])
-        setStaffQueueLoading(false)
-        return
+    const key = JSON.stringify([session.user.id, profile?.role, staffFilters])
+    // Every row paged in so far is reloaded, so a Realtime or periodic refresh updates later pages
+    // too and rows that moved between pages are neither repeated nor lost.
+    const end = staffQueueOffset + STAFF_PAGE_SIZE
+    // staff_report_page caps p_page_size at 100.
+    const fetchSize = 100
+    const quiet = staffQueueLoaded.current.key === key && staffQueueLoaded.current.end >= end
+    if (!quiet) setStaffQueueLoading(true)
+    async function loadStaffQueue() {
+      const items: Report[] = []
+      const seen = new Set<string>()
+      let totalCount = 0
+      for (let offset = 0; offset < end; offset += fetchSize) {
+        const size = Math.min(fetchSize, end - offset)
+        const { data, error } = await supabase!.rpc('staff_report_page', {
+          p_query: staffFilters.query,
+          p_status: staffFilters.status,
+          p_resolution: staffFilters.resolution,
+          p_category: staffFilters.category,
+          p_urgency: staffFilters.urgency,
+          p_barangay: staffFilters.barangay,
+          p_assignee: staffFilters.assignee,
+          p_team: staffFilters.team,
+          p_date_from: staffFilters.dateFrom || null,
+          p_date_to: staffFilters.dateTo || null,
+          p_page_size: size,
+          p_page_offset: offset,
+        })
+        if (!active) return
+        if (error) {
+          setBackendError(`Could not load the staff queue: ${error.message}`)
+          // A failed refresh keeps the rows on screen; rows for other filters would be wrong.
+          if (staffQueueLoaded.current.key !== key) {
+            setStaffQueue([])
+            setStaffQueueCount(0)
+            staffQueueLoaded.current = { key: '', end: 0 }
+          }
+          setStaffQueueLoading(false)
+          return
+        }
+        const page = data as { totalCount?: number; items?: ReportRow[] } | null
+        const pageItems = page?.items ?? []
+        totalCount = Number(page?.totalCount ?? 0)
+        for (const row of pageItems) {
+          if (seen.has(row.id)) continue
+          seen.add(row.id)
+          items.push(toReport(row) as Report)
+        }
+        if (pageItems.length < size) break
       }
-      const page = data as { totalCount?: number; items?: ReportRow[] } | null
-      const nextItems = (page?.items ?? []).map((row) => toReport(row) as Report)
-      setStaffQueue((current) => staffQueueOffset === 0
-        ? nextItems
-        : [...current, ...nextItems.filter((report) => !current.some((existing) => existing.id === report.id))])
-      setStaffQueueCount(Number(page?.totalCount ?? 0))
+      // The list is replaced only once the new rows are in, so it never empties mid-refresh.
+      setStaffQueue(items)
+      setStaffQueueCount(totalCount)
       setStaffQueueLoading(false)
-    })
+      staffQueueLoaded.current = { key, end }
+    }
+    void loadStaffQueue()
     return () => { active = false }
-  }, [session, profile?.role, staffMode, staffDashboardOpen, staffFilters, staffQueueOffset])
+  }, [session, profile?.role, staffMode, staffDashboardOpen, staffFilters, staffQueueOffset, reportRefreshToken])
 
   useEffect(() => {
     if (!supabase || !session) {
@@ -1228,7 +1259,50 @@ function App() {
 
   const selectedReport = mapReports.find((report) => report.id === selectedId)
   const communityDiscussionReport = mapReports.find((report) => report.id === communityDiscussionId)
-  const staffReport = reports.find((report) => report.id === staffReportId) ?? staffQueue.find((report) => report.id === staffReportId)
+  // The staff panel needs the full `reports` row. `reports` mostly holds redacted community_reports
+  // copies (no assignment, rounded coordinates), so the selected report is fetched on its own and
+  // refetched on every Realtime or periodic refresh.
+  const [staffReportDetail, setStaffReportDetail] = useState<Report>()
+  const [staffReportDetailFailedId, setStaffReportDetailFailedId] = useState<string>()
+  // Counts saved updates per report, so a fetch that started before a save is dropped.
+  const staffReportDetailSaves = useRef(new Map<string, number>())
+  const staffDetailViewer = profile?.role === 'admin' || profile?.role === 'responder'
+  useEffect(() => {
+    if (!supabase || !session || !staffMode || !staffReportId || !staffDetailViewer) {
+      setStaffReportDetail(undefined)
+      setStaffReportDetailFailedId(undefined)
+      return
+    }
+    let active = true
+    const savesAtStart = staffReportDetailSaves.current.get(staffReportId) ?? 0
+    // Keep the current copy while refreshing the same report, so the panel doesn't flicker.
+    setStaffReportDetail((current) => current?.id === staffReportId ? current : undefined)
+    async function loadStaffReportDetail(reportId: string) {
+      const isCurrent = () => active && (staffReportDetailSaves.current.get(reportId) ?? 0) === savesAtStart
+      const { data, error } = await supabase!.from('reports').select('*').eq('id', reportId).single()
+      if (!isCurrent()) return
+      if (error || !data) {
+        setStaffReportDetailFailedId(reportId)
+        return
+      }
+      let row = data as ReportRow
+      if (row.reporter_id) {
+        const { data: profileRows } = await supabase!.from('profiles').select('id, display_name').eq('id', row.reporter_id)
+        if (profileRows) [row] = attachReporterNames([row], profileRows)
+      }
+      if (!isCurrent()) return
+      setStaffReportDetail(toReport(row) as Report)
+      setStaffReportDetailFailedId(undefined)
+    }
+    void loadStaffReportDetail(staffReportId)
+    return () => { active = false }
+  }, [session, staffMode, staffReportId, staffDetailViewer, reportRefreshToken])
+  function setSavedStaffReportDetail(saved: Report) {
+    staffReportDetailSaves.current.set(saved.id, (staffReportDetailSaves.current.get(saved.id) ?? 0) + 1)
+    // Leave the detail alone if the viewer has already moved on to another report.
+    setStaffReportDetail((current) => current && current.id !== saved.id ? current : mergeSavedReport(current, saved))
+  }
+  const staffReport = useMemo(() => resolveStaffReport({ id: staffReportId, detail: staffReportDetail, queue: staffQueue, reports }), [staffReportId, staffReportDetail, staffQueue, reports])
   const followUpReport = reports.find((report) => report.id === followUpId)
 
   // Android back button closes the topmost open layer, then minimizes the app.
@@ -1281,7 +1355,7 @@ function App() {
 
   const selectedOwnReport = selectedReport && session && selectedReport.reporterId === session.user.id ? selectedReport : undefined
   const selectedOwnFeedback = selectedOwnReport ? residentFeedback[selectedOwnReport.id] : undefined
-  const staffOnTask = Boolean(staffReport && session && (staffReport.assignedTo === session.user.id || teams.find((team) => team.id === staffReport.assignedTeamId)?.memberIds.includes(session.user.id)))
+  const staffOnTask = isViewerOnTask(staffReport, session?.user.id, teams)
   const openReports = reports.filter((report) => isOpenStatus(report.status)).length
   const verifiedReports = reports.filter((report) => report.status === 'Verified' || report.status === 'In progress').length
   const overdueNotifications: InboxNotification[] = profile?.role === 'admin'
@@ -2215,6 +2289,13 @@ function App() {
     void deliverNotificationEmails(reportId, session.access_token)
   }
 
+  // Reloads the timeline when a message arrives from someone else. No emails: the sender delivers them.
+  async function reloadStaffEvents(reportId: string) {
+    if (!supabase || !session) return
+    const { data } = await supabase.from('report_events').select('id, event_type, message, created_at').eq('report_id', reportId).order('created_at', { ascending: false })
+    setReportEvents((data ?? []) as ReportEvent[])
+  }
+
   async function applyReportUpdate(payload: Record<string, unknown>, options?: { resolutionFiles?: File[] }) {
     if (!supabase || !session || !staffReport) return 'You are not signed in.'
     const uploadedPaths: string[] = []
@@ -2243,8 +2324,9 @@ function App() {
       if (uploadedPaths.length) await supabase.storage.from('report-photos').remove(uploadedPaths)
       return error?.message ?? 'The update could not be saved.'
     }
-    const updatedReport = toReport(data as ReportRow)
+    const updatedReport = toReport(data as ReportRow) as Report
     void deliverNotificationEmails(updatedReport.id, session.access_token)
+    setSavedStaffReportDetail(updatedReport)
     setReports((current) => current.map((report) => report.id === updatedReport.id ? { ...report, ...updatedReport } : report))
     setStaffQueue((current) => current.map((report) => report.id === updatedReport.id ? { ...report, ...updatedReport } : report))
     const { data: events } = await supabase.from('report_events').select('id, event_type, message, created_at').eq('report_id', updatedReport.id).order('created_at', { ascending: false })
@@ -2264,13 +2346,18 @@ function App() {
       pushToast({ tone: 'error', message: `The change could not be undone${error ? `: ${error.message}` : '.'}` })
       return
     }
-    const restored = toReport(data as ReportRow)
+    const restored = toReport(data as ReportRow) as Report
+    setSavedStaffReportDetail(restored)
     setReports((current) => current.map((report) => report.id === restored.id ? { ...report, ...restored } : report))
     setStaffQueue((current) => current.map((report) => report.id === restored.id ? { ...report, ...restored } : report))
     void refreshStaffEvents(restored.id)
     pushToast({ tone: 'info', message: `Change to ${formatReportId(restored.id)} undone.` })
   }
 
+  const staffPhotoPathsKey = JSON.stringify({
+    originalPaths: [...new Set([...(staffReport?.photoPaths ?? []), ...(staffReport?.photoPath ? [staffReport.photoPath] : [])])],
+    resolutionPaths: staffReport?.resolutionPhotoPaths ?? [],
+  })
   useEffect(() => {
     if (!supabase || !staffMode || !staffReportId || (profile?.role !== 'responder' && profile?.role !== 'admin')) {
       setReportEvents([])
@@ -2280,9 +2367,8 @@ function App() {
     supabase.from('report_events').select('id, event_type, message, created_at').eq('report_id', staffReportId).order('created_at', { ascending: false }).then(({ data }) => {
       setReportEvents((data ?? []) as ReportEvent[])
     })
-    const selected = reports.find((report) => report.id === staffReportId) ?? staffQueue.find((report) => report.id === staffReportId)
-    const originalPaths = [...new Set([...(selected?.photoPaths ?? []), ...(selected?.photoPath ? [selected.photoPath] : [])])]
-    const resolutionPaths = selected?.resolutionPhotoPaths ?? []
+    // Photo paths come only from the full row; the community copy has none.
+    const { originalPaths, resolutionPaths } = JSON.parse(staffPhotoPathsKey) as { originalPaths: string[]; resolutionPaths: string[] }
     let active = true
     const sign = async (paths: string[]) => {
       if (!paths.length) return []
@@ -2293,7 +2379,7 @@ function App() {
       if (active) setStaffPhotoUrls({ original, resolution })
     })
     return () => { active = false }
-  }, [profile?.role, staffMode, staffReportId, reports, staffQueue])
+  }, [profile?.role, staffMode, staffReportId, staffPhotoPathsKey, reportRefreshToken])
 
   function markNotificationRead(notification: InboxNotification) {
     const readAt = new Date().toISOString()
@@ -2569,7 +2655,7 @@ function App() {
             </div>}
             <FilterChips chips={staffFilterChips} onRemove={(key) => { setStaffFilters((current) => clearFilter(current, key)); setStaffQueueOffset(0) }} />
           </div>
-          <div className={`staff-workbench-grid ${staffReport ? 'has-selection' : ''}`}>
+          <div className={`staff-workbench-grid ${staffReportId ? 'has-selection' : ''}`}>
             <div className="staff-queue" ref={staffQueueRef}><div className="queue-heading"><div><h3>Response queue</h3><span aria-live="polite">{staffQueueCount} matching reports · sorted by escalation and newest</span></div><span className="queue-shortcuts" aria-label="Keyboard shortcuts"><kbd>J</kbd><kbd>K</kbd> move <kbd>A</kbd> assign <kbd>/</kbd> search</span></div>
               {loadingReports || (staffQueueLoading && staffQueue.length === 0) ? <ReportListSkeleton rows={5} variant="queue" /> : staffQueueCount === 0 ? <div className="staff-empty"><EmptyIllustration variant={activeFilterCount > 0 ? 'search' : 'queue'} /><span>No reports match {activeFilterCount > 0 ? 'these filters' : 'this queue'}.</span>{activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => { setStaffFilters(defaultReportFilters); setStaffQueueOffset(0) }}>Clear all filters</button>}</div> : <>
                 {staffQueue.map((report) => {
@@ -2588,9 +2674,9 @@ function App() {
               <div className="meta-chips"><span className="meta-chip"><MapPin size={12} />{staffReport.barangay ? `Barangay ${staffReport.barangay}` : 'No barangay recorded'}</span></div>
               <p className="staff-location"><MapPin size={14} />{staffReport.location} <span>({staffReport.coordinates.map((coordinate) => coordinate.toFixed(5)).join(', ')})</span></p>
               {session && (profile?.role === 'admin' || profile?.role === 'responder') && <StaffWorkflowPanel report={staffReport} role={profile.role} userId={session.user.id} staffUsers={staffUsers} teams={teams} allReports={[...reports, ...staffQueue]} originalPhotoUrls={staffPhotoUrls.original} resolutionPhotoUrls={staffPhotoUrls.resolution} events={reportEvents} residentFeedback={staffResolutionFeedback} onSubmit={applyReportUpdate} />}
-              {session && profile && (profile.role === 'admin' || profile.role === 'responder') && <ReportConversation key={staffReport.id} reportId={staffReport.id} status={staffReport.status} viewerRole={profile.role} userId={session.user.id} isReporter={false} isOnTask={staffOnTask} onPosted={() => void refreshStaffEvents(staffReport.id)} />}
+              {session && profile && (profile.role === 'admin' || profile.role === 'responder') && <ReportConversation key={staffReport.id} reportId={staffReport.id} status={staffReport.status} viewerRole={profile.role} userId={session.user.id} isReporter={false} isOnTask={staffOnTask} onPosted={() => void refreshStaffEvents(staffReport.id)} onActivity={() => void reloadStaffEvents(staffReport.id)} />}
               <ReportTimeline events={reportEvents} />
-            </> : <div className="staff-detail-empty"><ClipboardCheck size={25} /><strong>Select a report</strong><span>Choose an open report to review and update its response.</span></div>}</div>
+            </> : staffReportId ? <div className="staff-detail-empty" role="status"><button className="staff-back-button" type="button" onClick={() => setStaffReportId(undefined)}><ArrowLeft size={14} /> Back to queue</button><ClipboardCheck size={25} />{staffReportDetailFailedId === staffReportId ? <><strong>This report could not be loaded</strong><span>It may have been removed, or the connection dropped. Try again from the queue.</span></> : <><strong>Loading report…</strong><span>Getting the latest assignment and task details.</span></>}</div> : <div className="staff-detail-empty"><ClipboardCheck size={25} /><strong>Select a report</strong><span>Choose an open report to review and update its response.</span></div>}</div>
           </div>
         </section>}
 
