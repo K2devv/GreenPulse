@@ -49,6 +49,7 @@ import { CONFIRMATION_RESEND_COOLDOWN_SECONDS, describeAuthError, isExistingAcco
 import { StaffWorkflowPanel } from './StaffWorkflowPanel'
 import { AnimatedNumber } from './AnimatedNumber'
 import { HeroPanel, type HeroStat } from './HeroPanel'
+import { StatReportsModal, type StatReportRow } from './StatReportsModal'
 import { AdminBarChart, AdminTrendChart, ChartEmpty, ChartSkeleton } from './AdminCharts'
 import { AdminSectionNav, adminTabId, type AdminSection } from './AdminSectionNav'
 import { FilterChips } from './FilterChips'
@@ -71,6 +72,7 @@ import { isViewerOnTask, mergeSavedReport, resolveStaffReport } from './lib/staf
 import { ReportFeedCard } from './ReportFeedCard'
 import { ENGAGEMENT_BATCH_LIMIT, indexEngagement, type ReportEngagement } from './lib/report-engagement'
 import { isOpenStatus } from './lib/report-workflow'
+import { ALL_STATUSES, STATUS_GROUP_FILTERS, communityStatusFilter, matchesHeroTile, matchesStatusFilter, staffQuickFilter, type HeroTile, type StaffQuickFilter } from './lib/report-quick-filters'
 import { ExactLocation } from './ExactLocation'
 import { formatPlaceLabel } from './lib/place-label'
 import { DISTRICT_5_BARANGAYS, NO_BARANGAY, UNASSIGNED, clearFilter, countActiveFilters, defaultReportFilters, describeActiveFilters, detectBarangay, formatReportId, loadSavedFilters, saveFilters, type ReportFilters } from './lib/report-filters'
@@ -293,6 +295,23 @@ function toLocalDateTimeInput(value: Date) {
   return new Date(value.getTime() - value.getTimezoneOffset() * 60_000).toISOString().slice(0, 16)
 }
 
+/** Scrolls a section into view under the sticky top bar and rings it once, so the effect of a shortcut is easy to find. */
+function revealSection(selector: string) {
+  // Two frames: the section may only be mounted by the state change that came with the click.
+  window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+    const target = document.querySelector<HTMLElement>(selector)
+    if (!target) return
+    const reduced = motionIsReduced()
+    target.scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'start' })
+    if (!reduced && typeof target.animate === 'function') {
+      target.animate([
+        { outline: '2px solid rgba(79, 154, 104, .75)', outlineOffset: '0px' },
+        { outline: '2px solid rgba(79, 154, 104, 0)', outlineOffset: '7px' },
+      ], { duration: 1100, delay: 250, easing: 'ease-out' })
+    }
+  }))
+}
+
 async function deliverNotificationEmails(reportId: string, accessToken: string) {
   try {
     await fetch(apiUrl('/api/send-notification-emails'), {
@@ -451,7 +470,11 @@ function App() {
   })
   const [staffPhotoUrls, setStaffPhotoUrls] = useState<{ original: string[]; resolution: string[] }>({ original: [], resolution: [] })
   const [categoryFilter, setCategoryFilter] = useState('All categories')
-  const [statusFilter, setStatusFilter] = useState('All statuses')
+  const [statusFilter, setStatusFilter] = useState<string>(ALL_STATUSES)
+  // The hero stat tile whose reports are open in a dialog.
+  const [statTile, setStatTile] = useState<HeroTile>()
+  // The community and staff views have different tiles, so a dialog does not outlive a switch between them.
+  useEffect(() => setStatTile(undefined), [staffMode])
   // '' is every barangay. Each change also asks the map to fit that barangay (seq makes a repeat count).
   const [barangayFilter, setBarangayFilter] = useState('')
   const [mapBarangayFit, setMapBarangayFit] = useState<{ seq: number; barangay: string }>()
@@ -1178,7 +1201,7 @@ function App() {
 
   const visibleReports = useMemo(() => reports.filter((report) => {
     const matchesCategory = categoryFilter === 'All categories' || report.category === categoryFilter
-    const matchesStatus = statusFilter === 'All statuses' || report.status === statusFilter
+    const matchesStatus = matchesStatusFilter(report.status, statusFilter)
     // A report without a recorded barangay (the demo reports, for one) is placed by where its pin lies.
     const matchesBarangay = !barangayFilter || (report.barangay ?? (barangayBoundaries ? findBarangayAt(report.coordinates, barangayBoundaries, boundaryTolerance) : undefined)) === barangayFilter
     const matchesSearch = `${report.title} ${report.location} ${report.id}`.toLowerCase().includes(search.toLowerCase())
@@ -1244,7 +1267,8 @@ function App() {
     return () => { active = false }
   }, [engagementReportIds, reportRefreshToken, communityDiscussionId])
   useFlip(staffQueueRef, staffQueue.map((report) => report.id).join('|'))
-  const allKnownReports = useMemo(() => [...reports, ...staffQueue], [reports, staffQueue])
+  // Every report the app has loaded, each once. A report in both lists keeps its staff queue row, which has more fields.
+  const allKnownReports = useMemo(() => [...new Map([...reports, ...staffQueue].map((report) => [report.id, report])).values()], [reports, staffQueue])
   const changedStatuses = useStatusChanges(allKnownReports)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [celebrating, setCelebrating] = useState(false)
@@ -1366,6 +1390,7 @@ function App() {
       'guest-tracking': guestTrackingOpen,
       'community-discussion': Boolean(communityDiscussionReport),
       'follow-up': Boolean(followUpReport && session),
+      'stat-reports': Boolean(statTile),
       'report-form': reporting,
       notifications: notificationPanelOpen,
       'staff-filters': staffMode && staffFiltersOpen,
@@ -1382,6 +1407,7 @@ function App() {
       'guest-tracking': () => { setGuestTrackingOpen(false); setGuestTrackingToken(undefined); setGuestTrackingEmailSent(false) },
       'community-discussion': () => setCommunityDiscussionId(undefined),
       'follow-up': () => setFollowUpId(undefined),
+      'stat-reports': () => setStatTile(undefined),
       'report-form': () => setReporting(false),
       notifications: () => setNotificationPanelOpen(false),
       'staff-filters': () => setStaffFiltersOpen(false),
@@ -1418,7 +1444,6 @@ function App() {
   const selectedOwnFeedback = selectedOwnReport ? residentFeedback[selectedOwnReport.id] : undefined
   const staffOnTask = isViewerOnTask(staffReport, session?.user.id, teams)
   const openReports = reports.filter((report) => isOpenStatus(report.status)).length
-  const verifiedReports = reports.filter((report) => report.status === 'Verified' || report.status === 'In progress').length
   const overdueNotifications: InboxNotification[] = profile?.role === 'admin'
     ? reports.filter((report) => isOpenStatus(report.status) && Date.now() - new Date(report.createdAt).getTime() >= (report.urgency === 'High' ? responseSettings.high_urgency_sla_hours : responseSettings.response_sla_hours) * 60 * 60 * 1000)
       .map((report) => ({ id: `overdue:${report.id}`, report_id: report.id, event_type: 'overdue_task', title: 'Overdue task', message: `Open report needs attention: ${report.title}.`, created_at: report.createdAt, read_at: readOverdueIds.includes(report.id) ? report.createdAt : null }))
@@ -2566,16 +2591,65 @@ function App() {
   const contextTitle = activeViewKey === 'community' ? 'Community map' : activeViewKey === 'dashboard' ? 'Admin dashboard' : 'Staff desk'
   // Phones only (see .report-fab): shown once the hero's button is out of view, and never over the form or the map's report sheet.
   const fabVisible = scrolledPastHero && !reporting && !(mobileMap && selectedId)
-  const heroStats: HeroStat[] = staffMode ? [
-    { icon: ClipboardCheck, tone: 'leaf', value: openReports, label: 'Open queue' },
-    { icon: AlertTriangle, tone: 'coral', value: reports.filter((report) => report.urgency === 'High' && report.status !== 'Resolved' && report.status !== 'Rejected').length, label: 'Urgent' },
-    { icon: Clock3, tone: 'sky', value: reports.filter((report) => report.status === 'In progress').length, label: 'In progress' },
-    { icon: Check, tone: 'amber', value: reports.filter((report) => report.status === 'Resolved').length, label: 'Resolved' },
+  // The hero tiles open a dialog listing the reports they count. From there a report can be opened, or the
+  // same set shown in the community list or the staff queue.
+  function clearCommunityFilters() {
+    setCategoryFilter('All categories')
+    setSearch('')
+    setNearbyOnly(false)
+    if (barangayFilter) chooseBarangayFilter('')
+  }
+  function showTileReports(tile: HeroTile) {
+    setStatTile(undefined)
+    if (staffMode) {
+      setStaffFilters(staffQuickFilter(tile as StaffQuickFilter))
+      setStaffQueueOffset(0)
+      setStaffDashboardOpen(false)
+      revealSection('.staff-filters')
+      return
+    }
+    setStatusFilter(communityStatusFilter(tile))
+    clearCommunityFilters()
+    revealSection('.reports-panel')
+  }
+  function openTileReport(id: string) {
+    setStatTile(undefined)
+    if (staffMode) {
+      setStaffDashboardOpen(false)
+      setStaffReportId(id)
+      revealSection('.staff-workbench-grid')
+      return
+    }
+    // The list's own filters could hide the report, so they are cleared before it is selected.
+    setStatusFilter(ALL_STATUSES)
+    clearCommunityFilters()
+    setSelectedId(id)
+    revealSection(mobileMap ? '.map-frame' : '.reports-panel')
+  }
+  type HeroTileInfo = Omit<HeroStat, 'value' | 'onSelect'> & { tile: HeroTile; description: string }
+  const heroTiles: HeroTileInfo[] = staffMode ? [
+    { tile: 'open', icon: ClipboardCheck, tone: 'leaf', label: 'Open queue', hint: 'See the open queue', description: 'Reports still waiting on review or a response.' },
+    { tile: 'urgent', icon: AlertTriangle, tone: 'coral', label: 'Urgent', hint: 'See open high-urgency reports', description: 'Open reports marked high urgency.' },
+    { tile: 'in-progress', icon: Clock3, tone: 'sky', label: 'In progress', hint: 'See reports in progress', description: 'Reports a responder is working on now.' },
+    { tile: 'resolved', icon: Check, tone: 'amber', label: 'Resolved', hint: 'See resolved reports', description: 'Reports that have been marked resolved.' },
   ] : [
-    { icon: Leaf, tone: 'leaf', value: openReports, label: 'Open reports', note: 'needs attention' },
-    { icon: ShieldCheck, tone: 'sky', value: verifiedReports, label: 'Verified or assigned', note: 'being followed up' },
-    { icon: Clock3, tone: 'amber', value: reports.length, label: 'Community reports', note: 'all time' },
+    { tile: 'open', icon: Leaf, tone: 'leaf', label: 'Open reports', note: 'needs attention', hint: 'See open reports', description: 'Reports that have not been resolved or closed yet.' },
+    { tile: 'followed-up', icon: ShieldCheck, tone: 'sky', label: 'Verified or assigned', note: 'being followed up', hint: 'See verified and in-progress reports', description: 'Reports the District 5 desk has verified or is working on.' },
+    { tile: 'all', icon: Clock3, tone: 'amber', label: 'Community reports', note: 'all time', hint: 'See every report', description: 'Every report shared with the community so far.' },
   ]
+  const heroStats: HeroStat[] = heroTiles.map(({ tile, description: _description, ...stat }) => ({ ...stat, value: reports.filter((report) => matchesHeroTile(report, tile)).length, onSelect: () => setStatTile(tile) }))
+  const openTile = heroTiles.find((info) => info.tile === statTile)
+  const statTileRows: StatReportRow[] = openTile ? reports.filter((report) => matchesHeroTile(report, openTile.tile)).map((report) => ({
+    id: report.id,
+    title: report.title,
+    category: report.category,
+    status: report.status,
+    urgent: report.urgency === 'High',
+    place: placeLabel(report),
+    createdLabel: formatCreatedAt(report.createdAt),
+    icon: categoryIcon(report.category),
+    color: categoryColors[report.category],
+  })) : []
   const isStaffRole = profile?.role === 'admin' || profile?.role === 'responder'
   const paletteCommands: PaletteCommand[] = [
     { id: 'go-community', group: 'Go to', label: 'Community map', keywords: 'home public view', run: () => { setStaffMode(false); setStaffDashboardOpen(true) } },
@@ -2589,7 +2663,7 @@ function App() {
     { id: 'disp-motion', group: 'Display', label: `${displayPrefs.reduceMotion ? 'Allow' : 'Reduce'} motion`, keywords: 'animation', run: () => updateDisplayPrefs({ reduceMotion: !displayPrefs.reduceMotion }) },
     { id: 'disp-contrast', group: 'Display', label: `Turn high contrast ${displayPrefs.highContrast ? 'off' : 'on'}`, keywords: 'accessibility', run: () => updateDisplayPrefs({ highContrast: !displayPrefs.highContrast }) },
     { id: 'disp-compact', group: 'Display', label: `Use ${displayPrefs.compact ? 'comfortable' : 'compact'} lists`, keywords: 'density rows', run: () => updateDisplayPrefs({ compact: !displayPrefs.compact }) },
-    ...allKnownReports.filter((report, index, list) => list.findIndex((other) => other.id === report.id) === index).slice(0, 40).map((report) => ({
+    ...allKnownReports.slice(0, 40).map((report) => ({
       id: `report-${report.id}`,
       group: 'Reports',
       label: report.title,
@@ -2627,14 +2701,15 @@ function App() {
         </div>
       </header>
 
-      {notificationPanelOpen && <NotificationPanel
+      <NotificationPanel
+        open={notificationPanelOpen}
         notifications={inboxNotifications}
         unread={unreadNotificationCount}
         onSelect={markNotificationRead}
         onMarkAllRead={markAllNotificationsRead}
         onClose={() => setNotificationPanelOpen(false)}
         onOpenSettings={profile ? () => { setNotificationPanelOpen(false); setProfileAvatarPreview(profileAvatarUrl); setProfileModal(true) } : undefined}
-      />}
+      />
 
       <main id="home" className={`workspace ${viewTransition.entering ? 'view-entering' : ''}`} tabIndex={-1}>
         <HeroPanel
@@ -2795,7 +2870,7 @@ function App() {
               {staffReport.additionalInfo && <p className="workflow-note-text"><strong>Additional information</strong>{staffReport.additionalInfo}</p>}
               <div className="meta-chips"><span className="meta-chip"><MapPin size={12} />{staffReport.barangay ? `Barangay ${staffReport.barangay}` : 'No barangay recorded'}</span></div>
               <ExactLocation label={staffReport.location} coordinates={staffReport.coordinates} />
-              {session && (profile?.role === 'admin' || profile?.role === 'responder') && <StaffWorkflowPanel report={staffReport} role={profile.role} userId={session.user.id} staffUsers={staffUsers} teams={teams} allReports={[...reports, ...staffQueue]} originalPhotoUrls={staffPhotoUrls.original} resolutionPhotoUrls={staffPhotoUrls.resolution} events={reportEvents} residentFeedback={staffResolutionFeedback} onSubmit={applyReportUpdate} />}
+              {session && (profile?.role === 'admin' || profile?.role === 'responder') && <StaffWorkflowPanel report={staffReport} role={profile.role} userId={session.user.id} staffUsers={staffUsers} teams={teams} allReports={allKnownReports} originalPhotoUrls={staffPhotoUrls.original} resolutionPhotoUrls={staffPhotoUrls.resolution} events={reportEvents} residentFeedback={staffResolutionFeedback} onSubmit={applyReportUpdate} />}
               {session && profile && (profile.role === 'admin' || profile.role === 'responder') && <ReportConversation key={staffReport.id} reportId={staffReport.id} status={staffReport.status} viewerRole={profile.role} userId={session.user.id} isReporter={false} isOnTask={staffOnTask} onPosted={() => void refreshStaffEvents(staffReport.id)} onActivity={() => void reloadStaffEvents(staffReport.id)} />}
               <ReportTimeline events={reportEvents} />
             </> : staffReportId ? <div className="staff-detail-empty" role="status"><button className="staff-back-button" type="button" onClick={() => setStaffReportId(undefined)}><ArrowLeft size={14} /> Back to queue</button><ClipboardCheck size={25} />{staffReportDetailFailedId === staffReportId ? <><strong>This report could not be loaded</strong><span>It may have been removed, or the connection dropped. Try again from the queue.</span></> : <><strong>Loading report…</strong><span>Getting the latest assignment and task details.</span></>}</div> : <div className="staff-detail-empty"><ClipboardCheck size={25} /><strong>Select a report</strong><span>Choose an open report to review and update its response.</span></div>}</div>
@@ -2860,7 +2935,7 @@ function App() {
               <label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('searchReports')} aria-label={t('searchReports')} />{search && <button type="button" onClick={() => setSearch('')} aria-label="Clear search"><X size={13} /></button>}</label>
               <div className="filter-row">
                 <label className="select-wrap"><span className="sr-only">Filter by category</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>All categories</option>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={13} /></label>
-                <label className="select-wrap"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>All statuses</option>{statusOptions.filter((status) => status !== 'Duplicate').map((status) => <option key={status}>{status}</option>)}</select><ChevronDown size={13} /></label>
+                <label className="select-wrap"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>{ALL_STATUSES}</option>{STATUS_GROUP_FILTERS.map((group) => <option key={group}>{group}</option>)}{statusOptions.filter((status) => status !== 'Duplicate').map((status) => <option key={status}>{status}</option>)}</select><ChevronDown size={13} /></label>
               </div>
               <div className="filter-row filter-row-single">
                 <label className="select-wrap"><span className="sr-only">Filter by barangay</span><select value={barangayFilter} onChange={(event) => chooseBarangayFilter(event.target.value)}><option value="">All barangays</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay} value={barangay}>{barangay}</option>)}</select><ChevronDown size={13} /></label>
@@ -2893,7 +2968,7 @@ function App() {
                 })}
               />)}
             </div>
-            <div className="panel-footer">{isSupabaseConfigured ? <span><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} /> Live community feed</span> : <span>Sample reports on this device</span>}<button type="button" onClick={() => { setCategoryFilter('All categories'); setStatusFilter('All statuses'); setSearch(''); if (barangayFilter) chooseBarangayFilter('') }}>{t('resetFilters')}</button></div>
+            <div className="panel-footer">{isSupabaseConfigured ? <span><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} /> Live community feed</span> : <span>Sample reports on this device</span>}<button type="button" onClick={() => { setCategoryFilter('All categories'); setStatusFilter(ALL_STATUSES); setSearch(''); if (barangayFilter) chooseBarangayFilter('') }}>{t('resetFilters')}</button></div>
           </aside>
         </section>}
 
@@ -2902,6 +2977,18 @@ function App() {
 
       {!staffMode && <button className={`report-fab ${fabVisible ? 'is-visible' : ''}`} type="button" onClick={startReport} aria-label="New report" aria-hidden={!fabVisible} tabIndex={fabVisible ? 0 : -1}><Plus size={19} />Report</button>}
 
+      {openTile && <StatReportsModal
+        icon={openTile.icon}
+        tone={openTile.tone}
+        eyebrow={staffMode ? 'STAFF DESK' : 'COMMUNITY REPORTS'}
+        title={openTile.label}
+        description={openTile.description}
+        rows={statTileRows}
+        loading={loadingReports}
+        onSelect={openTileReport}
+        onClose={() => setStatTile(undefined)}
+        action={{ label: staffMode ? 'Open in staff queue' : 'Show on map and list', run: () => showTileReports(openTile.tile) }}
+      />}
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
       <CommandPalette open={paletteOpen} commands={paletteCommands} onClose={() => setPaletteOpen(false)} />
       {celebrating && <SuccessBurst message="Report submitted. Thank you!" onDone={() => setCelebrating(false)} />}

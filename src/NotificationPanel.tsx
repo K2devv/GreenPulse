@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { AlertTriangle, Bell, CheckCheck, CheckCircle2, Clock3, FileText, MessageSquare, RefreshCw, UserRound, X, XCircle } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { AlertTriangle, Bell, BellRing, CheckCheck, CheckCircle2, ChevronRight, Clock3, FileText, MessageSquare, RefreshCw, UserRound, X, XCircle } from 'lucide-react'
+import { motionIsReduced } from './display-prefs'
 import { badgeCount, filterNotifications, groupNotifications, notificationKind, notificationTime, type NotificationFilter, type NotificationIcon } from './lib/notification-inbox'
 
 export type PanelNotification = {
@@ -24,6 +25,9 @@ const ICONS: Record<NotificationIcon, ReactNode> = {
   bell: <Bell size={15} />,
 }
 
+/** How long the inbox stays mounted to play its closing animation. Matches `panel-out` in styles.css. */
+const PANEL_EXIT_MS = 170
+
 /** The bell in the top bar. It rings and the badge pops when the unread count goes up. */
 export function NotificationBell({ unread, open, onToggle }: { unread: number; open: boolean; onToggle: () => void }) {
   const previous = useRef(unread)
@@ -47,6 +51,8 @@ export function NotificationBell({ unread, open, onToggle }: { unread: number; o
 }
 
 type NotificationPanelProps = {
+  /** The panel stays mounted briefly after this turns false, to animate out. */
+  open: boolean
   notifications: readonly PanelNotification[]
   unread: number
   onSelect: (notification: PanelNotification) => void
@@ -57,20 +63,46 @@ type NotificationPanelProps = {
 }
 
 /** The notification inbox: All and Unread tabs, day groups, and a tone and icon per kind of alert. */
-export function NotificationPanel({ notifications, unread, onSelect, onMarkAllRead, onClose, onOpenSettings }: NotificationPanelProps) {
+export function NotificationPanel({ open, ...props }: NotificationPanelProps) {
+  const [mounted, setMounted] = useState(open)
+  useEffect(() => {
+    if (open) {
+      setMounted(true)
+      return
+    }
+    if (motionIsReduced()) {
+      setMounted(false)
+      return
+    }
+    const timer = window.setTimeout(() => setMounted(false), PANEL_EXIT_MS)
+    return () => window.clearTimeout(timer)
+  }, [open])
+  if (!open && !mounted) return null
+  return <NotificationInbox {...props} closing={!open} />
+}
+
+function NotificationInbox({ notifications, unread, onSelect, onMarkAllRead, onClose, onOpenSettings, closing }: Omit<NotificationPanelProps, 'open'> & { closing: boolean }) {
   const [filter, setFilter] = useState<NotificationFilter>('all')
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000)
     return () => window.clearInterval(timer)
   }, [])
+  // The panel grows out of the bell, wherever the top bar has put it.
+  const panelRef = useRef<HTMLElement>(null)
+  useLayoutEffect(() => {
+    const panel = panelRef.current
+    const bell = document.querySelector('.notification-toggle')?.getBoundingClientRect()
+    if (panel && bell) panel.style.setProperty('--origin-x', `${Math.round(bell.left + bell.width / 2 - panel.offsetLeft)}px`)
+  }, [])
   const groups = useMemo(() => groupNotifications(filterNotifications(notifications, filter).slice(0, 60), now), [notifications, filter, now])
   let order = 0
 
   return <>
-    <div className="notification-scrim" role="presentation" onMouseDown={onClose} />
-    <section className="notification-panel" role="dialog" aria-label="Notifications">
+    <div className={`notification-scrim${closing ? ' is-closing' : ''}`} role="presentation" onMouseDown={onClose} />
+    <section className={`notification-panel${closing ? ' is-closing' : ''}`} ref={panelRef} role="dialog" aria-label="Notifications" inert={closing}>
       <header className="notification-panel-heading">
+        <span className={`notification-panel-mark${unread ? ' has-unread' : ''}`} aria-hidden="true">{unread ? <BellRing size={17} /> : <Bell size={17} />}</span>
         <div className="notification-panel-title">
           <strong>Notifications</strong>
           <span className={`notification-unread-pill${unread ? '' : ' is-zero'}`}>{unread ? `${badgeCount(unread)} unread` : 'All caught up'}</span>
@@ -83,7 +115,7 @@ export function NotificationPanel({ notifications, unread, onSelect, onMarkAllRe
       <div className="notification-tabs" role="tablist" aria-label="Show notifications" data-active={filter}>
         <span className="notification-tab-indicator" aria-hidden="true" />
         <button role="tab" type="button" aria-selected={filter === 'all'} onClick={() => setFilter('all')}>All</button>
-        <button role="tab" type="button" aria-selected={filter === 'unread'} onClick={() => setFilter('unread')}>Unread{unread ? <b>{badgeCount(unread)}</b> : null}</button>
+        <button role="tab" type="button" aria-selected={filter === 'unread'} onClick={() => setFilter('unread')}>Unread{unread ? <b key={unread}>{badgeCount(unread)}</b> : null}</button>
       </div>
       <div className="notification-list" key={filter}>
         {groups.length === 0 ? <div className="notification-empty">
@@ -91,7 +123,7 @@ export function NotificationPanel({ notifications, unread, onSelect, onMarkAllRe
           <strong>{filter === 'unread' && notifications.length ? "You're all caught up" : 'No notifications yet'}</strong>
           <span>{filter === 'unread' && notifications.length ? 'New alerts about your reports will appear here.' : 'Updates about reports you follow or handle will appear here.'}</span>
         </div> : groups.map((group) => <section className="notification-group" key={group.key} aria-label={group.label}>
-          <h3>{group.label}</h3>
+          <h3><span>{group.label}</span><i aria-hidden="true" /><b>{group.items.length}</b></h3>
           <ul>
             {group.items.map((notification) => {
               const kind = notificationKind(notification.event_type)
@@ -106,7 +138,10 @@ export function NotificationPanel({ notifications, unread, onSelect, onMarkAllRe
                   </span>
                   <span className="notification-meta">
                     <time dateTime={notification.created_at}>{notificationTime(notification.created_at, now)}</time>
-                    {isNew && <span className="notification-dot"><span className="sr-only">Unread</span></span>}
+                    <span className="notification-state">
+                      <span className="notification-dot">{isNew && <span className="sr-only">Unread</span>}</span>
+                      <ChevronRight className="notification-go" size={15} aria-hidden="true" />
+                    </span>
                   </span>
                 </button>
               </li>

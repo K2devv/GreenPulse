@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import type { LucideIcon } from 'lucide-react'
+import { ArrowRight, type LucideIcon } from 'lucide-react'
 import { StatNumber } from './AnimatedNumber'
 
 export type HeroStat = {
@@ -10,6 +10,10 @@ export type HeroStat = {
   label: string
   /** Short qualifier under the label, hidden on small screens. */
   note?: string
+  /** Makes the tile a button that opens a dialog listing the reports it counts. */
+  onSelect?: () => void
+  /** What selecting the tile does, for the tooltip and screen readers. */
+  hint?: string
 }
 
 type HeroPanelProps = {
@@ -26,6 +30,26 @@ type HeroPanelProps = {
   footer?: ReactNode
 }
 
+function HeroStatTile({ stat, loading }: { stat: HeroStat; loading: boolean }) {
+  const body = <>
+    <span className="hero-stat-icon"><stat.icon size={16} aria-hidden="true" /></span>
+    <strong><StatNumber loading={loading} value={stat.value} /></strong>
+    <span className="hero-stat-label">{stat.label}</span>
+    {stat.note && <small>{stat.note}</small>}
+  </>
+  if (!stat.onSelect) return <div className={`hero-stat tone-${stat.tone}`}>{body}</div>
+  return <button
+    className={`hero-stat is-action tone-${stat.tone}`}
+    type="button"
+    onClick={stat.onSelect}
+    aria-haspopup="dialog"
+    title={stat.hint}
+  >
+    {body}
+    <span className="hero-stat-go" aria-hidden="true"><ArrowRight size={13} strokeWidth={2.4} /></span>
+  </button>
+}
+
 /** The page's opening panel: what the app is for, the main action, and the headline numbers. */
 export function HeroPanel({ title, subtitle, action, hint, stats, statsLabel, loading, footer }: HeroPanelProps) {
   return <section className="hero">
@@ -38,12 +62,7 @@ export function HeroPanel({ title, subtitle, action, hint, stats, statsLabel, lo
     </div>
     <div className="hero-side">
       <div className="hero-stats" role="group" aria-label={statsLabel} data-count={stats.length}>
-        {stats.map((stat) => <div className={`hero-stat tone-${stat.tone}`} key={stat.label}>
-          <span className="hero-stat-icon"><stat.icon size={16} aria-hidden="true" /></span>
-          <strong><StatNumber loading={loading} value={stat.value} /></strong>
-          <span className="hero-stat-label">{stat.label}</span>
-          {stat.note && <small>{stat.note}</small>}
-        </div>)}
+        {stats.map((stat) => <HeroStatTile stat={stat} loading={loading} key={stat.label} />)}
       </div>
       {footer}
     </div>
