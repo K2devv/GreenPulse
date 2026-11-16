@@ -79,3 +79,16 @@ export function filterNotifications<T extends InboxItem>(items: readonly T[], fi
 export function badgeCount(unread: number): string {
   return unread > 99 ? '99+' : String(Math.max(0, unread))
 }
+
+/**
+ * Keeps notifications the user has just read marked as read. A list fetched before the read mark
+ * reached the server still says "unread"; without this the badge would count them again.
+ */
+export function withPendingReads<T extends { id: number | string; read_at: string | null }>(rows: readonly T[], pending: ReadonlyMap<number | string, string>): T[] {
+  if (pending.size === 0) return [...rows]
+  return rows.map((row) => {
+    const readAt = row.read_at === null ? pending.get(row.id) : undefined
+    return readAt ? { ...row, read_at: readAt } : row
+  })
+}
+

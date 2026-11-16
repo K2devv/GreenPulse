@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   ArrowDownUp,
   ArrowLeft,
+  ArrowRight,
   BarChart3,
   CalendarDays,
   Camera,
@@ -41,7 +42,7 @@ import { Capacitor } from '@capacitor/core'
 import { App as NativeApp } from '@capacitor/app'
 import { Geolocation } from '@capacitor/geolocation'
 import { topBackLayer, topEscapeLayer, type BackLayer } from './lib/native-back'
-import { attachReporterNames, getAuthRedirectUrl, isSupabaseConfigured, reporterIdsOf, supabase, toReport, type EnvironmentalFollowUp, type NotificationRow, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
+import { attachReporterNames, getAuthRedirectUrl, isSupabaseConfigured, reporterIdsOf, supabase, toReport, type EnvironmentalFollowUp, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
 import { apiUrl } from './lib/api-url'
 import { THEME_CHOICE_KEY, oppositeTheme, readThemeChoice, resolveTheme, type Theme } from './lib/theme-preference'
 import { normalizePhoneNumber } from './lib/phone-number'
@@ -72,6 +73,7 @@ import { isViewerOnTask, mergeSavedReport, resolveStaffReport } from './lib/staf
 import { ReportFeedCard } from './ReportFeedCard'
 import { ENGAGEMENT_BATCH_LIMIT, indexEngagement, type ReportEngagement } from './lib/report-engagement'
 import { isOpenStatus } from './lib/report-workflow'
+import { REPORT_LOAD_LIMIT, REPORT_PAGE_SIZE, applyRowChanges, loadInPages, mergeNewestPage } from './lib/report-paging'
 import { ALL_STATUSES, STATUS_GROUP_FILTERS, communityStatusFilter, matchesHeroTile, matchesStatusFilter, staffQuickFilter, type HeroTile, type StaffQuickFilter } from './lib/report-quick-filters'
 import { ExactLocation } from './ExactLocation'
 import { formatPlaceLabel } from './lib/place-label'
@@ -82,6 +84,8 @@ import { canHandleEscalation, type SlaEscalation } from './lib/sla-escalations'
 import { EscalationList } from './EscalationList'
 import { EmailCodeStep, type CodeStatus } from './EmailCodeStep'
 import { NotificationBell, NotificationPanel } from './NotificationPanel'
+import { useDialogFocusTrap } from './useDialogFocusTrap'
+import { useNotificationInbox } from './useNotificationInbox'
 import { buildDistrictOutline } from './lib/district-outline'
 import { spreadCoincident } from './lib/map-clusters'
 import type { HeatCell } from './lib/map-style'
@@ -370,6 +374,8 @@ function App() {
   const [loadingReports, setLoadingReports] = useState(isSupabaseConfigured)
   const [reportsSyncing, setReportsSyncing] = useState(false)
   const [reportsFailed, setReportsFailed] = useState(false)
+  // True when there are more reports than the app keeps loaded (REPORT_LOAD_LIMIT), so only the newest are shown.
+  const [reportsTruncated, setReportsTruncated] = useState(false)
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null)
   const [reportRefreshToken, setReportRefreshToken] = useState(0)
   const [isOnline, setIsOnline] = useState(() => typeof navigator === 'undefined' || navigator.onLine)
@@ -456,7 +462,6 @@ function App() {
   const [followupMessage, setFollowupMessage] = useState('')
   const [followupBusy, setFollowupBusy] = useState(false)
   const [followUpId, setFollowUpId] = useState<string>()
-  const [notifications, setNotifications] = useState<NotificationRow[]>([])
   const [failedEmailNotifications, setFailedEmailNotifications] = useState<DeliveryFailure[]>([])
   const [emailRetryBusy, setEmailRetryBusy] = useState(false)
   const [emailRetryMessage, setEmailRetryMessage] = useState('')
@@ -471,6 +476,7 @@ function App() {
   const [staffPhotoUrls, setStaffPhotoUrls] = useState<{ original: string[]; resolution: string[] }>({ original: [], resolution: [] })
   const [categoryFilter, setCategoryFilter] = useState('All categories')
   const [statusFilter, setStatusFilter] = useState<string>(ALL_STATUSES)
+  useDialogFocusTrap()
   // The hero stat tile whose reports are open in a dialog.
   const [statTile, setStatTile] = useState<HeroTile>()
   // The community and staff views have different tiles, so a dialog does not outlive a switch between them.
@@ -614,6 +620,11 @@ function App() {
   const toggleTheme = () => setThemeChoice(oppositeTheme(theme))
   const t = (key: Parameters<typeof translate>[0]) => translate(key)
   const { toasts, push: pushToast, dismiss: dismissToast } = useToasts()
+  const reportInboxError = useCallback((message: string) => pushToast({ tone: 'error', message }), [pushToast])
+  const inbox = useNotificationInbox({ userId: session?.user.id, refreshToken: reportRefreshToken, onError: reportInboxError })
+  const refreshInbox = inbox.refresh
+  // Opening the inbox re-reads it, so it is current even if a live update was missed.
+  useEffect(() => { if (notificationPanelOpen) void refreshInbox() }, [notificationPanelOpen, refreshInbox])
   const [clock, setClock] = useState(() => Date.now())
   const { prefs: displayPrefs, update: updateDisplayPrefs } = useDisplayPrefs()
   const [scrolledPastHeading, setScrolledPastHeading] = useState(false)
@@ -823,43 +834,127 @@ function App() {
     return () => { active = false }
   }, [session])
 
+  // Reports load a page at a time (see lib/report-paging). A full sync pages through everything up
+  // to REPORT_LOAD_LIMIT; a light refresh re-reads only the newest page and the reports Realtime
+  // said had changed, and lays them over the rows already held here.
+  const reportSync = useRef({ context: '', fullDue: true, lastToken: -1, community: [] as ReportRow[], private: [] as ReportRow[] })
+  const lightRefreshTokens = useRef(new Set<number>())
+  const changedReportIds = useRef(new Set<string>())
+  const requestLightRefresh = useCallback(() => setReportRefreshToken((current) => {
+    lightRefreshTokens.current.add(current + 1)
+    return current + 1
+  }), [])
   useEffect(() => {
     if (!supabase) return
+    const client = supabase
     let active = true
+    const sync = reportSync.current
+    const userId = session?.user.id
+    const loadAllForAdminOverview = profile?.role === 'admin' && staffMode && staffDashboardOpen
+    // Any refresh request since the last run that was not a light one makes this a full sync.
+    for (let token = sync.lastToken + 1; token <= reportRefreshToken; token += 1) {
+      if (!lightRefreshTokens.current.has(token)) sync.fullDue = true
+    }
+    sync.lastToken = reportRefreshToken
+    lightRefreshTokens.current.clear()
+    const context = `${userId ?? ''}|${loadAllForAdminOverview}`
+    if (sync.context !== context) {
+      sync.context = context
+      sync.private = []
+      sync.fullDue = true
+    }
+    const full = sync.fullDue || !reportsLoaded.current
     if (!reportsLoaded.current) setLoadingReports(true)
     setReportsSyncing(true)
-    async function loadReports() {
-      const { data: communityRows, error: communityError } = await supabase!.from('community_reports').select('*').order('created_at', { ascending: false })
-      if (communityError) {
-        if (active) setBackendError(`Could not load community reports: ${communityError.message}`)
-        if (active) { setLoadingReports(false); setReportsSyncing(false); setReportsFailed(true) }
-        return
+
+    const communityPage = (from: number, to: number) => client.from('community_reports').select('*').order('created_at', { ascending: false }).order('id', { ascending: false }).range(from, to)
+    const privateRows = () => {
+      const query = client.from('reports').select('*')
+      return loadAllForAdminOverview ? query : query.eq('reporter_id', userId ?? '')
+    }
+    const privatePage = (from: number, to: number) => privateRows().order('created_at', { ascending: false }).order('id', { ascending: false }).range(from, to)
+    // Reporter names come from profiles, which residents can read only for themselves and staff
+    // for everyone. A failed lookup just leaves the names out.
+    const withReporterNames = async (rows: ReportRow[]) => {
+      let named = rows
+      const reporterIds = reporterIdsOf(rows)
+      for (let start = 0; start < reporterIds.length; start += 100) {
+        const { data: profileRows } = await client.from('profiles').select('id, display_name').in('id', reporterIds.slice(start, start + 100))
+        if (profileRows) named = attachReporterNames(named, profileRows)
       }
-      let privateRows: ReportRow[] = []
-      let privateError = ''
-      if (session?.user) {
-        const loadAllForAdminOverview = profile?.role === 'admin' && staffMode && staffDashboardOpen
-        const query = loadAllForAdminOverview
-          ? supabase!.from('reports').select('*').order('created_at', { ascending: false })
-          : supabase!.from('reports').select('*').eq('reporter_id', session.user.id).order('created_at', { ascending: false })
-        const { data, error } = await query
-        if (error) privateError = `Could not load your reports: ${error.message}`
-        else {
-          privateRows = (data ?? []) as ReportRow[]
-          // Reporter names come from profiles, which residents can read only for themselves and
-          // staff for everyone. A failed lookup just leaves the names out.
-          const reporterIds = reporterIdsOf(privateRows)
-          for (let start = 0; start < reporterIds.length; start += 100) {
-            const { data: profileRows } = await supabase!.from('profiles').select('id, display_name').in('id', reporterIds.slice(start, start + 100))
-            if (profileRows) privateRows = attachReporterNames(privateRows, profileRows)
-          }
-        }
-      }
-      if (!active) return
+      return named
+    }
+    const showHeldReports = () => {
       const combined = new Map<string, Report>()
-      for (const row of (communityRows ?? []) as ReportRow[]) combined.set(row.id, toReport(row))
-      for (const row of privateRows) combined.set(row.id, toReport(row))
+      for (const row of sync.community) combined.set(row.id, toReport(row))
+      for (const row of sync.private) combined.set(row.id, toReport(row))
       setReports([...combined.values()].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()))
+    }
+    const failCommunityLoad = (message: string) => {
+      setBackendError(`Could not load community reports: ${message}`)
+      setLoadingReports(false)
+      setReportsSyncing(false)
+      setReportsFailed(true)
+    }
+
+    async function loadReports() {
+      let privateError = ''
+      if (full) {
+        const community = await loadInPages<ReportRow>(communityPage, {
+          isCancelled: () => !active,
+          // On the very first load the newest page is shown as soon as it arrives.
+          onPage: (rows) => {
+            if (!active || reportsLoaded.current) return
+            sync.community = rows
+            showHeldReports()
+            setLoadingReports(false)
+          },
+        })
+        if (!active) return
+        if (community.error) return failCommunityLoad(community.error)
+        sync.community = community.rows
+        let truncated = community.truncated
+        if (userId) {
+          const mine = await loadInPages<ReportRow>(privatePage, { isCancelled: () => !active })
+          if (!active) return
+          if (mine.error) privateError = `Could not load your reports: ${mine.error}`
+          else {
+            const named = await withReporterNames(mine.rows)
+            if (!active) return
+            sync.private = named
+            truncated = truncated || mine.truncated
+          }
+        } else sync.private = []
+        // A failed private load is retried in full on the next refresh.
+        sync.fullDue = Boolean(privateError)
+        setReportsTruncated(truncated)
+      } else {
+        const ids = [...changedReportIds.current].slice(0, 100)
+        const [page, changed] = await Promise.all([
+          communityPage(0, REPORT_PAGE_SIZE - 1),
+          ids.length ? client.from('community_reports').select('*').in('id', ids) : undefined,
+        ])
+        if (!active) return
+        const communityError = page.error ?? changed?.error
+        if (communityError) return failCommunityLoad(communityError.message)
+        sync.community = applyRowChanges(mergeNewestPage(sync.community, (page.data ?? []) as ReportRow[]), ids, (changed?.data ?? []) as ReportRow[])
+        if (userId) {
+          const [minePage, mineChanged] = await Promise.all([
+            privatePage(0, REPORT_PAGE_SIZE - 1),
+            ids.length ? privateRows().in('id', ids) : undefined,
+          ])
+          if (!active) return
+          const mineError = minePage.error ?? mineChanged?.error
+          if (mineError) privateError = `Could not load your reports: ${mineError.message}`
+          else {
+            const [namedPage, namedChanged] = await Promise.all([withReporterNames((minePage.data ?? []) as ReportRow[]), withReporterNames((mineChanged?.data ?? []) as ReportRow[])])
+            if (!active) return
+            sync.private = applyRowChanges(mergeNewestPage(sync.private, namedPage), ids, namedChanged)
+          }
+        } else sync.private = []
+        ids.forEach((id) => changedReportIds.current.delete(id))
+      }
+      showHeldReports()
       // Community reports still load when the private query fails, but the problem stays visible.
       setBackendError(privateError)
       reportsLoaded.current = true
@@ -875,12 +970,23 @@ function App() {
   useEffect(() => {
     if (!supabase) return
     const channel = supabase.channel('greenpulse-report-updates')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, () => {
-        setReportRefreshToken((current) => current + 1)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'reports' }, (payload) => {
+        // The changed report is re-read by id, so it stays current even when it is older than the newest page.
+        const changedId = (payload.new as { id?: unknown }).id ?? (payload.old as { id?: unknown }).id
+        if (typeof changedId === 'string') changedReportIds.current.add(changedId)
+        if (changedReportIds.current.size > 100) {
+          changedReportIds.current.clear()
+          setReportRefreshToken((current) => current + 1)
+        } else requestLightRefresh()
       })
       .subscribe()
+    // The minute-by-minute fallback re-reads the newest page; every tenth one is a full sync.
+    let ticks = 0
     const interval = window.setInterval(() => {
-      if (document.visibilityState === 'visible' && navigator.onLine) setReportRefreshToken((current) => current + 1)
+      if (document.visibilityState !== 'visible' || !navigator.onLine) return
+      ticks += 1
+      if (ticks % 10 === 0) setReportRefreshToken((current) => current + 1)
+      else requestLightRefresh()
     }, 60_000)
     const onOnline = () => {
       setIsOnline(true)
@@ -895,7 +1001,7 @@ function App() {
       window.removeEventListener('offline', onOffline)
       void supabase!.removeChannel(channel)
     }
-  }, [])
+  }, [requestLightRefresh])
 
   useEffect(() => {
     if (!supabase || !session) {
@@ -1124,31 +1230,6 @@ function App() {
     void loadStaffQueue()
     return () => { active = false }
   }, [session, profile?.role, staffMode, staffDashboardOpen, staffFilters, staffQueueOffset, reportRefreshToken])
-
-  useEffect(() => {
-    if (!supabase || !session) {
-      setNotifications([])
-      return
-    }
-    let active = true
-    const refresh = async () => {
-      const { data } = await supabase!.from('notifications').select('id, report_id, event_type, title, message, created_at, read_at').order('created_at', { ascending: false }).limit(50)
-      if (active) setNotifications((data ?? []) as NotificationRow[])
-    }
-    void refresh()
-    const interval = window.setInterval(() => void refresh(), 60_000)
-    return () => {
-      active = false
-      window.clearInterval(interval)
-    }
-  }, [session])
-
-  useEffect(() => {
-    if (!notificationPanelOpen || !supabase || !session) return
-    supabase.from('notifications').select('id, report_id, event_type, title, message, created_at, read_at').order('created_at', { ascending: false }).limit(50).then(({ data }) => {
-      setNotifications((data ?? []) as NotificationRow[])
-    })
-  }, [notificationPanelOpen, session])
 
   useEffect(() => {
     try {
@@ -1448,9 +1529,9 @@ function App() {
     ? reports.filter((report) => isOpenStatus(report.status) && Date.now() - new Date(report.createdAt).getTime() >= (report.urgency === 'High' ? responseSettings.high_urgency_sla_hours : responseSettings.response_sla_hours) * 60 * 60 * 1000)
       .map((report) => ({ id: `overdue:${report.id}`, report_id: report.id, event_type: 'overdue_task', title: 'Overdue task', message: `Open report needs attention: ${report.title}.`, created_at: report.createdAt, read_at: readOverdueIds.includes(report.id) ? report.createdAt : null }))
     : []
-  const inboxNotifications: InboxNotification[] = [...notifications, ...overdueNotifications]
+  const inboxNotifications: InboxNotification[] = [...inbox.notifications, ...overdueNotifications]
     .sort((first, second) => new Date(second.created_at).getTime() - new Date(first.created_at).getTime())
-  const unreadNotificationCount = inboxNotifications.filter((notification) => !notification.read_at).length
+  const unreadNotificationCount = inbox.unreadCount + overdueNotifications.filter((notification) => !notification.read_at).length
 
   function openAuthModal(mode: 'sign-in' | 'sign-up', options: { prefill?: { email?: string; displayName?: string } } = {}) {
     setPendingConfirmation(null)
@@ -2548,20 +2629,19 @@ function App() {
     return () => { active = false }
   }, [profile?.role, staffMode, staffReportId, staffPhotoPathsKey, reportRefreshToken])
 
-  function markNotificationRead(notification: InboxNotification) {
-    const readAt = new Date().toISOString()
-    if (typeof notification.id === 'string') {
-      const nextIds = [...new Set([...readOverdueIds, notification.report_id])]
-      setReadOverdueIds(nextIds)
-      try {
-        localStorage.setItem('greenpulse-read-overdue', JSON.stringify(nextIds))
-      } catch {
-        setBackendError('Overdue alert read state could not be saved in this browser.')
-      }
-    } else if (supabase) {
-      void supabase.from('notifications').update({ read_at: readAt }).eq('id', notification.id)
-      setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, read_at: readAt } : item))
+  function markOverdueRead(reportIds: string[]) {
+    const nextIds = [...new Set([...readOverdueIds, ...reportIds])]
+    setReadOverdueIds(nextIds)
+    try {
+      localStorage.setItem('greenpulse-read-overdue', JSON.stringify(nextIds))
+    } catch {
+      setBackendError('Overdue alert read state could not be saved in this browser.')
     }
+  }
+
+  function markNotificationRead(notification: InboxNotification) {
+    if (typeof notification.id === 'string') markOverdueRead([notification.report_id])
+    else if (!notification.read_at) void inbox.markRead([notification.id])
     if (profile?.role === 'admin' || profile?.role === 'responder') {
       setStaffMode(true)
       setStaffDashboardOpen(false)
@@ -2571,16 +2651,8 @@ function App() {
   }
 
   function markAllNotificationsRead() {
-    const readAt = new Date().toISOString()
-    if (supabase) void supabase.from('notifications').update({ read_at: readAt }).is('read_at', null)
-    setNotifications((current) => current.map((item) => ({ ...item, read_at: item.read_at ?? readAt })))
-    const nextIds = [...new Set([...readOverdueIds, ...overdueNotifications.map((item) => item.report_id)])]
-    setReadOverdueIds(nextIds)
-    try {
-      localStorage.setItem('greenpulse-read-overdue', JSON.stringify(nextIds))
-    } catch {
-      setBackendError('Overdue alert read state could not be saved in this browser.')
-    }
+    void inbox.markRead('all')
+    markOverdueRead(overdueNotifications.map((item) => item.report_id))
   }
 
   const activeViewKey = !staffMode ? 'community' : profile?.role === 'admin' && staffDashboardOpen ? 'dashboard' : 'desk'
@@ -2678,7 +2750,6 @@ function App() {
 
   return (
     <div className={`app-shell theme-${theme}`} lang="en">
-      <a className="skip-link" href="#home">Skip to main content</a>
       <header className="topbar">
         <a className="brand" href="#home" aria-label="GreenPulse home">
           <span className="brand-mark"><Leaf size={19} strokeWidth={2.2} /></span>
@@ -2707,6 +2778,7 @@ function App() {
         unread={unreadNotificationCount}
         onSelect={markNotificationRead}
         onMarkAllRead={markAllNotificationsRead}
+        onLoadOlder={inbox.hasOlder ? inbox.loadOlder : undefined}
         onClose={() => setNotificationPanelOpen(false)}
         onOpenSettings={profile ? () => { setNotificationPanelOpen(false); setProfileAvatarPreview(profileAvatarUrl); setProfileModal(true) } : undefined}
       />
@@ -2715,7 +2787,7 @@ function App() {
         <HeroPanel
           title={staffMode ? <>Coordinate the response. <em>Close the loop.</em></> : <>See it. Report it. <em>Restore it.</em></>}
           subtitle={staffMode ? 'A focused queue for reviewing reports and coordinating community response.' : t('communitySubtitle')}
-          action={<button className="primary-button" type="button" onClick={startReport}><Plus size={17} /> {t('reportIssue')}</button>}
+          action={<button className="primary-button report-cta" type="button" onClick={startReport}><span className="report-cta-icon" aria-hidden="true"><Plus size={17} strokeWidth={2.6} /></span><span className="report-cta-label">{t('reportIssue')}</span><span className="report-cta-arrow" aria-hidden="true"><ArrowRight size={15} strokeWidth={2.4} /></span></button>}
           hint={staffMode ? undefined : 'No account needed. Takes about a minute.'}
           stats={heroStats}
           statsLabel={staffMode ? 'Staff response summary' : 'Community report summary'}
@@ -2732,7 +2804,7 @@ function App() {
         {staffMode && profile?.role === 'admin' && staffDashboardOpen && <section className="admin-overview" aria-label="Admin dashboard" aria-busy={loadingReports}>
           <div className="analytics-heading">
             <div><p className="eyebrow">ADMIN DASHBOARD</p><h2>Environmental report overview</h2></div>
-            <div className="analytics-heading-actions"><span className="analytics-period">{loadingReports ? 'Loading reports…' : 'All reports'}<i />Current data</span><button className="secondary-button add-responder-button" type="button" onClick={() => { setResponderMessage(''); setResponderModalOpen(true) }}><Plus size={14} /> Add responder</button><button className="secondary-button admin-dashboard-action" type="button" onClick={() => setStaffDashboardOpen(false)}><ClipboardCheck size={14} /> Response desk</button></div>
+            <div className="analytics-heading-actions"><span className="analytics-period" title={reportsTruncated ? `There are more reports than the dashboard loads. These figures cover the newest ${REPORT_LOAD_LIMIT.toLocaleString()}.` : undefined}>{loadingReports ? 'Loading reports…' : reportsTruncated ? `Newest ${REPORT_LOAD_LIMIT.toLocaleString()} reports` : 'All reports'}<i />Current data</span><button className="secondary-button add-responder-button" type="button" onClick={() => { setResponderMessage(''); setResponderModalOpen(true) }}><Plus size={14} /> Add responder</button><button className="secondary-button admin-dashboard-action" type="button" onClick={() => setStaffDashboardOpen(false)}><ClipboardCheck size={14} /> Response desk</button></div>
           </div>
           <AdminSectionNav sections={ADMIN_SECTIONS} active={adminSection} onChange={setAdminSection} />
           {adminSection === 'admin-overview-metrics' && <div className="admin-metrics-grid" id="admin-overview-metrics" role="tabpanel" aria-labelledby={adminTabId('admin-overview-metrics')}>
@@ -2794,7 +2866,7 @@ function App() {
               <label className="field-label">High urgency deadline (hours)<input name="high_urgency_sla_hours" type="number" min={1} max={720} step={1} value={responseSettings.high_urgency_sla_hours} onChange={(event) => setResponseSettings((current) => ({ ...current, high_urgency_sla_hours: Number(event.target.value) }))} required /></label>
               <label className="field-label">Second escalation window (multiple of first deadline)<input name="second_escalation_multiplier" type="number" min={2} max={10} step={1} value={responseSettings.second_escalation_multiplier} onChange={(event) => setResponseSettings((current) => ({ ...current, second_escalation_multiplier: Number(event.target.value) }))} required /><small>At the first deadline, notify admins and the assigned responder. At this multiple, notify admins again for supervisor review.</small></label>
               {responseSettingsMessage && <p className="workflow-hint" role="status">{responseSettingsMessage}</p>}
-              <button className="secondary-button" type="submit" disabled={responseSettingsBusy}>{responseSettingsBusy ? 'Saving…' : 'Save deadlines'}</button>
+              <button className="primary-button" type="submit" disabled={responseSettingsBusy}>{responseSettingsBusy ? 'Saving…' : 'Save deadlines'}</button>
             </form>
             <section className="admin-operation-card" aria-label="Escalation queue">
               <div><p className="eyebrow">FOLLOW-UP CONTROL</p><h3>Escalations</h3><p>Stage 1 goes to admins and the assigned responder. Stage 2 asks admins to review the task plan. Staff can acknowledge the escalation.</p></div>
@@ -2928,7 +3000,7 @@ function App() {
 
           <aside className="reports-panel" aria-label="Recent environmental reports">
             <div className="reports-heading">
-              <div><div className="reports-title-line"><h2>{nearbyOnly ? t('nearbyReports') : t('recentReports')}</h2><span className="count-badge">{mapReports.length}</span></div><span className="section-caption">{[nearbyOnly ? 'Within 1 km' : null, categoryFilter, statusFilter, barangayFilter ? `Barangay ${barangayFilter}` : null].filter(Boolean).join(' · ')}</span></div>
+              <div><div className="reports-title-line"><h2>{nearbyOnly ? t('nearbyReports') : t('recentReports')}</h2><span className="count-badge">{mapReports.length}</span></div><span className="section-caption">{[nearbyOnly ? 'Within 1 km' : null, categoryFilter, statusFilter, barangayFilter ? `Barangay ${barangayFilter}` : null, reportsTruncated ? `Newest ${REPORT_LOAD_LIMIT.toLocaleString()} only` : null].filter(Boolean).join(' · ')}</span></div>
               <label className="feed-sort"><span>Sort</span><span className="select-wrap"><select value={newestFirst ? 'newest' : 'oldest'} onChange={(event) => setNewestFirst(event.target.value === 'newest')} aria-label="Sort reports"><option value="newest">Newest</option><option value="oldest">Oldest</option></select><ChevronDown size={13} /></span></label>
             </div>
             <div className="report-controls">
@@ -2975,7 +3047,7 @@ function App() {
         <footer className="page-footer"><span className="footer-brand"><span className="brand-mark"><Leaf size={13} strokeWidth={2.2} /></span>GreenPulse</span><span>Community environment monitoring <i>·</i> District 5, Quezon City</span></footer>
       </main>
 
-      {!staffMode && <button className={`report-fab ${fabVisible ? 'is-visible' : ''}`} type="button" onClick={startReport} aria-label="New report" aria-hidden={!fabVisible} tabIndex={fabVisible ? 0 : -1}><Plus size={19} />Report</button>}
+      {!staffMode && <button className={`report-fab ${fabVisible ? 'is-visible' : ''}`} type="button" onClick={startReport} aria-label="New report" aria-hidden={!fabVisible} tabIndex={fabVisible ? 0 : -1}><span className="report-fab-icon" aria-hidden="true"><Plus size={18} strokeWidth={2.6} /></span>Report</button>}
 
       {openTile && <StatReportsModal
         icon={openTile.icon}

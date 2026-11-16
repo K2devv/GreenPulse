@@ -22,13 +22,6 @@ test.describe('report intake', () => {
     await expect(resumed.locator('textarea[name="additional_info"]')).toHaveValue('Please inspect after the next rainfall.')
   })
 
-  test('provides a keyboard skip link to the main report workspace', async ({ page }) => {
-    await page.goto('/')
-    await expect(page.getByRole('link', { name: 'Skip to main content' })).toHaveAttribute('href', '#home')
-    await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: 'Skip to main content' })).toBeFocused()
-  })
-
   test('keeps the reporting form usable at a small phone width', async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/')

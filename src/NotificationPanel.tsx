@@ -58,6 +58,8 @@ type NotificationPanelProps = {
   onSelect: (notification: PanelNotification) => void
   onMarkAllRead: () => void
   onClose: () => void
+  /** Given when older notifications exist that are not loaded yet: loads the next batch. */
+  onLoadOlder?: () => void
   /** Shown in the footer when given: opens profile settings, where email alerts are turned on or off. */
   onOpenSettings?: () => void
 }
@@ -81,7 +83,7 @@ export function NotificationPanel({ open, ...props }: NotificationPanelProps) {
   return <NotificationInbox {...props} closing={!open} />
 }
 
-function NotificationInbox({ notifications, unread, onSelect, onMarkAllRead, onClose, onOpenSettings, closing }: Omit<NotificationPanelProps, 'open'> & { closing: boolean }) {
+function NotificationInbox({ notifications, unread, onSelect, onMarkAllRead, onClose, onLoadOlder, onOpenSettings, closing }: Omit<NotificationPanelProps, 'open'> & { closing: boolean }) {
   const [filter, setFilter] = useState<NotificationFilter>('all')
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
@@ -95,7 +97,7 @@ function NotificationInbox({ notifications, unread, onSelect, onMarkAllRead, onC
     const bell = document.querySelector('.notification-toggle')?.getBoundingClientRect()
     if (panel && bell) panel.style.setProperty('--origin-x', `${Math.round(bell.left + bell.width / 2 - panel.offsetLeft)}px`)
   }, [])
-  const groups = useMemo(() => groupNotifications(filterNotifications(notifications, filter).slice(0, 60), now), [notifications, filter, now])
+  const groups = useMemo(() => groupNotifications(filterNotifications(notifications, filter), now), [notifications, filter, now])
   let order = 0
 
   return <>
@@ -148,6 +150,7 @@ function NotificationInbox({ notifications, unread, onSelect, onMarkAllRead, onC
             })}
           </ul>
         </section>)}
+        {onLoadOlder && groups.length > 0 && <button className="notification-older" type="button" onClick={onLoadOlder}>Show older notifications</button>}
       </div>
       <footer className="notification-panel-footer">
         <span>In-app alerts for your reports and tasks</span>
