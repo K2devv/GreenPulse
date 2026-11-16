@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { badgeCount, filterNotifications, groupNotifications, notificationKind, notificationTime } from './notification-inbox'
+import { badgeCount, filterNotifications, groupNotifications, notificationKind, notificationTime, withPendingReads } from './notification-inbox'
 
 // Local time, so day boundaries match the runner's time zone the same way the app's do.
 const now = new Date(2026, 10, 12, 15, 0, 0).getTime()
@@ -81,3 +81,27 @@ describe('filterNotifications and badgeCount', () => {
     expect(badgeCount(-1)).toBe('0')
   })
 })
+
+describe('withPendingReads', () => {
+  const rows = [
+    { id: 1, read_at: null },
+    { id: 2, read_at: null },
+    { id: 3, read_at: '2026-11-10T08:00:00.000Z' },
+  ]
+
+  it('keeps a notification read when an older fetch still returns it unread', () => {
+    const merged = withPendingReads(rows, new Map([[1, '2026-11-12T07:00:00.000Z']]))
+    expect(merged.map((row) => row.read_at)).toEqual(['2026-11-12T07:00:00.000Z', null, '2026-11-10T08:00:00.000Z'])
+    expect(merged.filter((row) => !row.read_at)).toHaveLength(1)
+  })
+
+  it('does not overwrite the read time the server already has', () => {
+    const merged = withPendingReads(rows, new Map([[3, '2026-11-12T07:00:00.000Z']]))
+    expect(merged[2].read_at).toBe('2026-11-10T08:00:00.000Z')
+  })
+
+  it('returns the rows unchanged when nothing is pending', () => {
+    expect(withPendingReads(rows, new Map())).toEqual(rows)
+  })
+})
+
