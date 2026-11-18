@@ -50,6 +50,8 @@ import { CONFIRMATION_RESEND_COOLDOWN_SECONDS, describeAuthError, isExistingAcco
 import { StaffWorkflowPanel } from './StaffWorkflowPanel'
 import { AnimatedNumber } from './AnimatedNumber'
 import { HeroPanel, type HeroStat } from './HeroPanel'
+import { ReportPhotoStrip } from './ReportPhotoStrip'
+import { SIGNED_PHOTO_RENEW_MS, SIGNED_PHOTO_SECONDS, canViewReportPhotos, knownPhotoPaths, photoPathList } from './lib/report-photo-access'
 import { StatReportsModal, type StatReportRow } from './StatReportsModal'
 import { AdminBarChart, AdminTrendChart, ChartEmpty, ChartSkeleton } from './AdminCharts'
 import { AdminSectionNav, adminTabId, type AdminSection } from './AdminSectionNav'
@@ -755,6 +757,9 @@ function App() {
 
   useEffect(() => {
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#141a16' : '#f5f7f2')
+    // The browser draws a dropdown's open list from the page's root color scheme, not the dropdown's
+    // own, so the root follows the app's theme too. Otherwise a dark-mode list opens light.
+    document.documentElement.style.colorScheme = theme
   }, [theme])
 
   useEffect(() => {
@@ -1350,6 +1355,43 @@ function App() {
   useFlip(staffQueueRef, staffQueue.map((report) => report.id).join('|'))
   // Every report the app has loaded, each once. A report in both lists keeps its staff queue row, which has more fields.
   const allKnownReports = useMemo(() => [...new Map([...reports, ...staffQueue].map((report) => [report.id, report])).values()], [reports, staffQueue])
+  // The reporter's photos for a map preview. Photos are private (see lib/report-photo-access): only
+  // staff and the reporter get them, as short-lived signed links, fetched when a preview opens.
+  const photoContext = useRef({ reports: allKnownReports, userId: session?.user.id, role: profile?.role })
+  photoContext.current = { reports: allKnownReports, userId: session?.user.id, role: profile?.role }
+  // One request per report: a second caller (or React's development double effect) shares it, and
+  // the signed links are reused until shortly before they expire. A failed request is not kept.
+  const photoRequests = useRef(new Map<string, { urls: Promise<string[]>; renewAt: number }>())
+  useEffect(() => { photoRequests.current.clear() }, [session?.user.id, profile?.role])
+  const loadReportPhotos = useCallback((reportId: string): Promise<string[]> => {
+    const { reports: known, userId, role } = photoContext.current
+    const report = known.find((item) => item.id === reportId)
+    // Demo mode keeps a report's first photo on this device.
+    if (!supabase) return Promise.resolve(report?.image ? [report.image] : [])
+    if (!canViewReportPhotos({ userId, role }, { reporterId: report?.reporterId })) return Promise.resolve([])
+    const cached = photoRequests.current.get(reportId)
+    if (cached && cached.renewAt > Date.now()) return cached.urls
+    const client = supabase
+    const requests = photoRequests.current
+    const urls = (async () => {
+      let paths = report ? knownPhotoPaths(report) : undefined
+      if (paths === undefined) {
+        const { data, error } = await client.from('reports').select('photo_path, photo_paths').eq('id', reportId).maybeSingle()
+        if (error) throw error
+        if (!data) return []
+        paths = photoPathList(data.photo_paths as string[] | null, data.photo_path as string | null)
+      }
+      if (!paths.length) return []
+      const { data: signed, error } = await client.storage.from('report-photos').createSignedUrls(paths, SIGNED_PHOTO_SECONDS)
+      if (error) throw error
+      return (signed ?? []).flatMap((entry) => entry.signedUrl ? [entry.signedUrl] : [])
+    })().catch(() => {
+      requests.delete(reportId)
+      return [] as string[]
+    })
+    requests.set(reportId, { urls, renewAt: Date.now() + SIGNED_PHOTO_SECONDS * 1000 - SIGNED_PHOTO_RENEW_MS })
+    return urls
+  }, [])
   const changedStatuses = useStatusChanges(allKnownReports)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [celebrating, setCelebrating] = useState(false)
@@ -2971,6 +3013,7 @@ function App() {
                   compact={mobileMap}
                   onSelect={setSelectedId}
                   onDiscuss={setCommunityDiscussionId}
+                  loadPhotos={loadReportPhotos}
                 /> : <MapSkeleton />}
               </Suspense>
               {mobileMap && selectedReport && <div className="map-sheet" role="dialog" aria-label="Selected report" key={selectedReport.id}>
@@ -2978,6 +3021,7 @@ function App() {
                 <span className="map-sheet-meta">{selectedReport.category} · {selectedReport.status}</span>
                 <strong>{selectedReport.title}</strong>
                 <small><MapPin size={12} />{placeLabel(selectedReport)} · {formatCreatedAt(selectedReport.createdAt)}</small>
+                <ReportPhotoStrip reportId={selectedReport.id} load={loadReportPhotos} variant="inline" />
                 <p>{selectedReport.description}</p>
                 <button className="secondary-button map-sheet-discussion" type="button" onClick={() => setCommunityDiscussionId(selectedReport.id)}><MessageSquare size={14} /> Comments and discussion</button>
               </div>}

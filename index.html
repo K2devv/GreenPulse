@@ -60,6 +60,7 @@
       try {
         var choice = localStorage.getItem('greenpulse-theme-choice') || (localStorage.getItem('greenpulse-theme') === 'dark' ? 'dark' : '')
         var dark = choice ? choice === 'dark' : window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+        document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
         if (dark) {
           document.getElementById('boot-splash').classList.add('gp-dark')
           document.querySelector('meta[name="theme-color"]').setAttribute('content', '#141a16')

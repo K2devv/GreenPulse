@@ -98,7 +98,7 @@ Server-only secrets must never get a `VITE_` prefix, because Vite ships `VITE_*`
 - **Privacy rules to preserve:**
   - Public map coordinates are rounded and place labels are generalized (see `202610290001_public_location_privacy.sql`).
   - Reporter names stay hidden until a report is verified.
-  - Photo paths are never exposed publicly, and the `report-photos` bucket is private.
+  - Photo paths are never exposed publicly, and the `report-photos` bucket is private. The consent notice promises reporters their photos stay private, so map previews show photos only to staff and the reporter (`lib/report-photo-access.ts`, signed links fetched when a preview opens).
   - Guest contact emails live in a server-only table.
   - Rejected reports stay private.
 - **Geofence:** `202610290004_district5_boundary_geofence.sql` is tested by `supabase/tests/district5_boundary_geofence.sql`. Reports outside District 5 are refused in three places: the form (`isReportableLocation` in App.tsx, at every way of choosing a location and again at submit), the guest endpoint (bundled outlines when the database has none), and the database trigger. The trigger only enforces once `district5_barangay_boundaries` has rows; `202611120001_district5_osm_boundaries.sql` loads the bundled outlines for that.
