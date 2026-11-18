@@ -8,6 +8,7 @@ import { districtFeatures, type DistrictOutline } from './lib/district-outline'
 import { CLUSTER_MAX_ZOOM, clusterRingGradient, createClusterIndex, type MapClusterItem, type MapPoint } from './lib/map-clusters'
 import { buildMapStyle, VECTOR_SOURCE_ID, type Basemap, type HeatCell, type MapTheme } from './lib/map-style'
 import type { Bounds, Padding } from './lib/map-viewport'
+import { ReportPhotoStrip } from './ReportPhotoStrip'
 
 /** A report as the incident map draws it. */
 export type MapReport = {
@@ -52,6 +53,8 @@ type ReportMapProps = {
   compact: boolean
   onSelect: (id: string) => void
   onDiscuss: (id: string) => void
+  /** Resolves to the reporter's photos this viewer may see, shown at the top of the popup. Empty shows none. */
+  loadPhotos?: (reportId: string) => Promise<string[]>
 }
 
 type View = { zoom: number; bounds: Bounds }
@@ -80,7 +83,7 @@ function readView(map: MapInstance): View {
   return { zoom: map.getZoom(), bounds: [bounds.getWest() - marginX, bounds.getSouth() - marginY, bounds.getEast() + marginX, bounds.getNorth() + marginY] }
 }
 
-export default function ReportMap({ theme, outline, reports, categoryColors, categoryOrder, selectedId, focus, fitBarangay, heatCells, gpsLocation, compact, onSelect, onDiscuss }: ReportMapProps) {
+export default function ReportMap({ theme, outline, reports, categoryColors, categoryOrder, selectedId, focus, fitBarangay, heatCells, gpsLocation, compact, onSelect, onDiscuss, loadPhotos }: ReportMapProps) {
   const mapRef = useRef<MapRef>(null)
   const [ready, setReady] = useState(false)
   const [failed, setFailed] = useState(false)
@@ -91,6 +94,8 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
   // A popup opened from the keyboard takes focus, so its buttons are the next thing reached.
   const [popupFromKeyboard, setPopupFromKeyboard] = useState(false)
   const popupRef = useRef<PopupInstance>(null)
+  // The popup whose report has photos; its close button then sits on the photo.
+  const [photoPopupId, setPhotoPopupId] = useState<string>()
   // Pins arrive in a short stagger on first load; later ones (after a zoom or filter change) just pop in.
   const [introduced, setIntroduced] = useState(false)
   const padding = compact ? COMPACT_PADDING : DESKTOP_PADDING
@@ -225,6 +230,28 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
     if (popupId && (popupId !== selectedId || compact)) setPopupId(undefined)
   }, [compact, popupId, selectedId])
 
+  // The popup always opens above its pin (the camera puts a selected pin low for that). When its
+  // top would end up under the search box or off the map, for example once photos make it taller,
+  // the map is nudged down until it fits.
+  const keepPopupInView = useCallback(() => {
+    const map = mapRef.current?.getMap()
+    if (!map) return
+    const check = () => {
+      const element = popupRef.current?.getElement()
+      if (!element) return
+      const overflow = map.getContainer().getBoundingClientRect().top + padding.top - element.getBoundingClientRect().top
+      if (overflow > 0) map.panBy([0, -Math.ceil(overflow)], { duration: cameraDuration(320) })
+    }
+    if (map.isMoving()) map.once('moveend', check)
+    else check()
+  }, [padding])
+
+  useEffect(() => {
+    if (!popupId) return
+    const frame = window.requestAnimationFrame(keepPopupInView)
+    return () => window.cancelAnimationFrame(frame)
+  }, [popupId, keepPopupInView])
+
   const handleError = useCallback((event: MapErrorEvent) => {
     const error = event.error as (Error & { url?: string }) | undefined
     // No target means the map never started, which is how a missing WebGL2 context shows up.
@@ -329,12 +356,23 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
         longitude={popupReport.position[1]}
         latitude={popupReport.position[0]}
         offset={POPUP_OFFSET}
+        anchor="bottom"
         closeButton={false}
         maxWidth="296px"
         className="report-map-popup"
         onClose={() => setPopupId(undefined)}
       >
-        <article className="map-popup-card" style={{ '--pin-color': popupReport.color } as CSSProperties}>
+        <article className={`map-popup-card${photoPopupId === popupReport.id ? ' has-photos' : ''}`} style={{ '--pin-color': popupReport.color } as CSSProperties}>
+          {loadPhotos && <ReportPhotoStrip
+            reportId={popupReport.id}
+            load={loadPhotos}
+            variant="banner"
+            onReady={(count) => {
+              if (count === 0) return
+              setPhotoPopupId(popupReport.id)
+              keepPopupInView()
+            }}
+          />}
           <header>
             <span className="map-popup-category"><popupReport.icon size={13} aria-hidden="true" />{popupReport.category}</span>
             <span className={`status-pill status-${statusSlug(popupReport.status)}`}><i />{popupReport.status}</span>
