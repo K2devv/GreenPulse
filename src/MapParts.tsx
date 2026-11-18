@@ -2,7 +2,7 @@ import { useCallback, useId, useState, type CSSProperties } from 'react'
 import { MapPinOff, Maximize, Minus, Plus, type LucideIcon } from 'lucide-react'
 import type { MapInstance } from '@vis.gl/react-maplibre'
 import { motionIsReduced } from './display-prefs'
-import { fitBoundsCamera, type Bounds, type FitCamera, type Padding } from './lib/map-viewport'
+import { districtLockCamera, type Bounds, type FitCamera } from './lib/map-viewport'
 
 /** Closest zoom. The vector tiles stop at zoom 14 and are drawn larger beyond it. */
 export const MAP_MAX_ZOOM = 18.5
@@ -14,20 +14,24 @@ export const PIN_OFFSET: [number, number] = [0, 2.5]
 /** Animation length for a camera move, or 0 when motion is reduced in the app or the OS. */
 export const cameraDuration = (milliseconds: number) => (motionIsReduced() ? 0 : milliseconds)
 
+/** Space kept between the district and the map's edges at the lowest zoom, in pixels. */
+const DISTRICT_MARGIN = 10
+
 /**
- * Keeps a map inside the district. `lock` holds the camera that shows the whole district
- * with `padding` clear: its zoom is the map's minimum zoom and its view is the pan limit.
+ * Keeps a map inside the district. `lock` holds the camera that shows the whole district as large
+ * as it fits: its zoom is the map's minimum zoom and its view (the district's bounds plus a small
+ * margin) is the pan limit, so the map cannot be zoomed out or dragged away past District 5.
  * Call `measure` when the map loads and whenever it resizes.
  */
-export function useDistrictLock(bounds: Bounds, padding: Padding) {
+export function useDistrictLock(bounds: Bounds) {
   const [lock, setLock] = useState<FitCamera | null>(null)
   const measure = useCallback((map: MapInstance) => {
     const { clientWidth, clientHeight } = map.getContainer()
     if (!clientWidth || !clientHeight) return null
-    const next = fitBoundsCamera(bounds, clientWidth, clientHeight, padding, MAP_MAX_ZOOM)
+    const next = districtLockCamera(bounds, clientWidth, clientHeight, DISTRICT_MARGIN, MAP_MAX_ZOOM)
     setLock((current) => (current && current.zoom === next.zoom && current.view.every((value, index) => value === next.view[index]) ? current : next))
     return next
-  }, [bounds, padding])
+  }, [bounds])
   return { lock, measure }
 }
 

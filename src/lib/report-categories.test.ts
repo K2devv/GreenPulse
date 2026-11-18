@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isReportCategory, issueTypesByCategory, reportCategories } from './classify-report-photo'
+import { isReportCategory, issueTypesByCategory, reportCategories } from './report-categories'
 
 describe('isReportCategory', () => {
   it('accepts each report category', () => {
