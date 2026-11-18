@@ -1,12 +1,18 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
 const onePixelJpeg = Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAEFAqf/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/AX//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/AX//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAY/Al//xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAE/IT//2Q==', 'base64')
+
+/** Opens a new report and chooses the form on the start screen. */
+async function openReportForm(page: Page) {
+  await page.getByRole('button', { name: 'Report an issue' }).click()
+  await page.getByRole('dialog', { name: 'Report an issue' }).getByRole('button', { name: /^Fill in the form/ }).click()
+  return page.getByRole('dialog', { name: 'What did you notice?' })
+}
 
 test.describe('report intake', () => {
   test('saves a local draft and restores its form values', async ({ page }) => {
     await page.goto('/')
-    await page.getByRole('button', { name: 'Report an issue' }).click()
-    const dialog = page.getByRole('dialog', { name: 'What did you notice?' })
+    const dialog = await openReportForm(page)
     await dialog.locator('input[name="title"]').fill('Saved capstone field draft')
     await dialog.locator('input[name="issue_type"]').fill('Blocked culvert')
     await dialog.locator('textarea[name="description"]').fill('Water backed up near the covered drain.')
@@ -26,8 +32,7 @@ test.describe('report intake', () => {
     await page.setViewportSize({ width: 390, height: 844 })
     await page.goto('/')
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
-    await page.getByRole('button', { name: 'Report an issue' }).click()
-    const dialog = page.getByRole('dialog', { name: 'What did you notice?' })
+    const dialog = await openReportForm(page)
     const box = await dialog.boundingBox()
     expect(box?.width).toBeLessThanOrEqual(390)
     await dialog.locator('input[name="title"]').scrollIntoViewIfNeeded()
@@ -38,8 +43,7 @@ test.describe('report intake', () => {
 
   test('offers observation time, extra context, visibility consent, and up to five photos', async ({ page }) => {
     await page.goto('/')
-    await page.getByRole('button', { name: 'Report an issue' }).click()
-    const dialog = page.getByRole('dialog', { name: 'What did you notice?' })
+    const dialog = await openReportForm(page)
     await expect(dialog).toBeVisible()
     await expect(dialog.locator('input[name="observed_at"]')).toHaveAttribute('type', 'datetime-local')
     await expect(dialog.locator('textarea[name="additional_info"]')).toBeVisible()
@@ -47,6 +51,8 @@ test.describe('report intake', () => {
     await expect(dialog.getByText(/issue type, urgency, description, observation time/i)).toBeVisible()
     await expect(dialog.getByText(/display name may also appear/i)).toBeVisible()
 
+    // The photo checker's model is a 64 MB download; the tests never fetch it.
+    await page.route('https://huggingface.co/**', (route) => route.abort())
     const photos = dialog.locator('input[type="file"][multiple]')
     await expect(photos).toHaveCount(1)
     await photos.setInputFiles(Array.from({ length: 5 }, (_, index) => ({
@@ -56,6 +62,58 @@ test.describe('report intake', () => {
     })))
     await expect(dialog.locator('.report-photo-preview')).toHaveCount(5)
     await expect(dialog.getByRole('button', { name: 'Remove report photo 5' })).toBeVisible()
+  })
+
+  test('falls back to choosing the category by hand when the photo checker cannot load', async ({ page }) => {
+    await page.route('https://huggingface.co/**', (route) => route.abort())
+    await page.goto('/')
+    const dialog = await openReportForm(page)
+    await dialog.locator('input[type="file"][multiple]').setInputFiles({ name: 'report.jpg', mimeType: 'image/jpeg', buffer: onePixelJpeg })
+    await expect(dialog.getByText("Photo suggestions aren't available right now")).toBeVisible({ timeout: 15_000 })
+    await expect(dialog.getByRole('button', { name: 'Try again' })).toBeVisible()
+    await expect(dialog.locator('input[name="category"]:checked')).toHaveValue('Waste')
+    await expect(dialog.locator('input[name="issue_type"]')).toHaveValue('')
+  })
+
+  test('starts a new report with a photo or the form', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Report an issue' }).click()
+    const start = page.getByRole('dialog', { name: 'Report an issue' })
+    await expect(start.getByRole('button', { name: 'Scan with camera' })).toBeVisible()
+    await expect(start.getByRole('button', { name: 'Upload a photo' })).toBeVisible()
+    await expect(start.getByText('Your photo stays on this device.', { exact: false })).toBeVisible()
+    await start.getByRole('button', { name: /^Fill in the form/ }).click()
+    await expect(page.getByRole('dialog', { name: 'What did you notice?' })).toBeVisible()
+    await expect(start).toHaveCount(0)
+  })
+
+  test('refuses a file that is not a JPEG, PNG, or WebP photo on the start screen', async ({ page }) => {
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Report an issue' }).click()
+    const start = page.getByRole('dialog', { name: 'Report an issue' })
+    await start.locator('input[type="file"][multiple]').setInputFiles({ name: 'report.gif', mimeType: 'image/gif', buffer: Buffer.from('GIF89a') })
+    await expect(start.getByRole('alert')).toHaveText('Choose JPEG, PNG, or WebP images for the report photos.')
+  })
+
+  test('goes back to the start, or opens the form with the photo, when a photo cannot be checked', async ({ page }) => {
+    await page.route('https://huggingface.co/**', (route) => route.abort())
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Report an issue' }).click()
+    const upload = page.locator('.report-start-modal input[type="file"][multiple]')
+    await upload.setInputFiles({ name: 'report.jpg', mimeType: 'image/jpeg', buffer: onePixelJpeg })
+    const failed = page.getByRole('dialog', { name: "Couldn't check the photo" })
+    await expect(failed).toBeVisible({ timeout: 15_000 })
+
+    // Try again returns to the start screen to choose a photo or the form.
+    await failed.getByRole('button', { name: 'Try again' }).click()
+    const start = page.getByRole('dialog', { name: 'Report an issue' })
+    await expect(start.getByRole('button', { name: 'Scan with camera' })).toBeVisible()
+
+    await upload.setInputFiles({ name: 'report.jpg', mimeType: 'image/jpeg', buffer: onePixelJpeg })
+    await failed.getByRole('button', { name: 'Fill in the form' }).click()
+    const dialog = page.getByRole('dialog', { name: 'What did you notice?' })
+    await expect(dialog.locator('.report-photo-preview')).toHaveCount(1)
+    await expect(dialog.locator('input[name="issue_type"]')).toHaveValue('')
   })
 
   test('keeps the application in English without a language toggle', async ({ page }) => {
@@ -72,8 +130,7 @@ test.describe('report intake', () => {
       body: JSON.stringify({ features: [{ geometry: { coordinates: [121.0611, 14.7109] }, properties: { name: 'Gulod Street', city: 'Quezon City' } }] }),
     }))
     await page.goto('/')
-    await page.getByRole('button', { name: 'Report an issue' }).click()
-    const dialog = page.getByRole('dialog', { name: 'What did you notice?' })
+    const dialog = await openReportForm(page)
     const title = 'Playwright demo report'
     await dialog.locator('input[name="title"]').fill(title)
     await dialog.locator('input[name="issue_type"]').fill('Blocked drainage')
@@ -149,8 +206,7 @@ test.describe('District 5 limit', () => {
       body: JSON.stringify({ features: [{ properties: { name: 'Gulod Covered Court', street: 'Quirino Highway', district: 'Gulod', city: 'Quezon City' } }] }),
     }))
     await page.goto('/')
-    await page.getByRole('button', { name: 'Report an issue' }).click()
-    const dialog = page.getByRole('dialog', { name: 'What did you notice?' })
+    const dialog = await openReportForm(page)
     await dialog.locator('select[name="barangay"]').selectOption('Gulod')
     await expect(dialog.getByText('Pin moved to the middle of Barangay Gulod', { exact: false })).toBeVisible()
     await expect(dialog.locator('input[name="location"]')).toHaveValue('Gulod Covered Court, Quirino Highway, Barangay Gulod, Quezon City')
@@ -163,8 +219,7 @@ test.describe('District 5 limit', () => {
       body: JSON.stringify({ features: [{ geometry: { coordinates: [outsideDistrict5.longitude, outsideDistrict5.latitude] }, properties: { name: 'Saturnina Road', city: 'Quezon City' } }] }),
     }))
     await page.goto('/')
-    await page.getByRole('button', { name: 'Report an issue' }).click()
-    const dialog = page.getByRole('dialog', { name: 'What did you notice?' })
+    const dialog = await openReportForm(page)
     const title = 'Outside district search report'
     await fillReport(dialog, title)
     await dialog.locator('input[name="location"]').fill('Saturnina Road')
@@ -224,8 +279,7 @@ test.describe('District 5 limit', () => {
 
     test('refuses the position and does not submit the report', async ({ page }) => {
       await page.goto('/')
-      await page.getByRole('button', { name: 'Report an issue' }).click()
-      const dialog = page.getByRole('dialog', { name: 'What did you notice?' })
+      const dialog = await openReportForm(page)
       const title = 'Outside district GPS report'
       await fillReport(dialog, title)
       await dialog.getByRole('button', { name: 'Use my location' }).click()

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Map as MapView, Marker, type ErrorEvent as MapErrorEvent, type MapRef } from '@vis.gl/react-maplibre'
 import type { LucideIcon } from 'lucide-react'
-import { GPUInitializationError, mapLib } from './map-engine'
+import { GPUInitializationError, constrainToDistrict, mapLib } from './map-engine'
 import { MAP_FOCUS_ZOOM, MAP_MAX_ZOOM, MapPin, MapUnavailable, MapZoomControls, PIN_OFFSET, cameraDuration, lockNorthUp, useDistrictLock } from './MapParts'
 import { barangayBounds, barangayCamera } from './lib/barangay-camera'
 import { districtFeatures, type DistrictOutline } from './lib/district-outline'
@@ -36,7 +36,7 @@ export default function LocationPickerMap({ theme, outline, location, color, ico
   const vectorTileLoaded = useRef(false)
   const [dragging, setDragging] = useState(false)
   const [zoom, setZoom] = useState(MAP_FOCUS_ZOOM)
-  const { lock, measure } = useDistrictLock(outline.bounds, PADDING)
+  const { lock, measure } = useDistrictLock(outline.bounds)
 
   const district = useMemo(() => districtFeatures(outline), [outline])
   const mapStyle = useMemo(
@@ -49,6 +49,11 @@ export default function LocationPickerMap({ theme, outline, location, color, ico
   const intentClock = useRef(0)
   const intentStamp = useRef({ pin: 0, fit: 0 })
   useEffect(() => { intentStamp.current.pin = ++intentClock.current }, [latitude, longitude])
+  // The map stays inside District 5 under the current lock.
+  useEffect(() => {
+    const map = mapRef.current?.getMap()
+    if (map && ready) constrainToDistrict(map, lock, outline.rings)
+  }, [lock, ready, outline.rings])
   const fitSeq = fitBarangay?.seq ?? 0
   useEffect(() => { if (fitSeq) intentStamp.current.fit = ++intentClock.current }, [fitSeq])
   const fittedSeq = useRef(0)
@@ -97,7 +102,6 @@ export default function LocationPickerMap({ theme, outline, location, color, ico
       initialViewState={{ longitude, latitude, zoom: MAP_FOCUS_ZOOM }}
       minZoom={lock ? lock.zoom - 0.01 : undefined}
       maxZoom={MAP_MAX_ZOOM}
-      maxBounds={lock?.view}
       maxPitch={0}
       dragRotate={false}
       pitchWithRotate={false}

@@ -5,7 +5,6 @@ import sendNotificationEmailsHandler from './api/send-notification-emails'
 import guestReportsHandler from './api/guest-reports'
 import confirmReportHandler from './api/confirm-report'
 import processEscalationsHandler from './api/process-escalations'
-import classifyPhotoHandler from './api/classify-photo'
 
 function responderApiPlugin(environment: Record<string, string | undefined>): Plugin {
   return {
@@ -15,7 +14,7 @@ function responderApiPlugin(environment: Record<string, string | undefined>): Pl
         process?: { env: Record<string, string | undefined> }
       }).process
       if (runtimeProcess) {
-        for (const key of ['VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'VITE_APP_URL', 'RESEND_API_KEY', 'NOTIFICATION_FROM_EMAIL', 'GUEST_TRACKING_SECRET', 'GEMINI_API_KEY', 'CRON_SECRET']) {
+        for (const key of ['VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY', 'SUPABASE_SERVICE_ROLE_KEY', 'VITE_APP_URL', 'RESEND_API_KEY', 'NOTIFICATION_FROM_EMAIL', 'GUEST_TRACKING_SECRET', 'CRON_SECRET']) {
           if (environment[key]) runtimeProcess.env[key] = environment[key]
         }
       }
@@ -28,7 +27,6 @@ function responderApiPlugin(environment: Record<string, string | undefined>): Pl
           ['/api/guest-reports', guestReportsHandler],
           ['/api/confirm-report', confirmReportHandler],
           ['/api/process-escalations', processEscalationsHandler],
-          ['/api/classify-photo', classifyPhotoHandler],
         ])
         const apiHandler = handlers.get(requestUrl.pathname)
         if (!apiHandler) {
@@ -73,6 +71,10 @@ function responderApiPlugin(environment: Record<string, string | undefined>): Pl
 
 export default defineConfig(({ mode }) => ({
   plugins: [react(), responderApiPlugin(loadEnv(mode, '.', ''))],
+  // The photo checker's worker (src/photo-issue.worker.ts) loads ONNX Runtime, which needs module workers.
+  worker: { format: 'es' },
+  // ONNX Runtime finds its .wasm file next to its own script; pre-bundling would move the script away.
+  optimizeDeps: { exclude: ['onnxruntime-web'] },
   build: {
     rollupOptions: {
       output: {

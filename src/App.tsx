@@ -30,6 +30,7 @@ import {
   Users,
   Search,
   ShieldCheck,
+  Sparkles,
   Sun,
   Trees,
   Upload,
@@ -51,6 +52,11 @@ import { StaffWorkflowPanel } from './StaffWorkflowPanel'
 import { AnimatedNumber } from './AnimatedNumber'
 import { HeroPanel, type HeroStat } from './HeroPanel'
 import { ReportPhotoStrip } from './ReportPhotoStrip'
+import { PhotoIssueSuggestion } from './PhotoIssueSuggestion'
+import { usePhotoIssueSuggestion } from './usePhotoIssueSuggestion'
+import { photoCheckerSupported, usePhotoChecker } from './usePhotoChecker'
+import type { PhotoIssueGuess } from './lib/photo-issue-classifier'
+import { isReportCategory, issueTypesByCategory } from './lib/report-categories'
 import { SIGNED_PHOTO_RENEW_MS, SIGNED_PHOTO_SECONDS, canViewReportPhotos, knownPhotoPaths, photoPathList } from './lib/report-photo-access'
 import { StatReportsModal, type StatReportRow } from './StatReportsModal'
 import { AdminBarChart, AdminTrendChart, ChartEmpty, ChartSkeleton } from './AdminCharts'
@@ -101,13 +107,15 @@ import { buildResponseTimeMetrics } from './lib/report-response-times'
 import { buildReportAnalytics } from './lib/report-analytics'
 import { findRecurringHotspots, type RecurringHotspot } from './lib/report-recurrence'
 import { GuestReportTracking } from './GuestReportTracking'
-import { MAX_REPORT_PHOTOS, prepareReportPhoto } from './lib/report-photos'
+import { MAX_REPORT_PHOTOS, prepareReportPhoto, reportPhotoProblem, type PreparedReportPhoto } from './lib/report-photos'
 import { translate } from './lib/ui-copy'
 import { deleteLocalReportDraft, getLocalReportDraft, saveLocalReportDraft, type LocalReportDraft } from './lib/report-drafts'
 
 // The map library is large, so both maps load after the rest of the app.
 const ReportMap = lazy(() => import('./ReportMap'))
 const LocationPickerMap = lazy(() => import('./LocationPickerMap'))
+const loadReportStart = () => import('./ReportStart')
+const ReportStart = lazy(loadReportStart)
 
 type Category = 'Waste' | 'Pollution' | 'Flooding' | 'Drainage' | 'Water pollution' | 'Air pollution'
 type Status = 'Submitted' | 'Under review' | 'Additional information requested' | 'Verified' | 'In progress' | 'Awaiting verification' | 'Resolved' | 'Rejected' | 'Closed' | 'Duplicate'
@@ -479,6 +487,17 @@ function App() {
   const [categoryFilter, setCategoryFilter] = useState('All categories')
   const [statusFilter, setStatusFilter] = useState<string>(ALL_STATUSES)
   useDialogFocusTrap()
+  // The report start screen is fetched once the page is idle, so it opens with its full animation
+  // instead of a loading placeholder, without adding to the first load.
+  useEffect(() => {
+    const preload = () => { void loadReportStart().catch(() => undefined) }
+    if (typeof window.requestIdleCallback === 'function') {
+      const handle = window.requestIdleCallback(preload, { timeout: 4000 })
+      return () => window.cancelIdleCallback(handle)
+    }
+    const timer = window.setTimeout(preload, 2000)
+    return () => window.clearTimeout(timer)
+  }, [])
   // The hero stat tile whose reports are open in a dialog.
   const [statTile, setStatTile] = useState<HeroTile>()
   // The community and staff views have different tiles, so a dialog does not outlive a switch between them.
@@ -559,6 +578,8 @@ function App() {
     : null), [bundledBarangayBoundaries, bundledBoundariesSettled, importedBarangayBoundaries, importedBoundariesSettled])
   const [mapLocationError, setMapLocationError] = useState('')
   const [reporting, setReporting] = useState(false)
+  // A new report starts on the photo-or-form screen; a restored draft opens the form directly.
+  const [reportStep, setReportStep] = useState<'start' | 'form'>('form')
   const reportFormRef = useRef<HTMLFormElement>(null)
   const [reportSubmissionId, setReportSubmissionId] = useState<string>(() => crypto.randomUUID())
   const [savedDraftAvailable, setSavedDraftAvailable] = useState(false)
@@ -571,6 +592,16 @@ function App() {
   const [formNotice, setFormNotice] = useState('')
   const [formStartedAt, setFormStartedAt] = useState(0)
   const [photoFiles, setPhotoFiles] = useState<File[]>([])
+  // Photo suggestions: set once the reporter picks a category themself, which a suggestion never overrides.
+  const categoryChosen = useRef(false)
+  // The text a photo suggestion last wrote into each field, so a later suggestion replaces only its own text.
+  const photoAutofill = useRef<{ issueType?: string; title?: string }>({})
+  const [photoFilled, setPhotoFilled] = useState<{ category: boolean; issueType: boolean; title: boolean }>({ category: false, issueType: false, title: false })
+  const [photoGuessApplied, setPhotoGuessApplied] = useState(false)
+  // A guess from the photo start screen, filled in once the form has opened.
+  const pendingPhotoGuess = useRef<PhotoIssueGuess | undefined>(undefined)
+  const reportTitleRef = useRef<HTMLInputElement>(null)
+  const issueTypeRef = useRef<HTMLInputElement>(null)
   const [observedAt, setObservedAt] = useState(() => toLocalDateTimeInput(new Date()))
   const [location, setLocation] = useState<[number, number]>(districtCenter)
   const [mapCenter, setMapCenter] = useState<[number, number]>(districtCenter)
@@ -1957,9 +1988,83 @@ function App() {
     setEnvironmentalFollowups((current) => current.map((item) => item.id === id ? data as EnvironmentalFollowUp : item))
   }
 
+  /**
+   * Fills the form from a photo suggestion. A category the reporter picked is kept unless they
+   * press "Use this instead" (`force`), and text they typed is never replaced.
+   */
+  function applyPhotoGuess(guess: PhotoIssueGuess, force = false) {
+    const { category, issueType } = guess
+    if (!category) return
+    if (!force && categoryChosen.current && reportCategory !== category) {
+      setPhotoGuessApplied(false)
+      return
+    }
+    setReportCategory(category)
+    const fill = (input: HTMLInputElement | null, field: 'issueType' | 'title', overwrite: boolean) => {
+      if (!input || !issueType) return false
+      const current = input.value.trim()
+      if (current && current !== photoAutofill.current[field] && !overwrite) return false
+      input.value = issueType
+      photoAutofill.current[field] = issueType
+      return true
+    }
+    const filledIssueType = fill(issueTypeRef.current, 'issueType', force)
+    const filledTitle = fill(reportTitleRef.current, 'title', false)
+    setPhotoFilled((current) => ({ category: true, issueType: filledIssueType || current.issueType, title: filledTitle || current.title }))
+    setPhotoGuessApplied(true)
+  }
+
+  // One photo checker serves the start screen and the form, so the model is loaded only once.
+  const photoChecker = usePhotoChecker()
+  const photoSuggestion = usePhotoIssueSuggestion(photoChecker, (guess) => applyPhotoGuess(guess))
+  const resetPhotoSuggestion = photoSuggestion.reset
+  const presentPhotoGuess = photoSuggestion.present
+
+  function clearPhotoAutofill() {
+    categoryChosen.current = false
+    photoAutofill.current = {}
+    setPhotoFilled({ category: false, issueType: false, title: false })
+    setPhotoGuessApplied(false)
+    resetPhotoSuggestion()
+  }
+
+  // Closing the form stops any photo check and frees the model's memory.
+  useEffect(() => {
+    if (!reporting) resetPhotoSuggestion()
+  }, [reporting, resetPhotoSuggestion])
+
+  /** Checks and compresses photos picked on the start screen, like photos added to the form. */
+  async function prepareStartPhotos(files: File[]): Promise<PreparedReportPhoto[]> {
+    const guest = Boolean(isSupabaseConfigured && !session)
+    const problem = reportPhotoProblem(files, 0, guest)
+    if (problem) throw new Error(problem)
+    return Promise.all(files.map((file) => prepareReportPhoto(file, guest)))
+  }
+
+  /** Leaves the start screen for the form, with the photos taken there and what they showed. */
+  function continueToReportForm(photos: PreparedReportPhoto[], guess?: PhotoIssueGuess) {
+    setPhotoFiles(photos.map((photo) => photo.file))
+    setPhotoPreviews(photos.map((photo) => photo.preview))
+    pendingPhotoGuess.current = guess
+    setReportStep('form')
+  }
+
+  // The form's fields exist only once it has opened, so a guess from the start screen is filled in
+  // then. It runs once per opening: the guess is cleared as soon as it is used.
+  useEffect(() => {
+    const guess = pendingPhotoGuess.current
+    if (!reporting || reportStep !== 'form' || !guess) return
+    pendingPhotoGuess.current = undefined
+    applyPhotoGuess(guess, true)
+    presentPhotoGuess(guess)
+  }, [reporting, reportStep, presentPhotoGuess])
+
   function startReport() {
     setFormError('')
     setFormNotice('')
+    clearPhotoAutofill()
+    pendingPhotoGuess.current = undefined
+    setReportStep(photoCheckerSupported ? 'start' : 'form')
     setFormStartedAt(Date.now())
     setReportSubmissionId(crypto.randomUUID())
     setReportCategory('Waste')
@@ -2024,6 +2129,10 @@ function App() {
       setDraftMessage('')
       setFormStartedAt(Date.now() - 3_000)
       setReportSubmissionId(draft.submissionId)
+      clearPhotoAutofill()
+      pendingPhotoGuess.current = undefined
+      setReportStep('form')
+      categoryChosen.current = true
       setReportCategory((draft.formValues.category as Category) || 'Waste')
       setReportBarangay(draft.formValues.barangay || '')
       setBarangayAutofill('')
@@ -2161,28 +2270,19 @@ function App() {
   async function handlePhotos(fileList: FileList | null) {
     const incoming = Array.from(fileList ?? [])
     if (!incoming.length) return
-    const combined = [...photoFiles, ...incoming]
-    if (combined.length > MAX_REPORT_PHOTOS) {
-      setFormError(`Attach up to ${MAX_REPORT_PHOTOS} report photos.`)
+    const guest = Boolean(isSupabaseConfigured && !session)
+    const problem = reportPhotoProblem(incoming, photoFiles.length, guest)
+    if (problem) {
+      setFormError(problem)
       return
-    }
-    const guest = isSupabaseConfigured && !session
-    const maxBytes = guest ? 2_500_000 : 5 * 1024 * 1024
-    for (const file of incoming) {
-      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-        setFormError('Choose JPEG, PNG, or WebP images for the report photos.')
-        return
-      }
-      if (file.size > maxBytes) {
-        setFormError(guest ? 'Guest report photos must be 2.5 MB or smaller each.' : 'Each report photo must be 5 MB or smaller.')
-        return
-      }
     }
     try {
       const prepared = await Promise.all(incoming.map((file) => prepareReportPhoto(file, guest)))
       setPhotoFiles((current) => [...current, ...prepared.map((photo) => photo.file)])
       setPhotoPreviews((current) => [...current, ...prepared.map((photo) => photo.preview)])
       setFormError('')
+      // Suggest the issue from the photos, newest first, unless a suggestion was already made.
+      if (photoSuggestion.state.status !== 'suggested') void photoSuggestion.analyze([...prepared.map((photo) => photo.file), ...photoFiles])
     } catch (error) {
       setFormError(error instanceof Error ? error.message : 'A photo could not be prepared.')
     }
@@ -3113,7 +3213,16 @@ function App() {
       {followUpReport && session && <ResidentReportModal report={followUpReport} userId={session.user.id} onClose={() => setFollowUpId(undefined)} onPosted={() => void deliverNotificationEmails(followUpReport.id, session.access_token)} />}
 
       {reporting && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReporting(false) }}>
-        <section className="report-modal report-form-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        {reportStep === 'start' ? <Suspense fallback={<section className="report-modal report-start-modal is-loading" role="dialog" aria-modal="true" aria-label="Report an issue"><span className="search-spinner" aria-label="Loading" /></section>}>
+          <ReportStart
+            checker={photoChecker}
+            guest={Boolean(isSupabaseConfigured && !session)}
+            preparePhotos={prepareStartPhotos}
+            onForm={(photos) => continueToReportForm(photos)}
+            onFound={(guess, photos) => continueToReportForm(photos, guess)}
+            onClose={() => setReporting(false)}
+          />
+        </Suspense> : <section className="report-modal report-form-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
           <div className="modal-header"><div><p className="eyebrow">COMMUNITY REPORT</p><h2 id="modal-title">{t('reportFormTitle')}</h2><p>{isSupabaseConfigured && !session ? t('guestFormSubtitle') : t('reportFormSubtitle')}</p></div><button className="icon-button" type="button" onClick={() => setReporting(false)} aria-label="Close report form"><X size={19} /></button></div>
           <form className="report-form" ref={reportFormRef} onSubmit={submitReport}>
             <label className="honeypot-field" aria-hidden="true">Website<input name="website" tabIndex={-1} autoComplete="off" /></label>
@@ -3121,9 +3230,11 @@ function App() {
               <div className="report-form-col">
                 <section className="form-section">
                    <h3 className="form-section-title"><span>1</span>{t('whatHappened')}</h3>
-                   <label className="field-label">{t('reportTitle')}<input name="title" maxLength={90} placeholder="e.g. Waste piling up beside the road" required /></label>
-                   <fieldset className="choice-group"><legend>{t('category')}</legend><div className="choice-chips">{intakeCategories.map((category) => { const CategoryIcon = categoryIcon(category); return <label className="choice-chip" key={category}><input type="radio" name="category" value={category} checked={reportCategory === category} onChange={() => setReportCategory(category)} /><span><CategoryIcon size={15} />{category}</span></label> })}</div></fieldset>
-                   <label className="field-label">{t('specificIssue')}<input name="issue_type" maxLength={80} placeholder="e.g. Clogged drainage" required /></label>
+                   <label className="field-label">{t('reportTitle')}<input ref={reportTitleRef} name="title" className={photoFilled.title ? 'is-autofilled' : undefined} onInput={() => setPhotoFilled((current) => ({ ...current, title: false }))} maxLength={90} placeholder="e.g. Waste piling up beside the road" required /></label>
+                   <fieldset className="choice-group"><legend>{t('category')}</legend><div className="choice-chips">{intakeCategories.map((category) => { const CategoryIcon = categoryIcon(category); return <label className="choice-chip" key={category}><input type="radio" name="category" value={category} checked={reportCategory === category} onChange={() => { categoryChosen.current = true; setPhotoFilled((current) => ({ ...current, category: false })); setReportCategory(category) }} /><span><CategoryIcon size={15} />{category}</span></label> })}</div></fieldset>
+                   {photoFilled.category && <p className="barangay-autofill-note" role="status"><Sparkles size={13} />Suggested from your photo. Change it if it looks wrong.</p>}
+                   <label className="field-label">{t('specificIssue')}<input ref={issueTypeRef} name="issue_type" list="issue-type-options" className={photoFilled.issueType ? 'is-autofilled' : undefined} onInput={() => setPhotoFilled((current) => ({ ...current, issueType: false }))} maxLength={80} placeholder="e.g. Clogged drainage" required /></label>
+                   <datalist id="issue-type-options">{(isReportCategory(reportCategory) ? issueTypesByCategory[reportCategory] : []).map((issueType) => <option key={issueType} value={issueType} />)}</datalist>
                    <fieldset className="choice-group"><legend>{t('urgency')}</legend><div className="segmented">{['Low', 'Medium', 'High'].map((urgency) => <label className={`segment segment-${urgency.toLowerCase()}`} key={urgency}><input type="radio" name="urgency" value={urgency} defaultChecked={urgency === 'Medium'} /><span>{urgency}</span></label>)}</div></fieldset>
                    <label className="field-label">{t('whenObserved')}<input name="observed_at" type="datetime-local" value={observedAt} max={toLocalDateTimeInput(new Date())} onChange={(event) => setObservedAt(event.target.value)} required /></label>
                    <label className="field-label">{t('whatHappening')}<textarea name="description" rows={4} maxLength={500} placeholder={t('descriptionHint')} required /></label>
@@ -3179,6 +3290,13 @@ function App() {
             <h3 className="form-section-title"><span>3</span>{t('photo')}</h3>
             <div className="photo-row"><label className="upload-button"><Camera size={15} />{photoFiles.length ? `${t('addPhotos')} (${photoFiles.length}/${MAX_REPORT_PHOTOS})` : t('addPhotos')}<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => { void handlePhotos(event.target.files); event.currentTarget.value = '' }} /></label><span>Optional · up to {MAX_REPORT_PHOTOS} JPEG, PNG, or WebP photos · max {isSupabaseConfigured && !session ? '2.5 MB each for guests' : '5 MB each'} · compressed before upload</span></div>
             {photoPreviews.length > 0 && <div className="report-photo-previews">{photoPreviews.map((preview, index) => <div className="report-photo-preview" key={`${index}-${preview.slice(-24)}`}><img className="photo-preview" src={preview} alt={`Selected report attachment ${index + 1}`} /><button className="remove-photo" type="button" aria-label={`Remove report photo ${index + 1}`} onClick={() => { setPhotoPreviews((current) => current.filter((_, photoIndex) => photoIndex !== index)); setPhotoFiles((current) => current.filter((_, photoIndex) => photoIndex !== index)) }}><X size={13} /> Remove</button></div>)}</div>}
+            <PhotoIssueSuggestion
+              state={photoSuggestion.state}
+              applied={photoGuessApplied}
+              onAccept={photoSuggestion.accept}
+              onDismiss={photoSuggestion.dismiss}
+              onApply={() => { if (photoSuggestion.state.status === 'suggested') applyPhotoGuess(photoSuggestion.state.guess, true) }}
+            />
                 </section>
                 {isSupabaseConfigured && !session && <section className="form-section guest-contact-section"><h3 className="form-section-title"><span>4</span>{t('followUp')}</h3><p className="workflow-hint">Provide at least one contact for security and follow-up. Your email and phone number stay private.</p><label className="field-label">Email address<input name="contact_email" type="email" autoComplete="email" maxLength={254} placeholder="you@example.com" /></label><label className="field-label">Mobile number<input name="contact_phone" type="tel" autoComplete="tel" inputMode="tel" maxLength={24} placeholder="09XXXXXXXXX or +639XXXXXXXXX" /></label><p className="workflow-hint">You can still track the report with the code shown after submission.</p></section>}
               </div>
@@ -3188,7 +3306,7 @@ function App() {
             {formNotice && <p className="workflow-success" role="status">{formNotice}</p>}
             <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => void saveReportDraft(false)}>Save draft</button>{isSupabaseConfigured && !isOnline && <button className="secondary-button" type="button" onClick={() => void saveReportDraft(true)}>Queue for upload</button>}<button className="secondary-button" type="button" onClick={() => setReporting(false)}>{t('cancel')}</button><button className="primary-button" type="submit" disabled={loadingReports || guestSubmitting || (isSupabaseConfigured && !isOnline)}>{guestSubmitting ? 'Submitting…' : loadingReports ? 'Connecting…' : <><Check size={16} /> {t('submitReport')}</>}</button></div>
           </form>
-        </section>
+        </section>}
       </div>}
 
       {guestTrackingOpen && <GuestReportTracking initialToken={guestTrackingToken} emailSent={guestTrackingEmailSent} onClose={() => { setGuestTrackingOpen(false); setGuestTrackingToken(undefined); setGuestTrackingEmailSent(false) }} />}

@@ -1,4 +1,16 @@
 export const MAX_REPORT_PHOTOS = 5
+export const REPORT_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const
+
+/** Why these photos cannot be attached, or undefined when they can. `attached` is how many the report already has. */
+export function reportPhotoProblem(incoming: readonly { type: string; size: number }[], attached: number, guest: boolean): string | undefined {
+  if (attached + incoming.length > MAX_REPORT_PHOTOS) return `Attach up to ${MAX_REPORT_PHOTOS} report photos.`
+  const maxBytes = guest ? 2_500_000 : 5 * 1024 * 1024
+  for (const file of incoming) {
+    if (!(REPORT_PHOTO_TYPES as readonly string[]).includes(file.type)) return 'Choose JPEG, PNG, or WebP images for the report photos.'
+    if (file.size > maxBytes) return guest ? 'Guest report photos must be 2.5 MB or smaller each.' : 'Each report photo must be 5 MB or smaller.'
+  }
+  return undefined
+}
 
 export type PreparedReportPhoto = {
   file: File

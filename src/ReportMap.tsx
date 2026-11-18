@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { Map as MapView, Marker, Popup, type ErrorEvent as MapErrorEvent, type MapInstance, type MapRef, type PopupInstance } from '@vis.gl/react-maplibre'
 import { MapPin as MapPinIcon, MessageSquare, UserRound, X, type LucideIcon } from 'lucide-react'
-import { GPUInitializationError, mapLib } from './map-engine'
+import { GPUInitializationError, constrainToDistrict, mapLib } from './map-engine'
 import { ClusterBubble, MAP_FOCUS_ZOOM, MAP_MAX_ZOOM, MapPin, MapUnavailable, MapZoomControls, PIN_OFFSET, UserDot, cameraDuration, lockNorthUp, statusSlug, useDistrictLock } from './MapParts'
 import { barangayBounds, barangayCamera } from './lib/barangay-camera'
 import { districtFeatures, type DistrictOutline } from './lib/district-outline'
@@ -99,7 +99,7 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
   // Pins arrive in a short stagger on first load; later ones (after a zoom or filter change) just pop in.
   const [introduced, setIntroduced] = useState(false)
   const padding = compact ? COMPACT_PADDING : DESKTOP_PADDING
-  const { lock, measure } = useDistrictLock(outline.bounds, padding)
+  const { lock, measure } = useDistrictLock(outline.bounds)
 
   const district = useMemo(() => districtFeatures(outline), [outline])
   const gps = useMemo(() => (gpsLocation ? { latitude: gpsLocation[0], longitude: gpsLocation[1], accuracyMeters: GPS_ACCURACY_METERS } : null), [gpsLocation])
@@ -140,7 +140,9 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
     const map = mapRef.current?.getMap()
     if (!map) return
     lockNorthUp(map)
-    measure(map)
+    // Start at the lowest zoom allowed: the whole district, as large as it fits.
+    const start = measure(map)
+    if (start) map.jumpTo({ center: start.center, zoom: start.zoom })
     setView(readView(map))
     setReady(true)
   }, [measure])
@@ -150,6 +152,12 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
     const timer = window.setTimeout(() => setIntroduced(true), 900)
     return () => window.clearTimeout(timer)
   }, [ready])
+
+  // The map stays inside District 5 under the current lock.
+  useEffect(() => {
+    const map = mapRef.current?.getMap()
+    if (map && ready) constrainToDistrict(map, lock, outline.rings)
+  }, [lock, ready, outline.rings])
 
   // A new outline or layout (for example boundaries arriving from the database, or the phone
   // layout switching) changes the lock, so fit the district again.
@@ -305,7 +313,6 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
       initialViewState={{ bounds: outline.bounds, fitBoundsOptions: { padding } }}
       minZoom={lock ? lock.zoom - 0.01 : undefined}
       maxZoom={MAP_MAX_ZOOM}
-      maxBounds={lock?.view}
       maxPitch={0}
       dragRotate={false}
       pitchWithRotate={false}
@@ -313,7 +320,13 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
       renderWorldCopies={false}
       attributionControl={{ compact: true }}
       onLoad={handleLoad}
-      onResize={(event) => { measure(event.target) }}
+      onResize={(event) => {
+        // A map still showing the whole district keeps doing so at its new size.
+        const map = event.target
+        const wasWhole = lock !== null && Math.abs(map.getZoom() - lock.zoom) < 0.02
+        const next = measure(map)
+        if (wasWhole && next) map.jumpTo({ center: next.center, zoom: next.zoom })
+      }}
       onMoveEnd={refreshView}
       onZoom={(event) => { if (!view || Math.floor(event.viewState.zoom) !== Math.floor(view.zoom)) refreshView() }}
       onSourceData={(event) => { if (event.sourceId === VECTOR_SOURCE_ID && event.tile) vectorTileLoaded.current = true }}
