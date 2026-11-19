@@ -12,7 +12,7 @@ type PhotoIssueSuggestionProps = {
   onApply: () => void
 }
 
-const privacyLine = 'Your photo stays on this device.'
+const privacyLine = 'Checked on this device. Photos are only sent when you submit the report.'
 
 /** The photo checker's status under the report photos: asking, working, or what it found. */
 export function PhotoIssueSuggestion({ state, applied, onAccept, onDismiss, onApply }: PhotoIssueSuggestionProps) {

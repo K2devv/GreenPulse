@@ -36,6 +36,12 @@ describe('topEscapeLayer', () => {
     expect(topEscapeLayer({ 'report-form': true, auth: true })).toBe('auth')
   })
 
+  it('closes the report start screen, which holds nothing that could be lost', () => {
+    expect(topEscapeLayer({ 'report-start': true })).toBe('report-start')
+    expect(topEscapeLayer({ 'report-start': true, auth: true })).toBe('auth')
+    expect(topBackLayer({ 'report-start': true })).toBe('report-start')
+  })
+
   it('leaves the command palette to its own Escape handling', () => {
     expect(topEscapeLayer({ palette: true, profile: true })).toBeUndefined()
   })

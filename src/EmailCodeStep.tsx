@@ -18,13 +18,15 @@ type EmailCodeStepProps = {
   onComplete: (code: string) => void
   onResend: () => void
   onChangeEmail: () => void
+  /** 'recovery' words the step for a password reset instead of a new account. */
+  purpose?: 'signup' | 'recovery'
 }
 
 const RING_RADIUS = 9
 const RING_LENGTH = 2 * Math.PI * RING_RADIUS
 
-/** The "enter the 6-digit code we emailed you" step of sign-up. */
-export function EmailCodeStep({ email, status, errorMessage, errorNonce, notice, resendSeconds, cooldownSeconds, resendBusy, onComplete, onResend, onChangeEmail }: EmailCodeStepProps) {
+/** The "enter the 6-digit code we emailed you" step of sign-up and of a password reset. */
+export function EmailCodeStep({ email, status, errorMessage, errorNonce, notice, resendSeconds, cooldownSeconds, resendBusy, onComplete, onResend, onChangeEmail, purpose = 'signup' }: EmailCodeStepProps) {
   const [digits, setDigits] = useState(() => emptyCode())
   const [shake, setShake] = useState(0)
   const inputs = useRef<Array<HTMLInputElement | null>>([])
@@ -112,9 +114,13 @@ export function EmailCodeStep({ email, status, errorMessage, errorNonce, notice,
       <span className="email-code-spark" />
       <span className="email-code-spark" />
     </div>
-    <p className="eyebrow">VERIFY YOUR EMAIL</p>
-    <h2 id="auth-title">{status === 'success' ? 'Email confirmed' : 'Enter your 6-digit code'}</h2>
-    <p className="email-code-lead">{status === 'success' ? 'Your account is ready. Signing you in…' : <>We sent a code to <strong>{email}</strong>. It can take a minute to arrive; check your spam folder too.</>}</p>
+    <p className="eyebrow">{purpose === 'recovery' ? 'RESET YOUR PASSWORD' : 'VERIFY YOUR EMAIL'}</p>
+    <h2 id="auth-title">{status === 'success' ? (purpose === 'recovery' ? 'Code accepted' : 'Email confirmed') : 'Enter your 6-digit code'}</h2>
+    <p className="email-code-lead">{status === 'success'
+      ? (purpose === 'recovery' ? 'Next, choose a new password.' : 'Your account is ready. Signing you in…')
+      : purpose === 'recovery'
+        ? <>If an account uses <strong>{email}</strong>, we sent it a code. It can take a minute to arrive; check your spam folder too.</>
+        : <>We sent a code to <strong>{email}</strong>. It can take a minute to arrive; check your spam folder too.</>}</p>
 
     <div className="email-code-boxes" role="group" aria-label="6-digit confirmation code" key={shake} data-shake={shake > 0 ? 'true' : undefined}>
       {digits.map((digit, index) => <input

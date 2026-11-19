@@ -6,6 +6,7 @@ import { ClusterBubble, MAP_FOCUS_ZOOM, MAP_MAX_ZOOM, MapPin, MapUnavailable, Ma
 import { barangayBounds, barangayCamera } from './lib/barangay-camera'
 import { districtFeatures, type DistrictOutline } from './lib/district-outline'
 import { CLUSTER_MAX_ZOOM, clusterRingGradient, createClusterIndex, type MapClusterItem, type MapPoint } from './lib/map-clusters'
+import { clusterBubbleSize, clusterClearance } from './lib/map-pin-clearance'
 import { buildMapStyle, VECTOR_SOURCE_ID, type Basemap, type HeatCell, type MapTheme } from './lib/map-style'
 import type { Bounds, Padding } from './lib/map-viewport'
 import { ReportPhotoStrip } from './ReportPhotoStrip'
@@ -67,6 +68,7 @@ const GPS_ACCURACY_METERS = 55
 // popup fits above it, higher on phones so the bottom sheet does not cover it.
 const DESKTOP_FOCUS_OFFSET: [number, number] = [0, 90]
 const COMPACT_FOCUS_OFFSET: [number, number] = [0, -70]
+const NO_OFFSET: [number, number] = [0, 0]
 /** Pins within this share of a screen outside the view stay mounted, so short pans do not pop them in. */
 const VIEW_MARGIN = 0.3
 // Clears the selected pin, which is drawn larger (about 62 px tall) and lifted.
@@ -130,6 +132,20 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
     single.sort((first, second) => second.position[0] - first.position[0])
     return { clusters: grouped, pins: single }
   }, [clusterIndex, reportsById, selected, view])
+  // Bubbles that would sit under the selected pin are nudged aside so their counts stay readable.
+  // Measured whenever the view settles (`view` changes on move end).
+  const clusterOffsets = useMemo(() => {
+    const offsets = new Map<number, [number, number]>()
+    const map = mapRef.current?.getMap()
+    if (!map || !selected || !view) return offsets
+    const tip = map.project([selected.position[1], selected.position[0]])
+    for (const cluster of clusters) {
+      const center = map.project([cluster.longitude, cluster.latitude])
+      const shift = clusterClearance(center.x - tip.x, center.y - (tip.y + PIN_OFFSET[1]), clusterBubbleSize(cluster.count))
+      if (shift[0] || shift[1]) offsets.set(cluster.id, shift)
+    }
+    return offsets
+  }, [clusters, selected, view])
 
   const refreshView = useCallback(() => {
     const map = mapRef.current?.getMap()
@@ -333,7 +349,7 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
       onError={handleError}
     >
       {clusters.map((cluster) => (
-        <Marker key={`c${cluster.id}`} longitude={cluster.longitude} latitude={cluster.latitude} anchor="center" style={{ zIndex: 3 }} onClick={(event) => { event.originalEvent.stopPropagation(); openCluster(cluster) }}>
+        <Marker key={`c${cluster.id}`} longitude={cluster.longitude} latitude={cluster.latitude} anchor="center" offset={clusterOffsets.get(cluster.id) ?? NO_OFFSET} style={{ zIndex: 3 }} onClick={(event) => { event.originalEvent.stopPropagation(); openCluster(cluster) }}>
           <ClusterBubble count={cluster.count} urgent={cluster.urgent} ring={clusterRingGradient(cluster.mix, categoryColors, categoryOrder)} />
         </Marker>
       ))}

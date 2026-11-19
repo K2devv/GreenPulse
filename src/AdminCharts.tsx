@@ -41,7 +41,7 @@ export function AdminBarChart({ title, description, data, loading = false }: { t
     {loading ? <ChartSkeleton /> : empty ? <ChartEmpty title="No reports yet" hint="Counts appear here as soon as reports are submitted." /> : asTable
       ? <ChartTable caption={title} headings={[title.replace(/^Reports by /, '').replace(/^./, (letter) => letter.toUpperCase()), 'Reports', 'Share']} rows={data.map((item) => [item.label, item.value, `${Math.round((item.value / total) * 100)}%`])} />
       : <div className="category-bars" role="list" aria-label={title}>
-        {data.map((item, index) => <div className="category-row" role="listitem" key={item.label} aria-label={`${item.label}: ${item.value} reports`} style={{ '--i': index } as CSSProperties}>
+        {data.map((item, index) => <div className="category-row" role="listitem" key={item.label} aria-label={`${item.label}: ${item.value} report${item.value === 1 ? '' : 's'}`} style={{ '--i': index } as CSSProperties}>
           <span title={item.label}>{item.label}</span>
           <i><b style={{ width: `${(item.value / maximum) * 100}%` }} /></i>
           <strong>{item.value}</strong>
@@ -83,8 +83,14 @@ export function AdminTrendChart({ daily, loading = false }: { daily: TrendDay[];
   const empty = !loading && total === 0 && previousTotal === 0
   const activeDay = active === null ? undefined : data[active]
   const activePrevious = active === null || !showCompare ? undefined : previous[active]
-  const edge = active === null ? '' : active <= 1 ? 'is-start' : active >= data.length - 2 ? 'is-end' : ''
-  const dayLabel = (day: TrendDay, index: number) => length <= 14 ? day.label : index % labelStep === 0 ? formatDay(day.date, { month: 'short', day: 'numeric' }) : ''
+  // The tooltip sits beside the crosshair inside the plot (right of it in the left half, left of it
+  // in the right half), so it never covers the chart's title above.
+  const tooltipSide = active !== null && active >= data.length / 2 ? 'is-left' : ''
+  // Up to two weeks, each bar shows its weekday with the date under it, so two Fridays read apart.
+  const datedDays = length <= 14
+  const dayLabel = (day: TrendDay, index: number) => datedDays
+    ? <><span>{day.label}</span><span>{formatDay(day.date, { day: 'numeric' })}</span></>
+    : index % labelStep === 0 ? formatDay(day.date, { month: 'short', day: 'numeric' }) : ''
 
   const indexAt = (clientX: number) => {
     const rect = barsRef.current?.getBoundingClientRect()
@@ -120,12 +126,12 @@ export function AdminTrendChart({ daily, loading = false }: { daily: TrendDay[];
       : <div className="admin-trend-plot" onMouseLeave={() => { setActive(null); finishBrush() }}>
         {activeDay && !brush && <i className="trend-crosshair" style={{ left: `${((active ?? 0) + 0.5) / data.length * 100}%` }} aria-hidden="true" />}
         {brush && <i className="trend-brush" aria-hidden="true" style={{ left: `${Math.min(brush.from, brush.to) / length * 100}%`, width: `${(Math.abs(brush.to - brush.from) + 1) / length * 100}%` }} />}
-        {activeDay && !brush && <div className={`trend-tooltip ${edge}`} style={{ left: `${((active ?? 0) + 0.5) / data.length * 100}%` }} role="status">
+        {activeDay && !brush && <div className={`trend-tooltip ${tooltipSide}`} style={{ left: `${((active ?? 0) + 0.5) / data.length * 100}%` }} role="status">
           <strong>{formatDay(activeDay.date)}</strong>
           <span><b>{activeDay.value}</b> {activeDay.value === 1 ? 'report' : 'reports'}</span>
           {activePrevious && <small>{activePrevious.value} on {formatDay(activePrevious.date, { month: 'short', day: 'numeric' })}</small>}
         </div>}
-        <div className="admin-trend-bars" ref={barsRef} style={{ gridTemplateColumns: `repeat(${length}, minmax(0, 1fr))`, gap: length > 30 ? 1 : undefined }} role="list" aria-label={`Reports submitted per day over the ${periodLabel}`}
+        <div className={`admin-trend-bars ${datedDays ? 'has-dates' : ''}`} ref={barsRef} style={{ gridTemplateColumns: `repeat(${length}, minmax(0, 1fr))`, gap: length > 30 ? 1 : undefined }} role="list" aria-label={`Reports submitted per day over the ${periodLabel}`}
           onPointerDown={(event) => { if (event.pointerType === 'mouse' && event.button !== 0) return; const index = indexAt(event.clientX); setBrush({ from: index, to: index }) }}
           onPointerMove={(event) => { if (brush) setBrush({ from: brush.from, to: indexAt(event.clientX) }) }}
           onPointerUp={finishBrush}>

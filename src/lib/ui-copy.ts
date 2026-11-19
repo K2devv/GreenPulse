@@ -18,7 +18,7 @@ const copy = {
   location: 'Location',
   barangay: 'Barangay',
   pinExactSpot: 'Pin the exact spot',
-  clickDragMap: 'Click or drag the map to adjust',
+  clickDragMap: 'Select a spot on the map or drag the pin',
   useMyLocation: 'Use my location',
   photo: 'Photo',
   addPhotos: 'Add photos',

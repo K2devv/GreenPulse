@@ -195,14 +195,19 @@ export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, al
         <label className="field-label workflow-wide">Original report (for duplicates)<input name="duplicate_of" list="duplicate-candidates" placeholder="Report ID, e.g. A1B21904" defaultValue={report.duplicateOf ? formatReportId(report.duplicateOf) : ''} /></label>
         <datalist id="duplicate-candidates">{allReports.filter((candidate) => candidate.id !== report.id).slice(0, 300).map((candidate) => <option key={candidate.id} value={formatReportId(candidate.id).replace('#', '')}>{candidate.title}</option>)}</datalist>
         {message('verification')}
-        <div className="workflow-actions workflow-wide">
-          <button className="primary-button" type="button" disabled={busy || !VERIFICATION_STATUSES.includes(report.status)} onClick={() => submitVerification('verify')}><Check size={14} /> Validate report</button>
-          <button className="secondary-button" type="button" disabled={busy || !VERIFICATION_STATUSES.includes(report.status)} onClick={() => submitVerification('needs_info')}>Request information</button>
-          <button className="secondary-button" type="button" disabled={busy || !VERIFICATION_STATUSES.includes(report.status)} onClick={() => submitVerification('duplicate')}>Mark duplicate</button>
-          <button className="secondary-button button-danger" type="button" disabled={busy || !VERIFICATION_STATUSES.includes(report.status)} onClick={() => submitVerification('reject')}><X size={14} /> Reject</button>
+        {VERIFICATION_STATUSES.includes(report.status) ? <div className="workflow-actions workflow-wide">
+          <button className="primary-button" type="button" disabled={busy} onClick={() => submitVerification('verify')}><Check size={14} /> Validate report</button>
+          <button className="secondary-button" type="button" disabled={busy} onClick={() => submitVerification('needs_info')}>Request information</button>
+          <button className="secondary-button" type="button" disabled={busy} onClick={() => submitVerification('duplicate')}>Mark duplicate</button>
+          <button className="secondary-button button-danger" type="button" disabled={busy} onClick={() => submitVerification('reject')}><X size={14} /> Reject</button>
           <button className="text-button" type="button" disabled={busy} onClick={() => submitVerification('save')}>Save changes only</button>
-        </div>
-        {!VERIFICATION_STATUSES.includes(report.status) && <p className="workflow-hint workflow-wide">Verification is locked once work on the task has started.</p>}
+        </div> : <>
+          {/* Work has started: the verification decision is final, but the details can still be corrected. */}
+          <p className="workflow-hint workflow-wide">Work on this report has started, so it can no longer be validated, rejected or marked as a duplicate. You can still correct the category, urgency and notes.</p>
+          <div className="workflow-actions workflow-wide">
+            <button className="secondary-button" type="button" disabled={busy} onClick={() => submitVerification('save')}><Check size={14} /> Save corrections</button>
+          </div>
+        </>}
       </form> : <>
         <p className="workflow-meta">{report.category} · {report.urgency} urgency</p>
         {report.verificationNote && <p className="workflow-note-text">{report.verificationNote}</p>}

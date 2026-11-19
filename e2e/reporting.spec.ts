@@ -81,7 +81,7 @@ test.describe('report intake', () => {
     const start = page.getByRole('dialog', { name: 'Report an issue' })
     await expect(start.getByRole('button', { name: 'Scan with camera' })).toBeVisible()
     await expect(start.getByRole('button', { name: 'Upload a photo' })).toBeVisible()
-    await expect(start.getByText('Your photo stays on this device.', { exact: false })).toBeVisible()
+    await expect(start.getByText('The issue check runs on this device.', { exact: false })).toBeVisible()
     await start.getByRole('button', { name: /^Fill in the form/ }).click()
     await expect(page.getByRole('dialog', { name: 'What did you notice?' })).toBeVisible()
     await expect(start).toHaveCount(0)

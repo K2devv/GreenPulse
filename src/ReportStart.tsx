@@ -204,7 +204,7 @@ export default function ReportStart({ checker, guest, preparePhotos, onForm, onF
             <button className="primary-button" type="button" onClick={() => { setError(''); setView({ name: 'camera' }) }}><ScanLine size={17} />Scan with camera</button>
             <button className="secondary-button" type="button" onClick={() => uploadRef.current?.click()}><ImageUp size={17} />Upload a photo</button>
           </div>
-          <p className="report-start-note"><ShieldCheck size={14} aria-hidden="true" />Your photo stays on this device.{downloadNeeded ? ` First use downloads ${PHOTO_MODEL_MEGABYTES} MB.` : ''}</p>
+          <p className="report-start-note"><ShieldCheck size={14} aria-hidden="true" />The issue check runs on this device. Photos are only sent when you submit the report.{downloadNeeded ? ` First use downloads ${PHOTO_MODEL_MEGABYTES} MB.` : ''}</p>
         </section>
         {error && <p className="form-error" role="alert">{error}</p>}
         <div className="report-start-or" aria-hidden="true">or</div>
