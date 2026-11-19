@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
+import { photoCheckFailureOf, type PhotoCheckFailure } from './lib/photo-check-failure'
 import type { PhotoIssueGuess } from './lib/photo-issue-classifier'
 import { photoCheckerSupported, photoModelIsCached, photoModelMayDownloadNow, type PhotoChecker } from './usePhotoChecker'
 
@@ -11,7 +12,8 @@ export type PhotoSuggestionState =
   | { status: 'suggested'; guess: PhotoIssueGuess }
   /** The photos were read, but none clearly shows a reportable issue. */
   | { status: 'unclear' }
-  | { status: 'failed'; message: string }
+  /** The check could not finish; `failure` says why (see photo-check-failure). */
+  | { status: 'failed'; failure: PhotoCheckFailure }
 
 type InternalState = Exclude<PhotoSuggestionState, { status: 'downloading' }>
 
@@ -42,7 +44,7 @@ export function usePhotoIssueSuggestion(checker: PhotoChecker, onGuess: (guess: 
     try {
       guess = await checkPhotos(photos, () => run.current !== id)
     } catch (error) {
-      if (run.current === id) setInternal({ status: 'failed', message: error instanceof Error ? error.message : 'The photo could not be checked.' })
+      if (run.current === id) setInternal({ status: 'failed', failure: photoCheckFailureOf(error) })
       return
     }
     if (run.current !== id) return

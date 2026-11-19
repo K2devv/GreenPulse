@@ -2,18 +2,21 @@
 // The photo never leaves the device: only the model file is downloaded, once, then cached.
 //
 // Messages in:  { type: 'classify', id, pixels } (pixels from toModelInput)
-// Messages out: { type: 'progress', loaded, total }, { type: 'result', id, guess },
-//               { type: 'error', id, message }
+// Messages out: { type: 'ready' } once this script has loaded, { type: 'progress', loaded, total },
+//               { type: 'result', id, guess },
+//               { type: 'error', id, failure, message } (failure says why, see photo-check-failure)
 import * as ort from 'onnxruntime-web/wasm'
 import wasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url'
 import labelData from './data/photo-issue-labels.json'
+import { PhotoCheckError, photoCheckFailureOf, type PhotoCheckFailure } from './lib/photo-check-failure'
 import { PHOTO_MODEL, PHOTO_MODEL_CACHE, guessPhotoIssue, type PhotoIssueLabel } from './lib/photo-issue-classifier'
 
 export type PhotoWorkerRequest = { type: 'classify'; id: number; pixels: Float32Array }
 export type PhotoWorkerMessage =
+  | { type: 'ready' }
   | { type: 'progress'; loaded: number; total: number }
   | { type: 'result'; id: number; guess: ReturnType<typeof guessPhotoIssue> }
-  | { type: 'error'; id: number; message: string }
+  | { type: 'error'; id: number; failure: PhotoCheckFailure; message: string }
 
 // The project is typed for the page (DOM), not for workers; these are the two worker members used.
 const scope = self as unknown as {
@@ -83,8 +86,30 @@ async function modelBytes(): Promise<Uint8Array> {
   return bytes
 }
 
+const messageOf = (error: unknown, fallback: string) => error instanceof Error && error.message ? error.message : fallback
+
+/** Whether the runtime's own file can still be fetched from GreenPulse; after a site update it can't. */
+const runtimeFileReachable = () => fetch(wasmUrl, { method: 'HEAD', cache: 'no-store' }).then((response) => response.ok, () => false)
+
+/** Downloads (or reads from the cache) the model, then starts the runtime. Errors say which step failed. */
+async function createSession(): Promise<ort.InferenceSession> {
+  let bytes: Uint8Array
+  try {
+    bytes = await modelBytes()
+  } catch (error) {
+    throw new PhotoCheckError('download', messageOf(error, 'The photo checker could not be downloaded.'))
+  }
+  try {
+    return await ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] })
+  } catch (error) {
+    // The runtime fetches its .wasm file from GreenPulse first. If that file is gone (the site was
+    // updated) or unreachable, a reload fixes it; otherwise this device could not run the model.
+    throw new PhotoCheckError(await runtimeFileReachable() ? 'device' : 'app', messageOf(error, 'The photo checker could not start.'))
+  }
+}
+
 function loadSession(): Promise<ort.InferenceSession> {
-  session ??= modelBytes().then((bytes) => ort.InferenceSession.create(bytes, { executionProviders: ['wasm'] }))
+  session ??= createSession()
   // A failed load is not kept, so "Try again" starts over.
   session.catch(() => { session = undefined })
   return session
@@ -102,6 +127,11 @@ scope.onmessage = async (event) => {
     const guess = guessPhotoIssue(embedding.data as Float32Array, labels)
     scope.postMessage({ type: 'result', id: request.id, guess })
   } catch (error) {
-    scope.postMessage({ type: 'error', id: request.id, message: error instanceof Error ? error.message : 'The photo could not be checked.' })
+    // Anything not sorted above failed while running the model, which is down to the device.
+    scope.postMessage({ type: 'error', id: request.id, failure: photoCheckFailureOf(error), message: messageOf(error, 'The photo could not be checked.') })
   }
 }
+
+// This script and everything it imports have loaded. A crash after this point is the device's,
+// not a missing file's (see the worker's error handler in usePhotoChecker).
+scope.postMessage({ type: 'ready' })
