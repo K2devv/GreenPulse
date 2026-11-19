@@ -34,7 +34,7 @@ test('admin can open response tools and the resolution review action', async ({ 
   test.skip(!process.env.E2E_BASE_URL || !email || !password || !reportTitle, 'Configure a non-production E2E_BASE_URL, admin account, and seeded Awaiting verification report.')
   await signIn(page, email!, password!)
   await page.getByRole('button', { name: 'Open staff desk' }).click()
-  await page.getByRole('button', { name: 'Response desk' }).click()
+  await page.getByRole('button', { name: 'Staff desk', exact: true }).click()
   await page.getByPlaceholder(/Search by ID, title/).fill(reportTitle!)
   await page.getByRole('button', { name: new RegExp(reportTitle!, 'i') }).click()
   await expect(page.getByRole('button', { name: 'Approve resolution' })).toBeVisible()

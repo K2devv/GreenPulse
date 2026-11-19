@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { SlidersHorizontal } from 'lucide-react'
 import type { DisplayPrefs } from './display-prefs'
 
-const OPTIONS: { key: keyof DisplayPrefs; label: string; hint: string }[] = [
+const OPTIONS: { key: keyof DisplayPrefs; label: string; hint: string; staffOnly?: boolean }[] = [
   { key: 'reduceMotion', label: 'Reduce motion', hint: 'Turns off animations and transitions.' },
   { key: 'highContrast', label: 'High contrast', hint: 'Stronger text and border colours.' },
-  { key: 'compact', label: 'Compact lists', hint: 'Shows more rows in the staff queue.' },
+  { key: 'compact', label: 'Compact lists', hint: 'Shows more rows in the staff queue.', staffOnly: true },
 ]
 
-export function DisplaySettings({ prefs, onChange }: { prefs: DisplayPrefs; onChange: (patch: Partial<DisplayPrefs>) => void }) {
+/** `showStaffOptions` adds the settings that only change staff screens. */
+export function DisplaySettings({ prefs, onChange, showStaffOptions = false }: { prefs: DisplayPrefs; onChange: (patch: Partial<DisplayPrefs>) => void; showStaffOptions?: boolean }) {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef<HTMLDivElement>(null)
 
@@ -28,7 +29,7 @@ export function DisplaySettings({ prefs, onChange }: { prefs: DisplayPrefs; onCh
     <button className="icon-button" type="button" aria-label="Display settings" aria-expanded={open} aria-haspopup="true" title="Display settings" onClick={() => setOpen((current) => !current)}><SlidersHorizontal size={16} /></button>
     {open && <div className="display-panel" role="group" aria-label="Display settings">
       <strong>Display</strong>
-      {OPTIONS.map((option) => <label className="display-option" key={option.key}>
+      {OPTIONS.filter((option) => showStaffOptions || !option.staffOnly).map((option) => <label className="display-option" key={option.key}>
         <span><b>{option.label}</b><small>{option.hint}</small></span>
         <input type="checkbox" role="switch" checked={prefs[option.key]} onChange={(event) => onChange({ [option.key]: event.target.checked })} />
         <i aria-hidden="true" />

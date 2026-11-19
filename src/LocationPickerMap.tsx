@@ -23,12 +23,14 @@ type LocationPickerMapProps = {
   fitBarangay?: { seq: number; barangay: string }
   /** Called with [latitude, longitude] after a click or drag. Return false to reject the spot. */
   onSelect: (coordinates: [number, number]) => boolean
+  /** False while `location` is only the starting point; the pin is then drawn faded. */
+  placed?: boolean
 }
 
 const PADDING: Padding = { top: 12, right: 12, bottom: 12, left: 12 }
 
 /** The small map in the report form: click the map or drag the pin to set the report's location. */
-export default function LocationPickerMap({ theme, outline, location, color, icon, fitBarangay, onSelect }: LocationPickerMapProps) {
+export default function LocationPickerMap({ theme, outline, location, color, icon, fitBarangay, onSelect, placed = true }: LocationPickerMapProps) {
   const mapRef = useRef<MapRef>(null)
   const [ready, setReady] = useState(false)
   const [failed, setFailed] = useState(false)
@@ -131,7 +133,7 @@ export default function LocationPickerMap({ theme, outline, location, color, ico
           if (!onSelect([event.lngLat.lat, event.lngLat.lng])) event.target.setLngLat([longitude, latitude])
         }}
       >
-        <MapPin variant="location" color={color} icon={icon} label="Report location. Drag to adjust." dragging={dragging} />
+        <MapPin variant="location" color={color} icon={icon} label={placed ? 'Report location. Drag to adjust.' : 'No location chosen yet. Drag the pin or select a spot on the map.'} dragging={dragging} placeholder={!placed && !dragging} />
       </Marker>
     </MapView>
     <MapZoomControls onZoomIn={() => zoomBy(1)} onZoomOut={() => zoomBy(-1)} canZoomIn={zoom < MAP_MAX_ZOOM - 0.01} canZoomOut={!lock || zoom > lock.zoom + 0.01} />

@@ -16,7 +16,7 @@ function BreakdownTable({ title, entries }: { title: string; entries: Count[] })
   const hasData = entries.some((entry) => entry.value > 0)
   return <article className="analytics-chart summary-table">
     <div className="analytics-chart-heading"><div><strong>{title}</strong></div></div>
-    {hasData ? <ul>{entries.map((entry, index) => <li key={entry.label} style={{ '--i': index } as CSSProperties}><span>{entry.label}</span><i><b style={{ width: `${(entry.value / max) * 100}%` }} /></i><strong>{entry.value}</strong></li>)}</ul> : <ChartEmpty title="No data" hint="Nothing recorded for this period." />}
+    {hasData ? <ul>{entries.map((entry, index) => <li key={entry.label} style={{ '--i': index } as CSSProperties}><span title={entry.label}>{entry.label}</span><i><b style={{ width: `${(entry.value / max) * 100}%` }} /></i><strong>{entry.value}</strong></li>)}</ul> : <ChartEmpty title="No data" hint="Nothing recorded for this period." />}
   </article>
 }
 

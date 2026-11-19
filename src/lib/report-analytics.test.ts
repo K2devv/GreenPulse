@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildReportAnalytics, DAILY_HISTORY_DAYS, type AnalyticsReport } from './report-analytics'
+import { buildReportAnalytics, DAILY_HISTORY_DAYS, unrecordedBarangayLast, type AnalyticsReport } from './report-analytics'
 
 const now = new Date(2026, 9, 7, 12)
 
@@ -64,6 +64,29 @@ describe('buildReportAnalytics', () => {
     ])
   })
 
+  it('groups reports by barangay, keeping unrecorded ones last and on their own', () => {
+    const reports = [
+      report({ barangay: 'Bagbag', location: '5th District, Barangay Bagbag, Quezon City' }),
+      report({ barangay: 'Bagbag', location: 'Bagbag, 5th District, Quezon City' }),
+      report({ barangay: ' Capri ' }),
+      report({}),
+      ...['Fairview', 'Gulod', 'Kaligayahan', 'Nagkaisang Nayon', 'North Fairview', 'Pasong Putik Proper'].map((barangay) => report({ barangay })),
+    ]
+
+    const analytics = buildReportAnalytics(reports, now)
+
+    expect(analytics.byBarangay).toEqual([
+      { label: 'Bagbag', value: 2 },
+      { label: 'Capri', value: 1 },
+      { label: 'Fairview', value: 1 },
+      { label: 'Gulod', value: 1 },
+      { label: 'Kaligayahan', value: 1 },
+      { label: 'Nagkaisang Nayon', value: 1 },
+      { label: 'Other barangays', value: 2 },
+      { label: 'No barangay recorded', value: 1 },
+    ])
+  })
+
   it('returns zero-safe metrics and omits average time without valid resolution dates', () => {
     const analytics = buildReportAnalytics([], now)
 
@@ -96,5 +119,16 @@ describe('buildReportAnalytics', () => {
     expect(analytics.daily).toHaveLength(DAILY_HISTORY_DAYS)
     expect(analytics.daily.slice(-14)).toEqual(analytics.overTime)
     expect(analytics.daily.reduce((sum, day) => sum + day.value, 0)).toBe(2)
+  })
+})
+
+describe('unrecordedBarangayLast', () => {
+  it('moves the no-barangay row to the end and keeps the rest in order', () => {
+    const rows = [{ label: 'Bagbag' }, { label: 'No barangay recorded' }, { label: 'San Bartolome' }, { label: 'Greater Lagro' }]
+    expect(unrecordedBarangayLast(rows).map((row) => row.label)).toEqual(['Bagbag', 'San Bartolome', 'Greater Lagro', 'No barangay recorded'])
+  })
+
+  it('leaves rows without one unchanged', () => {
+    expect(unrecordedBarangayLast([{ label: 'Capri' }, { label: 'Gulod' }]).map((row) => row.label)).toEqual(['Capri', 'Gulod'])
   })
 })

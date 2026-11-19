@@ -12,6 +12,7 @@ export const BACK_LAYER_ORDER = [
   'community-discussion',
   'follow-up',
   'stat-reports',
+  'report-start',
   'report-form',
   'notifications',
   'staff-filters',
@@ -30,9 +31,10 @@ export function topBackLayer(open: Partial<Record<BackLayer, boolean>>): BackLay
 /**
  * Layers the Escape key closes on desktop, topmost first. The report form is left out so a stray
  * Escape cannot throw away a half-written report, and the command palette handles Escape itself.
+ * The report start screen (photo or form?) holds nothing that could be lost, so Escape closes it.
  * Staff views and the map sheet are pages rather than overlays, so Escape leaves them alone.
  */
-export const ESCAPE_LAYERS = ['auth', 'profile', 'responder', 'team', 'guest-tracking', 'community-discussion', 'follow-up', 'stat-reports', 'notifications'] as const satisfies readonly BackLayer[]
+export const ESCAPE_LAYERS = ['auth', 'profile', 'responder', 'team', 'guest-tracking', 'community-discussion', 'follow-up', 'stat-reports', 'report-start', 'notifications'] as const satisfies readonly BackLayer[]
 
 /** The overlay Escape should close, or undefined when Escape should do nothing. */
 export function topEscapeLayer(open: Partial<Record<BackLayer, boolean>>): BackLayer | undefined {

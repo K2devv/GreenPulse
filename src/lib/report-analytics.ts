@@ -3,6 +3,8 @@ export type AnalyticsReport = {
   status: string
   urgency: string
   location: string
+  /** The District 5 barangay, when recorded. */
+  barangay?: string
   createdAt: string
   assignedTo?: string
   resolvedAt?: string
@@ -11,6 +13,13 @@ export type AnalyticsReport = {
 export type ChartDatum = {
   label: string
   value: number
+}
+
+export const NO_BARANGAY_LABEL = 'No barangay recorded'
+
+/** Moves rows for reports with no barangay to the end, keeping the order of the rest. */
+export function unrecordedBarangayLast<T extends { label: string }>(rows: readonly T[]): T[] {
+  return [...rows.filter((row) => row.label !== NO_BARANGAY_LABEL), ...rows.filter((row) => row.label === NO_BARANGAY_LABEL)]
 }
 
 const pendingStatuses = new Set([
@@ -97,6 +106,22 @@ export function buildReportAnalytics(reports: AnalyticsReport[], now = new Date(
     })
   }
 
+  // Barangays rather than free-text addresses: the same place is written many ways ("Bagbag" and
+  // "5th District, Barangay Bagbag, …"), which would split one area across several rows.
+  const barangays = new Map<string, number>()
+  for (const report of reports) {
+    const label = report.barangay?.trim() || NO_BARANGAY_LABEL
+    barangays.set(label, (barangays.get(label) ?? 0) + 1)
+  }
+  const unrecorded = barangays.get(NO_BARANGAY_LABEL) ?? 0
+  barangays.delete(NO_BARANGAY_LABEL)
+  const sortedBarangays = [...barangays].sort((first, second) => second[1] - first[1] || first[0].localeCompare(second[0]))
+  const topBarangays = sortedBarangays.slice(0, 6).map(([label, value]) => ({ label, value }))
+  if (sortedBarangays.length > 6) {
+    topBarangays.push({ label: 'Other barangays', value: sortedBarangays.slice(6).reduce((total, [, count]) => total + count, 0) })
+  }
+  if (unrecorded) topBarangays.push({ label: NO_BARANGAY_LABEL, value: unrecorded })
+
   const statusCounts = countBy(reports, (report) => report.status, [
     'Submitted',
     'Under review',
@@ -129,6 +154,7 @@ export function buildReportAnalytics(reports: AnalyticsReport[], now = new Date(
     previousOverTime: previousDates,
     daily,
     byLocation: topLocations,
+    byBarangay: topBarangays,
     resolutionRate: reports.length ? (reports.filter((report) => report.status === 'Resolved').length / reports.length) * 100 : 0,
     averageResolutionMs: resolvedDurations.length
       ? resolvedDurations.reduce((total, duration) => total + duration, 0) / resolvedDurations.length

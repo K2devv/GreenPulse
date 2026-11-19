@@ -2,6 +2,7 @@ import { useCallback, useId, useState, type CSSProperties } from 'react'
 import { MapPinOff, Maximize, Minus, Plus, type LucideIcon } from 'lucide-react'
 import type { MapInstance } from '@vis.gl/react-maplibre'
 import { motionIsReduced } from './display-prefs'
+import { clusterBubbleSize } from './lib/map-pin-clearance'
 import { districtLockCamera, type Bounds, type FitCamera } from './lib/map-viewport'
 
 /** Closest zoom. The vector tiles stop at zoom 14 and are drawn larger beyond it. */
@@ -61,14 +62,16 @@ type MapPinProps = {
   /** 'location' is the draggable report-form pin; it is not a button. */
   variant?: 'report' | 'location'
   dragging?: boolean
+  /** A location pin that only marks the starting point: drawn faded until a spot is chosen. */
+  placeholder?: boolean
   /** Entrance animation delay in milliseconds. */
   delay?: number
 }
 
-export function MapPin({ color, icon: Icon, label, title, status, urgent, muted, selected, variant = 'report', dragging, delay = 0 }: MapPinProps) {
+export function MapPin({ color, icon: Icon, label, title, status, urgent, muted, selected, variant = 'report', dragging, placeholder, delay = 0 }: MapPinProps) {
   // Each pin carries its own gradient so two maps on the page never share an element id.
   const sheenId = `pin-sheen-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
-  const classes = ['map-pin', variant === 'location' ? 'location-pin' : 'report-pin', urgent && 'is-urgent', muted && 'is-muted', selected && 'is-selected', dragging && 'is-dragging'].filter(Boolean).join(' ')
+  const classes = ['map-pin', variant === 'location' ? 'location-pin' : 'report-pin', urgent && 'is-urgent', muted && 'is-muted', selected && 'is-selected', dragging && 'is-dragging', placeholder && 'is-placeholder'].filter(Boolean).join(' ')
   const style = { '--pin-color': color, '--pin-delay': `${delay}ms` } as CSSProperties
   const body = <>
     <svg className="map-pin-shape" viewBox="0 0 40 50" aria-hidden="true" focusable="false">
@@ -93,7 +96,7 @@ export function MapPin({ color, icon: Icon, label, title, status, urgent, muted,
 
 /** A group of nearby reports: the ring shows the category mix, the badge counts open high-urgency reports. */
 export function ClusterBubble({ count, urgent, ring }: { count: number; urgent: number; ring?: string }) {
-  const size = count < 10 ? 42 : count < 50 ? 48 : 56
+  const size = clusterBubbleSize(count)
   const style = { '--cluster-ring': ring ?? 'var(--accent-line)', '--cluster-size': `${size}px` } as CSSProperties
   return <button type="button" className="report-cluster" style={style} aria-label={`${count} reports${urgent ? `, ${urgent} high urgency` : ''}. Zoom in.`}>
     <span className="report-cluster-count" aria-hidden="true">{count}</span>
