@@ -39,7 +39,7 @@ Iterations so far, from the commit history and migration files:
 | 3 | 16 Oct – 2 Nov | Guest reporting and privacy | Guest reports with tracking codes, resolution feedback, recurring-issue inspections, consent notice, public location privacy, deadline escalations, email delivery tracking, pilot outcomes, District 5 boundary check | v0.35.0, v0.36.0 |
 | 4 | 3 – 10 Nov | Community and platforms | Rate limits on public endpoints, public comments, guest phone contact, Windows desktop and Android builds | v0.37.0 |
 | 5 | 11 – 13 Nov | Maps and accounts | Engagement counts, MapLibre maps limited to District 5, barangay fit and exact addresses for staff, dark mode, email code at sign-up | PR #2 |
-| 6 | 14 – 19 Nov | Polish and privacy | Stat tiles that open report lists, notification fixes, paged report loading, focus kept inside dialogs, report photos limited to staff and the reporter, on-device photo suggestions | PRs #3 – #5 |
+| 6 | 14 – 19 Nov | Photo reporting and privacy | Stat tiles that open report lists, notification fixes, paged report loading, focus kept inside dialogs, report photos limited to staff and the reporter, reporting from a photo with a live camera scan and on-device AI, maps that stay inside District 5 | PRs #3 – #6 |
 
 Tools: GitHub for version control, pull requests, and CI; Vercel for hosting and server routes; Supabase for the database, sign-in, and file storage; Vitest and Playwright for testing.
 
@@ -59,7 +59,7 @@ The database enforces access rules with row-level security and workflow triggers
 
 ## 4. Use case diagram
 
-Community actors use the public features; staff and the scheduler use the response features. A dotted “is a” arrow means the actor can also do everything the target actor can: guest reporters and residents are map visitors, and administrators can do all responder work. Submitting a report always includes the District 5 check; the photo suggestion extends it only when a photo is added.
+Community actors use the public features; staff and the scheduler use the response features. A dotted “is a” arrow means the actor can also do everything the target actor can: guest reporters and residents are map visitors, and administrators can do all responder work. Submitting a report always includes the District 5 check. Reporting with a photo is an optional way into submitting («extend»), and it always includes detecting the issue on the device («include»).
 
 ```mermaid
 flowchart LR
@@ -81,7 +81,8 @@ flowchart LR
     UC8(["Post a public comment"])
     UC9(["Follow a report"])
     UC10(["Check District 5 location"])
-    UC11(["Suggest category from photo"])
+    UC11(["Report with a photo"])
+    UC28(["Detect the issue on device"])
     UC12(["Sign up or sign in"])
     UC13(["Message on a report"])
     UC14(["Read notifications"])
@@ -112,6 +113,7 @@ flowchart LR
   Scheduler --- UC27
   UC6 -.->|«include»| UC10
   UC11 -.->|«extend»| UC6
+  UC11 -.->|«include»| UC28
 ```
 
 The scheduler is the `Deadline checks` GitHub workflow (every 15 minutes) with the daily Vercel cron as a backup.
@@ -148,11 +150,11 @@ flowchart LR
   Model -->|photo model, downloaded once| GP
 ```
 
-**Boundary note:** the web app and PWA, the Vercel API routes, and Supabase (Auth, Postgres, Storage, Realtime) are inside the boundary. Signed-in users normally call Supabase from the client using their authenticated session. Guest submission, guest tracking, responder provisioning, and notification and escalation jobs use server-side API routes. Photo category suggestions run in the browser, so photos are not sent anywhere for them. Server-only secrets stay on the server.
+**Boundary note:** the web app and PWA, the Vercel API routes, and Supabase (Auth, Postgres, Storage, Realtime) are inside the boundary. Signed-in users normally call Supabase from the client using their authenticated session. Guest submission, guest tracking, responder provisioning, and notification and escalation jobs use server-side API routes. Photo checks run in the browser, so camera frames and photos are not sent anywhere for them; only the model file comes in from the model host. Server-only secrets stay on the server.
 
 ## 6. System flowchart — report lifecycle
 
-The flowchart follows one report from the form to closing. Colors show who does each step: reporter (blue), GreenPulse system (grey), administrator (green), responder (amber).
+The flowchart follows one report from the start screen, with a photo or with the form, to closing. Colors show who does each step: reporter (blue), GreenPulse system (grey), administrator (green), responder (amber). A restored draft, or a browser that cannot run the photo checker, skips the photo step and opens the form.
 
 ```mermaid
 flowchart TD
@@ -161,7 +163,15 @@ flowchart TD
   classDef admin fill:#e4f0e4,stroke:#2e6947,color:#1f2a21
   classDef responder fill:#f7efe2,stroke:#b67842,color:#1f2a21
 
-  Start(["Start"]):::reporter --> Form[/"Fill in the report form: issue, place, photos, consent"/]:::reporter
+  Start(["Start"]):::reporter --> UsePhoto{"Report with a photo?"}:::reporter
+  UsePhoto -->|Yes| Scan[/"Scan with the camera or upload a photo"/]:::reporter
+  UsePhoto -->|No| Form
+  Scan --> Detect["Detect the issue on device: camera frames or the photo"]:::system
+  Detect --> Found{"Issue found?"}:::system
+  Found -->|No| NoIssue>"No issue found"]:::reporter
+  NoIssue -->|Try again| Scan
+  Found -->|Yes| Prefill["Open the form, filled in: category, issue type, title"]:::system
+  Prefill -->|with the photos| Form[/"Fill in or check the form: issue, place, photos, consent"/]:::reporter
   Form --> SignedIn{"Signed in?"}:::reporter
   SignedIn -->|No| Contact[/"Add email or phone so staff can follow up"/]:::reporter
   SignedIn -->|Yes| Validate["Validate the report: fields, photos, District 5"]:::system
@@ -214,7 +224,7 @@ flowchart LR
 
   P1(("1.0 Manage accounts and inbox"))
   P2(("2.0 Receive and track reports"))
-  P3(("3.0 Suggest category from photo"))
+  P3(("3.0 Detect the issue in a photo"))
   P4(("4.0 Publish map and community activity"))
   P5(("5.0 Coordinate the response"))
   P6(("6.0 Monitor deadlines, notify and report"))
@@ -230,8 +240,8 @@ flowchart LR
   P2 -->|tracking code, status| Guest
   Resident -->|report, photos| P2
   P2 -->|receipt, status| Resident
-  P2 -->|photo| P3
-  P3 -->|suggestion| P2
+  P2 -->|photo, camera frames| P3
+  P3 -->|category, issue type, title| P2
   Model -->|photo model| P3
   P2 -->|photos| D3
   P2 -->|hash, contact| D4
@@ -285,8 +295,8 @@ flowchart LR
 | No. | Process | What it does |
 | --- | --- | --- |
 | 1.0 | Manage accounts and inbox | Sign-up with an email code, sign-in, profiles and roles, responder invitations, teams, and each user’s notification inbox. |
-| 2.0 | Receive and track reports | Checks and saves reports from guests and residents, stores photos privately, rate-limits guests, issues tracking codes, and answers tracking lookups. |
-| 3.0 | Suggest category from photo | Runs an image model in the reporter’s browser and suggests a category, issue type, and title. The photo stays on the device. |
+| 2.0 | Receive and track reports | Starts a report from a photo or the form, then checks and saves reports from guests and residents, stores photos privately, rate-limits guests, issues tracking codes, and answers tracking lookups. |
+| 3.0 | Detect the issue in a photo | Runs an image model in the reporter’s browser on live camera frames or an uploaded photo, decides whether it shows an issue, and fills in the category, issue type, and title. Frames and photos stay on the device. |
 | 4.0 | Publish map and community activity | Serves the public view of reports with rounded coordinates and general place names, plus comments, follows, confirmations, and feedback. |
 | 5.0 | Coordinate the response | Staff queue, verification, assignment, task updates, after-photos, and resolution review. Every change is written to the timeline. |
 | 6.0 | Monitor deadlines, notify and report | Checks deadlines, escalates overdue reports, creates notifications, sends email, and builds dashboard figures and exports. |
@@ -296,7 +306,7 @@ flowchart LR
 | D1 | Accounts and teams | `profiles`, `teams`, `team_members` |
 | D2 | Reports and timeline | `reports`, `report_events`, `report_comments`, `environmental_followups` |
 | D3 | Report photos | `report-photos` private storage bucket |
-| D4 | Guest access and contacts | `guest_report_access`, `guest_report_attempts`, `api_rate_events` |
+| D4 | Guest access and contacts | `guest_report_access`, `guest_report_attempts` |
 | D5 | Community activity | `community_report_comments`, `report_followers`, `report_confirmations`, `report_resolution_feedback` |
 | D6 | Notifications and deadlines | `notifications`, `report_sla_escalations`, `response_settings` |
 
@@ -304,7 +314,7 @@ flowchart LR
 
 ## 8. Entity relationship diagram (ERD)
 
-The database has 18 tables in the `public` schema. `reports` is the centre. `profiles.id` is the same id as Supabase’s `auth.users.id`, so foreign keys to `auth.users` (`reports.reporter_id`, `report_events.actor_id`, `report_confirmations.reporter_id`) are shown against `profiles`. Only key and core columns are listed.
+The migrations create 18 tables in the `public` schema, and the live database has one more, `api_rate_limit_buckets`, left from an earlier version of the rate-limit migration. `reports` is the centre. `profiles.id` is the same id as Supabase’s `auth.users.id`, so foreign keys to `auth.users` (`reports.reporter_id`, `report_events.actor_id`, `report_confirmations.reporter_id`) are shown against `profiles`. Only key and core columns are listed.
 
 ```mermaid
 erDiagram
@@ -483,9 +493,15 @@ erDiagram
     text action
     timestamptz created_at
   }
+  api_rate_limit_buckets {
+    text subject_hash PK
+    text action PK
+    timestamptz window_started_at PK
+    integer request_count
+  }
 ```
 
-Foreign keys without a relationship line (`verified_by`, `resolution_reviewed_by`, `actor_id`, `acknowledged_by`, and `report_confirmations.reporter_id`) all point to `profiles`. `district5_barangay_boundaries`, `guest_report_attempts`, and `api_rate_events` have no foreign keys.
+Foreign keys without a relationship line (`verified_by`, `resolution_reviewed_by`, `actor_id`, `acknowledged_by`, and `report_confirmations.reporter_id`) all point to `profiles`. `district5_barangay_boundaries`, `guest_report_attempts`, `api_rate_events`, and `api_rate_limit_buckets` have no foreign keys.
 
 | Data object | Purpose and important links |
 | --- | --- |
@@ -500,7 +516,8 @@ Foreign keys without a relationship line (`verified_by`, `resolution_reviewed_by
 | `environmental_followups` | Scheduled inspection tasks linked to recurring report hotspots and assigned teams. |
 | `response_settings`, `report_sla_escalations` | Administrator-set overdue thresholds and escalation records; email delivery status sits on `notifications` and `guest_report_access`. |
 | `district5_barangay_boundaries` | The 14 barangay outlines the database uses to refuse reports from outside District 5. |
-| `guest_report_attempts`, `api_rate_events` | Hashed request records for guest and public endpoint rate limits. |
+| `guest_report_attempts` | Hashed IP records for the guest submission rate limit (`claim_guest_report_slot`). |
+| `api_rate_events`, `api_rate_limit_buckets` | Rate-limit records for the server photo endpoint that was removed when photo checks moved onto the device. No current feature writes to them; `api_rate_limit_buckets` exists only in the live database. |
 | `community_reports` (view) | The public projection the map reads: rounded coordinates, generalized place labels, no private fields or rejected reports. |
 
 ## 9. Site map
@@ -526,8 +543,11 @@ flowchart LR
   C --> C8["Your report: Was this issue fixed? (reporter)"]
   C --> C9["Welcome tour"]
 
+  F --> F0["Report start: photo first, or fill in the form"]
+  F --> F8["Camera scan: stops when it sees an issue"]
+  F --> F9["Photo check: issue found, or No issue found"]
   F --> F1["Issue details: title, category, urgency, time"]
-  F --> F2["Photos and on-device suggestion"]
+  F --> F2["More photos: each one gets a suggestion"]
   F --> F3["Location picker: District 5 only, barangay autofill"]
   F --> F4["Guest contact: email or phone (guest)"]
   F --> F5["Consent notice"]
@@ -562,6 +582,25 @@ flowchart LR
 - Guest reports require an email or phone, use server-side validation and rate limiting, and return a tracking code. Guest photos are limited to 2.5 MB each; signed-in photos are limited to 5 MB each. Images are compressed in the client before upload.
 - Residents can save drafts and queue uploads in IndexedDB. The queue resumes when the app is online; it is a browser-local resilience feature and is not a guaranteed delivery channel.
 - Photon place search and map tiles need a network connection. The PWA caches the app shell and static same-origin assets for offline viewing.
-- Photo category suggestions run on the reporter's device for guests and signed-in users alike; the photo is never sent anywhere for them. The image model (about 64 MB) is downloaded once from Hugging Face, checked against a pinned SHA-256, and cached; phones on mobile data are asked before the download. The reporter can always change the suggestion or choose by hand.
+- Photo checks run on the reporter's device for guests and signed-in users alike: the start screen's live camera scan and upload, and photos added inside the form. Frames and photos are never sent anywhere for them. The image model (about 64 MB) is downloaded once from Hugging Face, checked against a pinned SHA-256, and cached; the start screen notes the download, and inside the form phones on mobile data are asked first. The reporter can always change the filled-in fields or choose by hand.
 - Response-time processing and alert emails run through server-side scheduled/manual jobs. In-app notifications do not depend on email delivery.
 - Reports outside District 5 are refused in three places: the report form, the guest endpoint, and a database trigger. The trigger enforces only once `district5_barangay_boundaries` has rows; `202611120001_district5_osm_boundaries.sql` loads the bundled barangay outlines for that. The outlines are indicative and should be validated with the participating Quezon City office before a pilot.
+
+## 11. Live status (checked 19 November 2026)
+
+Production runs `main` at commit `8e5fdf1` (PR #6), deployed 19 November 2026. All 27 migrations are applied and all 14 barangay outlines are loaded, so the database's District 5 check is on. The status below came from calling each server route on the live site and reading counts from the live database. It goes stale as settings change, so check again before relying on it.
+
+| Part of the system | Status | What was found |
+| --- | --- | --- |
+| Community map, search, discussion | Working | Maps stay inside District 5; public locations are rounded. |
+| Reporting from a photo | Working | Start screen, live camera scan, upload, and on-device issue detection are in the live build. |
+| Reporting when signed in | Working | For accounts that are already confirmed; see sign-up confirmation below. |
+| Staff desk and resolution review | Working | Verification, assignment, task updates, after-photos, and review. |
+| In-app notifications | Working | Realtime is on for the `notifications` table. |
+| Admin dashboard and exports | Working | Overview, charts, report summary, pilot outcomes, operations. |
+| Guest reporting and tracking codes | Not working | `/api/guest-reports` answers 503 “not configured”. Needs `GUEST_TRACKING_SECRET` (32 or more characters) in Vercel. |
+| Notification emails | Not working | `/api/send-notification-emails` answers 503. Needs `RESEND_API_KEY` and `NOTIFICATION_FROM_EMAIL` in Vercel. Every notification is still waiting to be emailed. |
+| Deadline checks and escalations | Not running | The `Deadline checks` workflow is skipped on every run: the repository has no `GREENPULSE_APP_URL` variable or `CRON_SECRET` secret. The daily Vercel run does not appear to be authorized either. The last escalation was on 1 November. |
+| Sign-up confirmation emails | Not working | Every account created since 12 November is unconfirmed. Supabase’s built-in mailer has been hitting its email rate limit; a custom SMTP sender is needed. |
+
+None of these need code changes; each is a missing server setting.

@@ -1,5 +1,6 @@
 import { ArrowLeft, Camera, CameraOff, Check, ImageUp, ScanLine } from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { photoCheckFailureOf, type PhotoCheckFailure } from './lib/photo-check-failure'
 import type { PhotoIssueGuess } from './lib/photo-issue-classifier'
 import { REPORT_PHOTO_TYPES } from './lib/report-photos'
 import { remainingScanTime, scanFrame, scanNeedsHint, startScan } from './lib/photo-scan'
@@ -11,8 +12,8 @@ type CameraScanProps = {
   onCapture: (photo: File, guess?: PhotoIssueGuess) => void
   /** Photos chosen instead of the live camera: uploaded, or taken with the phone's camera app. */
   onFiles: (files: File[]) => void
-  /** The photo checker could not run. */
-  onError: () => void
+  /** The photo checker could not run; `failure` says why. */
+  onError: (failure: PhotoCheckFailure) => void
   onBack: () => void
 }
 
@@ -111,8 +112,8 @@ export function CameraScan({ checker, onCapture, onFiles, onError, onBack }: Cam
         let guess: PhotoIssueGuess
         try {
           guess = await classify(frame)
-        } catch {
-          if (active && !finished.current) callbacks.current.onError()
+        } catch (error) {
+          if (active && !finished.current) callbacks.current.onError(photoCheckFailureOf(error))
           return
         }
         if (!active || finished.current) return
@@ -130,7 +131,7 @@ export function CameraScan({ checker, onCapture, onFiles, onError, onBack }: Cam
           await pause(900)
           if (!active) return
           if (photo) callbacks.current.onCapture(photo, step.found)
-          else callbacks.current.onError()
+          else callbacks.current.onError('photo')
           return
         }
         setScan({ phase: 'scanning', hint: scanNeedsHint(progress) })
