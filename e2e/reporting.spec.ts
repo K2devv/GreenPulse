@@ -62,6 +62,16 @@ test.describe('report intake', () => {
     })))
     await expect(dialog.locator('.report-photo-preview')).toHaveCount(5)
     await expect(dialog.getByRole('button', { name: 'Remove report photo 5' })).toBeVisible()
+
+    // The reporter chooses who can see the photos; they stay private unless made public.
+    const makePublic = dialog.getByRole('switch', { name: /Make photos public/ })
+    await expect(makePublic).not.toBeChecked()
+    await expect(dialog.getByText(/Private: only you, responders and admins/)).toBeVisible()
+    await makePublic.click()
+    await expect(makePublic).toBeChecked()
+    await expect(dialog.getByText(/Public: anyone on the map, guests included/)).toBeVisible()
+    await makePublic.click()
+    await expect(makePublic).not.toBeChecked()
   })
 
   test('falls back to choosing the category by hand when the photo checker cannot load', async ({ page }) => {

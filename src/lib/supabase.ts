@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { toPhotoVisibility } from './report-photo-access'
 
 const environment = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env ?? {}
 const supabaseUrl = environment.VITE_SUPABASE_URL
@@ -52,6 +53,7 @@ export type ReportRow = {
   updated_at?: string
   photo_path?: string | null
   photo_paths?: string[]
+  photo_visibility?: 'private' | 'public' | null
   assigned_to?: string | null
   assigned_team_id?: string | null
   barangay?: string | null
@@ -140,6 +142,7 @@ export function toReport(row: ReportRow) {
     additionalInfo: row.additional_info ?? undefined,
     photoPath: row.photo_path ?? undefined,
     photoPaths: row.photo_paths ?? (row.photo_path ? [row.photo_path] : []),
+    photoVisibility: toPhotoVisibility(row.photo_visibility),
     assignedTo: row.assigned_to ?? undefined,
     assignedTeamId: row.assigned_team_id ?? undefined,
     barangay: row.barangay ?? undefined,

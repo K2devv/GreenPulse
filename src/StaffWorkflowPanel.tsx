@@ -1,7 +1,9 @@
 import { useRef, useState, type ReactNode } from 'react'
-import { AlertTriangle, CalendarDays, Camera, Check, ClipboardCheck, MapPin, ShieldCheck, UserRound, Users, X } from 'lucide-react'
+import { AlertTriangle, CalendarDays, Camera, Check, ClipboardCheck, Lock, MapPin, ShieldCheck, UserRound, Users, X } from 'lucide-react'
 import type { Team } from './lib/supabase'
 import { PhotoViewer } from './PhotoViewer'
+import { PhotoSharingBadge } from './ReportPhotoStrip'
+import { photoSharing, type PhotoVisibility } from './lib/report-photo-access'
 import { formatDuration } from './lib/report-summary'
 import { elapsedMs, responseStages, type StageEvent } from './lib/report-response-times'
 import { needsImmediateAttention } from './lib/report-escalation'
@@ -39,6 +41,7 @@ export type PanelReport = {
   taskInstructions?: string
   taskPriority?: string
   resolutionPhotoPaths?: string[]
+  photoVisibility?: PhotoVisibility
   resolutionDecision?: string
   resolutionReviewNote?: string
   resolutionReviewedBy?: string
@@ -107,6 +110,7 @@ export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, al
   const duplicateOfReport = allReports.find((candidate) => candidate.id === report.duplicateOf)
   const overdue = isOverdue(report)
   const photoCaption = `Report ${formatReportId(report.id)} · ${report.category}`
+  const photoShare = photoSharing(report)
   const signature = [report.id, report.status, report.category, report.urgency, report.assignedTo, report.assignedTeamId, report.dueDate, report.taskPriority, report.taskInstructions, report.verificationNote, report.resolutionNote, report.resolutionDecision, report.resolutionPhotoPaths?.length].join('|')
 
   async function run(card: string, result: WorkflowResult, options?: { resolutionFiles?: File[] }) {
@@ -193,7 +197,18 @@ export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, al
       {report.verifiedAt && <p className="workflow-meta"><Check size={12} /> Verified by {nameOf(report.verifiedBy) ?? 'staff'} · {formatDate(report.verifiedAt)}</p>}
       {report.status === 'Duplicate' && <p className="workflow-meta"><AlertTriangle size={12} /> Duplicate of {report.duplicateOf ? formatReportId(report.duplicateOf) : 'another report'}{duplicateOfReport ? ` · ${duplicateOfReport.title}` : ''}</p>}
       <a className="workflow-meta workflow-link" href={`https://www.openstreetmap.org/?mlat=${report.coordinates[0]}&mlon=${report.coordinates[1]}#map=18/${report.coordinates[0]}/${report.coordinates[1]}`} target="_blank" rel="noreferrer"><MapPin size={12} /> Check the location on the map</a>
-      <PhotoStrip urls={originalPhotoUrls} label="Report photo" caption={photoCaption} isPrivate />
+      <PhotoStrip urls={originalPhotoUrls} label="Report photo" caption={photoCaption} isPrivate={photoShare !== 'public'} />
+      {originalPhotoUrls.length > 0 && <div className="photo-sharing-note">
+        <PhotoSharingBadge sharing={photoShare} className="photo-sharing-badge" />
+        <span>{photoShare === 'private'
+          ? 'Only the reporter, responders and admins can see these photos.'
+          : photoShare === 'public'
+            ? 'The reporter shared these photos publicly. Anyone viewing the map can see them.'
+            : 'The reporter chose to share these photos publicly. Everyone will see them once the report is verified.'}</span>
+        {/* An admin can hide a photo that should not be public, such as one showing a face. Nobody can make a private photo public. */}
+        {isAdmin && photoShare !== 'private' && <button className="text-button" type="button" disabled={busy} onClick={() => void run('photos', { payload: { photo_visibility: 'private' } })}><Lock size={13} /> Make private</button>}
+      </div>}
+      {message('photos')}
       {isAdmin ? <form className="workflow-grid" ref={verificationForm} key={`v-${signature}`} onSubmit={(event) => event.preventDefault()}>
         <label className="field-label">Category<select name="category" defaultValue={report.category}>{[...new Set([...categories, report.category])].map((category) => <option key={category}>{category}</option>)}</select></label>
         <label className="field-label">Urgency<select name="urgency" defaultValue={report.urgency}><option>Low</option><option>Medium</option><option>High</option></select></label>

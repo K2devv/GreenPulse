@@ -39,6 +39,7 @@ describe('toReport', () => {
       additionalInfo: 'Water is spreading toward the sidewalk.',
       photoPath: 'resident-1/photo.webp',
       photoPaths: ['resident-1/photo.webp', 'resident-1/second-photo.png'],
+      photoVisibility: 'private',
       assignedTo: 'responder-1',
       resolutionNote: undefined,
       resolvedAt: undefined,
@@ -62,6 +63,13 @@ describe('toReport', () => {
     }
 
     expect(toReport(row)).toMatchObject({ location: 'Community location', photoPath: undefined, photoPaths: [], assignedTo: undefined, observedAt: row.created_at })
+  })
+
+  it('keeps a public photo choice and treats anything else as private', () => {
+    const row = { id: 'r', title: 'Report', category: 'Waste', status: 'Verified', urgency: 'Low', description: 'Something to report.', location_label: 'Near the hall', latitude: 14.72, longitude: 121.05, created_at: '2026-11-12T08:00:00.000Z' } as const
+    expect(toReport({ ...row, photo_visibility: 'public' }).photoVisibility).toBe('public')
+    expect(toReport({ ...row, photo_visibility: null }).photoVisibility).toBe('private')
+    expect(toReport(row).photoVisibility).toBe('private')
   })
 })
 describe('attachReporterNames', () => {
