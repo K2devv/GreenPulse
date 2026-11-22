@@ -46,6 +46,7 @@ describe('guessPhotoIssue', () => {
     ['floodedStreet', 'Flooding', 'Flooded road'],
     ['smokestack', 'Pollution', 'Air pollution'],
     ['trashInDitch', 'Drainage', 'Blocked canal'],
+    ['esteroWithTrash', 'Drainage', 'Blocked canal'],
   ] as const)('reads a %s photo as %s', (photo, category, issueType) => {
     const guess = guessPhotoIssue(fixtures[photo], labels)
     expect(guess.category).toBe(category)
@@ -53,7 +54,9 @@ describe('guessPhotoIssue', () => {
     expect(guess.confidence).toBeGreaterThan(0.8)
   })
 
-  it.each(['cat', 'cleanStreet'] as const)('suggests nothing for a %s photo', (photo) => {
+  // Everyday photos that look a little like an issue: an intact manhole cover, a busy Quezon City
+  // road, smoke from a barbecue, and clouds were all once read as an issue.
+  it.each(['cat', 'cleanStreet', 'manholeCover', 'quezonCityRoad', 'barbecueGrill', 'cloudySky'] as const)('suggests nothing for a %s photo', (photo) => {
     const guess = guessPhotoIssue(fixtures[photo], labels)
     expect(guess.category).toBeUndefined()
     expect(guess.confidence).toBeLessThan(0.2)

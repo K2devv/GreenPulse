@@ -103,6 +103,7 @@ test.describe('report intake', () => {
     await upload.setInputFiles({ name: 'report.jpg', mimeType: 'image/jpeg', buffer: onePixelJpeg })
     const failed = page.getByRole('dialog', { name: "Couldn't check the photo" })
     await expect(failed).toBeVisible({ timeout: 15_000 })
+    await expect(failed.getByText("The photo checker couldn't be downloaded.")).toBeVisible()
 
     // Try again returns to the start screen to choose a photo or the form.
     await failed.getByRole('button', { name: 'Try again' }).click()
@@ -114,6 +115,30 @@ test.describe('report intake', () => {
     const dialog = page.getByRole('dialog', { name: 'What did you notice?' })
     await expect(dialog.locator('.report-photo-preview')).toHaveCount(1)
     await expect(dialog.locator('input[name="issue_type"]')).toHaveValue('')
+  })
+
+  test('asks for a reload when the photo checker itself cannot load, as after a site update', async ({ page }) => {
+    await page.route('https://huggingface.co/**', (route) => route.abort())
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Report an issue' }).click()
+    // An update replaces the checker's script, so a page opened before it finds the old file gone.
+    await page.route('**/photo-issue.worker*', (route) => route.fulfill({ status: 404, body: '' }))
+    await page.locator('.report-start-modal input[type="file"][multiple]').setInputFiles({ name: 'report.jpg', mimeType: 'image/jpeg', buffer: onePixelJpeg })
+    const failed = page.getByRole('dialog', { name: "Couldn't check the photo" })
+    await expect(failed.getByText("Part of GreenPulse didn't load.")).toBeVisible({ timeout: 15_000 })
+    await expect(failed.getByRole('button', { name: 'Reload page' })).toBeVisible()
+    await expect(failed.getByRole('button', { name: 'Try again' })).toHaveCount(0)
+    await failed.getByRole('button', { name: 'Fill in the form' }).click()
+    await expect(page.getByRole('dialog', { name: 'What did you notice?' }).locator('.report-photo-preview')).toHaveCount(1)
+  })
+
+  test('opens the form directly in a browser that cannot run the photo checker', async ({ page }) => {
+    // Browsers before Chrome 91 or Safari 16.4 have WebAssembly without SIMD.
+    await page.addInitScript(() => { WebAssembly.validate = () => false })
+    await page.goto('/')
+    await page.getByRole('button', { name: 'Report an issue' }).click()
+    await expect(page.getByRole('dialog', { name: 'What did you notice?' })).toBeVisible()
+    await expect(page.getByRole('dialog', { name: 'Report an issue' })).toHaveCount(0)
   })
 
   test('keeps the application in English without a language toggle', async ({ page }) => {

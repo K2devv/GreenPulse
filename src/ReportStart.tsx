@@ -1,7 +1,8 @@
-import { Check, ChevronRight, ClipboardList, ImageUp, RefreshCw, ScanLine, SearchX, ShieldCheck, Sparkles, TriangleAlert, X } from 'lucide-react'
+import { Check, ChevronRight, ClipboardList, ImageUp, RefreshCw, RotateCw, ScanLine, SearchX, ShieldCheck, Sparkles, TriangleAlert, X } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { CameraScan, ScanPoints } from './CameraScan'
 import { motionIsReduced } from './display-prefs'
+import { PHOTO_UNREADABLE_MESSAGE, photoCheckFailureOf, type PhotoCheckFailure } from './lib/photo-check-failure'
 import { PHOTO_MODEL_MEGABYTES, type PhotoIssueGuess } from './lib/photo-issue-classifier'
 import { REPORT_PHOTO_TYPES, reportPhotoProblem, type PreparedReportPhoto } from './lib/report-photos'
 import { remainingScanTime } from './lib/photo-scan'
@@ -27,7 +28,8 @@ type View =
   | { name: 'checking'; photos: PreparedReportPhoto[] }
   | { name: 'found'; photos: PreparedReportPhoto[]; guess: PhotoIssueGuess }
   | { name: 'none'; photos: PreparedReportPhoto[] }
-  | { name: 'failed'; photos: PreparedReportPhoto[] }
+  /** The checker could not run. An unreadable photo goes back to the start instead. */
+  | { name: 'failed'; photos: PreparedReportPhoto[]; failure: Exclude<PhotoCheckFailure, 'photo'> }
 
 const headings: Record<View['name'], { eyebrow: string; title: string; subtitle: string }> = {
   choose: { eyebrow: 'COMMUNITY REPORT', title: 'Report an issue', subtitle: 'Show us the problem with a photo, or fill in the form yourself.' },
@@ -36,6 +38,22 @@ const headings: Record<View['name'], { eyebrow: string; title: string; subtitle:
   found: { eyebrow: 'REPORT WITH A PHOTO', title: 'Issue found', subtitle: 'Opening the report form with the details filled in.' },
   none: { eyebrow: 'REPORT WITH A PHOTO', title: 'No issue found', subtitle: "GreenPulse couldn't spot an issue in this photo." },
   failed: { eyebrow: 'REPORT WITH A PHOTO', title: "Couldn't check the photo", subtitle: "The photo checker couldn't load right now." },
+}
+
+/** Why the check failed decides what the reporter is told and which button comes first. */
+const failedCopy: Record<Exclude<PhotoCheckFailure, 'photo'>, { subtitle: string; detail: string }> = {
+  download: {
+    subtitle: "The photo checker couldn't be downloaded.",
+    detail: `The photo checker needs a one-time ${PHOTO_MODEL_MEGABYTES} MB download. Check your connection and try again, or fill in the form yourself.`,
+  },
+  app: {
+    subtitle: "Part of GreenPulse didn't load.",
+    detail: 'This usually happens right after GreenPulse is updated, or when the connection drops. Reload the page and try again, or fill in the form yourself.',
+  },
+  device: {
+    subtitle: "This device couldn't run the photo checker.",
+    detail: 'This can happen on phones with little free memory. Fill in the form yourself instead.',
+  },
 }
 
 const pause = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
@@ -166,8 +184,13 @@ export default function ReportStart({ checker, guest, preparePhotos, onForm, onF
     try {
       const guess = await checkPhotos(photos.map((photo) => photo.file), () => run.current !== id)
       outcome = guess ? { name: 'found', photos, guess } : { name: 'none', photos }
-    } catch {
-      outcome = { name: 'failed', photos }
+    } catch (failure) {
+      const reason = photoCheckFailureOf(failure)
+      if (reason === 'photo') {
+        if (run.current === id) backToStart(PHOTO_UNREADABLE_MESSAGE)
+        return
+      }
+      outcome = { name: 'failed', photos, failure: reason }
     }
     if (run.current !== id) return
     // A quick answer waits for the sweep to finish its pass, so the check is seen happening.
@@ -175,7 +198,7 @@ export default function ReportStart({ checker, guest, preparePhotos, onForm, onF
     if (run.current === id) setView(outcome)
   }
 
-  const heading = headings[view.name]
+  const heading = view.name === 'failed' ? { ...headings.failed, subtitle: failedCopy[view.failure].subtitle } : headings[view.name]
   const photos = 'photos' in view ? view.photos : []
   const preparing = view.name === 'checking' && !photos.length
 
@@ -219,7 +242,7 @@ export default function ReportStart({ checker, guest, preparePhotos, onForm, onF
         checker={checker}
         onCapture={(photo, guess) => void readPhotos([photo], guess)}
         onFiles={(files) => void readPhotos(files)}
-        onError={() => setView({ name: 'failed', photos: [] })}
+        onError={(failure) => failure === 'photo' ? backToStart(PHOTO_UNREADABLE_MESSAGE) : setView({ name: 'failed', photos: [], failure })}
         onBack={() => backToStart()}
       />}
 
@@ -252,10 +275,12 @@ export default function ReportStart({ checker, guest, preparePhotos, onForm, onF
           <div className="report-start-result-actions"><button className="primary-button" type="button" onClick={() => backToStart()}><RefreshCw size={16} />Try again</button></div>
         </div>}
         {view.name === 'failed' && <div className="report-start-result" role="status">
-          <p>The photo checker needs a one-time download. Check your connection and try again, or fill in the form yourself{photos.length ? '. Your photo is kept' : ''}.</p>
+          <p>{failedCopy[view.failure].detail}{photos.length ? ' The form keeps your photo.' : ''}</p>
           <div className="report-start-result-actions">
-            <button className="primary-button" type="button" onClick={() => backToStart()}><RefreshCw size={16} />Try again</button>
-            <button className="secondary-button" type="button" onClick={() => onForm(photos)}><ClipboardList size={16} />Fill in the form</button>
+            {view.failure === 'download' && <button className="primary-button" type="button" onClick={() => backToStart()}><RefreshCw size={16} />Try again</button>}
+            {view.failure === 'app' && <button className="primary-button" type="button" onClick={() => window.location.reload()}><RotateCw size={16} />Reload page</button>}
+            <button className={view.failure === 'device' ? 'primary-button' : 'secondary-button'} type="button" onClick={() => onForm(photos)}><ClipboardList size={16} />Fill in the form</button>
+            {view.failure === 'device' && <button className="secondary-button" type="button" onClick={() => backToStart()}><RefreshCw size={16} />Try again</button>}
           </div>
         </div>}
       </>}

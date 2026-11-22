@@ -9,17 +9,27 @@ import {
   toModelInput,
   type PhotoIssueGuess,
 } from './lib/photo-issue-classifier'
+import { PHOTO_UNREADABLE_MESSAGE, PhotoCheckError, isPhotoCheckFailure, photoCheckFailureOf, supportsModuleWorkers, supportsWasmSimd } from './lib/photo-check-failure'
 import type { PhotoWorkerMessage, PhotoWorkerRequest } from './photo-issue.worker'
 
 /** At most this many photos of one batch are read; the first is usually the clearest. */
 const MAX_PHOTOS_CHECKED = 3
 
-/** Whether this browser can run the photo checker at all. */
+/**
+ * Whether this browser can run the photo checker at all. Older browsers (before Chrome 91 or
+ * Safari 16.4) lack WebAssembly SIMD or module workers; they go straight to the form instead of
+ * failing after the reporter picks a photo.
+ */
 export const photoCheckerSupported = typeof window !== 'undefined'
   && typeof Worker !== 'undefined'
   && typeof WebAssembly !== 'undefined'
   && typeof createImageBitmap === 'function'
   && Boolean(window.crypto?.subtle)
+  && supportsWasmSimd()
+  && supportsModuleWorkers()
+
+/** Leaves the real reason in the browser console, where the screens' short messages leave it out. */
+const logFailure = (error: PhotoCheckError) => console.warn(`GreenPulse photo checker (${error.failure}):`, error.message)
 
 /** Whether the model is already on this device, so using it costs no download. */
 export async function photoModelIsCached(): Promise<boolean> {
@@ -53,7 +63,7 @@ async function photoPixels(photo: ImageBitmapSource): Promise<Float32Array> {
     canvas.width = target
     canvas.height = target
     const context = canvas.getContext('2d', { willReadFrequently: true })
-    if (!context) throw new Error('This browser cannot read the photo.')
+    if (!context) throw new PhotoCheckError('photo', 'This browser cannot read the photo.')
     context.imageSmoothingQuality = 'high'
     let source: CanvasImageSource = bitmap
     let crop = { x, y, size }
@@ -101,23 +111,29 @@ export function usePhotoChecker(): PhotoChecker {
   const requests = useRef(new Map<number, { resolve: (guess: PhotoIssueGuess) => void; reject: (error: Error) => void }>())
   const nextRequest = useRef(0)
 
-  const failAll = useCallback((message: string) => {
-    for (const request of requests.current.values()) request.reject(new Error(message))
+  const failAll = useCallback((error: Error) => {
+    for (const request of requests.current.values()) request.reject(error)
     requests.current.clear()
   }, [])
 
   const stop = useCallback(() => {
     worker.current?.terminate()
     worker.current = undefined
-    failAll('The photo check was stopped.')
+    failAll(new Error('The photo check was stopped.'))
     setDownloadProgress(undefined)
   }, [failAll])
 
   const getWorker = useCallback(() => {
     if (worker.current) return worker.current
     const created = new Worker(new URL('./photo-issue.worker.ts', import.meta.url), { type: 'module' })
+    // Set once the worker's script has loaded; an error before that means the script never arrived.
+    let loaded = false
     created.onmessage = (event: MessageEvent<PhotoWorkerMessage>) => {
       const message = event.data
+      if (message.type === 'ready') {
+        loaded = true
+        return
+      }
       if (message.type === 'progress') {
         const progress = message.total ? message.loaded / message.total : 0
         setDownloadProgress(progress >= 1 ? undefined : progress)
@@ -126,12 +142,24 @@ export function usePhotoChecker(): PhotoChecker {
       const request = requests.current.get(message.id)
       if (!request) return
       requests.current.delete(message.id)
-      if (message.type === 'error') setDownloadProgress(undefined)
-      if (message.type === 'result') request.resolve(message.guess)
-      else request.reject(new Error(message.message))
+      if (message.type === 'result') {
+        request.resolve(message.guess)
+        return
+      }
+      setDownloadProgress(undefined)
+      const error = new PhotoCheckError(isPhotoCheckFailure(message.failure) ? message.failure : 'device', message.message)
+      logFailure(error)
+      request.reject(error)
     }
-    created.onerror = () => {
-      failAll('The photo checker could not start in this browser.')
+    // Before the worker's script has loaded, an error means the file did not arrive: the site was
+    // updated while this page was open (the old file is gone), or the connection to GreenPulse
+    // dropped. A reload fixes both. After it loaded, the model crashed on this device.
+    created.onerror = (event) => {
+      const error = loaded
+        ? new PhotoCheckError('device', event.message || 'The photo checker stopped unexpectedly.')
+        : new PhotoCheckError('app', 'The photo checker script could not be loaded.')
+      logFailure(error)
+      failAll(error)
       created.terminate()
       if (worker.current === created) worker.current = undefined
       setDownloadProgress(undefined)
@@ -141,7 +169,14 @@ export function usePhotoChecker(): PhotoChecker {
   }, [failAll])
 
   const classify = useCallback(async (photo: ImageBitmapSource) => {
-    const pixels = await photoPixels(photo)
+    let pixels: Float32Array
+    try {
+      pixels = await photoPixels(photo)
+    } catch (error) {
+      // createImageBitmap throws a DOMException for a file the browser cannot decode.
+      if (error instanceof PhotoCheckError) throw error
+      throw new PhotoCheckError('photo', error instanceof Error ? error.message : 'The photo could not be read.')
+    }
     return new Promise<PhotoIssueGuess>((resolve, reject) => {
       const id = nextRequest.current += 1
       requests.current.set(id, { resolve, reject })
@@ -159,14 +194,14 @@ export function usePhotoChecker(): PhotoChecker {
         guess = await classify(photo)
       } catch (error) {
         // A photo the browser cannot decode is skipped; a checker that cannot run is an error.
-        if (error instanceof DOMException || (error instanceof Error && error.message === 'This browser cannot read the photo.')) continue
+        if (photoCheckFailureOf(error) === 'photo') continue
         throw error
       }
       read += 1
       guesses.push(guess)
       if (guess.category && guess.confidence >= CONFIDENT_GUESS) break
     }
-    if (!read && photos.length) throw new Error('This photo could not be read. Try another photo.')
+    if (!read && photos.length) throw new PhotoCheckError('photo', PHOTO_UNREADABLE_MESSAGE)
     return pickPhotoGuess(guesses)
   }, [classify])
 
