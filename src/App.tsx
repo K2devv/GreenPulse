@@ -48,8 +48,9 @@ import { Capacitor } from '@capacitor/core'
 import { App as NativeApp } from '@capacitor/app'
 import { Geolocation } from '@capacitor/geolocation'
 import { topBackLayer, topEscapeLayer, type BackLayer } from './lib/native-back'
-import { attachReporterNames, getAuthRedirectUrl, isSupabaseConfigured, reporterIdsOf, supabase, toReport, type EnvironmentalFollowUp, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
+import { attachReporterNames, getAuthRedirectUrl, isSupabaseConfigured, reporterIdsOf, sessionTokens, supabase, toReport, type EnvironmentalFollowUp, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
 import { apiUrl } from './lib/api-url'
+import { fetchWithSession } from './lib/session-fetch'
 import { THEME_CHOICE_KEY, oppositeTheme, readThemeChoice, resolveTheme, type Theme } from './lib/theme-preference'
 import { normalizePhoneNumber } from './lib/phone-number'
 import { CONFIRMATION_RESEND_COOLDOWN_SECONDS, describeAuthError, isExistingAccountSignUp, secondsUntilResend } from './lib/auth-errors'
@@ -354,11 +355,16 @@ function revealSection(selector: string) {
   }))
 }
 
-async function deliverNotificationEmails(reportId: string, accessToken: string) {
+/** Calls a GreenPulse API route with a current sign-in token (renewed first if it expired). */
+function callApi(path: string, init: RequestInit) {
+  return sessionTokens ? fetchWithSession(apiUrl(path), init, sessionTokens) : fetch(apiUrl(path), init)
+}
+
+async function deliverNotificationEmails(reportId: string) {
   try {
-    await fetch(apiUrl('/api/send-notification-emails'), {
+    await callApi('/api/send-notification-emails', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reportId }),
     })
   } catch {
@@ -2011,9 +2017,9 @@ function App() {
   }
 
   async function sendReportConfirmation(reportId: string) {
-    const response = await fetch(apiUrl('/api/confirm-report'), {
+    const response = await callApi('/api/confirm-report', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reportId }),
     })
     const result = await response.json().catch(() => ({})) as { error?: string }
@@ -2072,7 +2078,7 @@ function App() {
     const saved = { report_id: selectedOwnReport.id, feedback, message: feedbackNote.trim() || null, updated_at: new Date().toISOString() } as ResidentFeedback
     setResidentFeedback((current) => ({ ...current, [selectedOwnReport.id]: saved }))
     setFeedbackNote('')
-    void deliverNotificationEmails(selectedOwnReport.id, session.access_token)
+    void deliverNotificationEmails(selectedOwnReport.id)
   }
 
   async function createEnvironmentalFollowup(hotspot: RecurringHotspot) {
@@ -2608,7 +2614,7 @@ function App() {
         photoVisibility: photoPreviews.length ? photoVisibility : 'private',
       }
     }
-    if (supabase && session) void deliverNotificationEmails(report.id, session.access_token)
+    if (supabase && session) void deliverNotificationEmails(report.id)
     void getLocalReportDraft().then((savedDraft) => {
       if (savedDraft?.submissionId === reportSubmissionId) {
         return deleteLocalReportDraft().then(() => {
@@ -2668,9 +2674,9 @@ function App() {
     setResponderBusy(true)
     setResponderMessage('')
     try {
-      const response = await fetch(apiUrl('/api/admin-create-responder'), {
+      const response = await callApi('/api/admin-create-responder', {
         method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ displayName, email }),
       })
       const result = await response.json() as { displayName?: string; error?: string }
@@ -2756,10 +2762,7 @@ function App() {
     setEscalationRunBusy(true)
     setSlaEscalationMessage('Checking open reports against configured deadlines…')
     try {
-      const response = await fetch(apiUrl('/api/process-escalations'), {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session.access_token}` },
-      })
+      const response = await callApi('/api/process-escalations', { method: 'POST' })
       const result = await response.json().catch(() => null) as { error?: string; stagesCreated?: number; emailFailures?: number } | null
       if (!result) throw new Error('The escalation service is unavailable. Restart the app server and try again.')
       if (!response.ok) throw new Error(result.error || 'Escalation check failed.')
@@ -2782,9 +2785,9 @@ function App() {
     let firstError = ''
     for (const reportId of reportIds) {
       try {
-        const response = await fetch(apiUrl('/api/send-notification-emails'), {
+        const response = await callApi('/api/send-notification-emails', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ reportId }),
         })
         if (!response.ok) {
@@ -2809,7 +2812,7 @@ function App() {
     if (!supabase || !session) return
     const { data } = await supabase.from('report_events').select('id, event_type, message, created_at').eq('report_id', reportId).order('created_at', { ascending: false })
     setReportEvents((data ?? []) as ReportEvent[])
-    void deliverNotificationEmails(reportId, session.access_token)
+    void deliverNotificationEmails(reportId)
   }
 
   // Reloads the timeline when a message arrives from someone else. No emails: the sender delivers them.
@@ -2848,7 +2851,7 @@ function App() {
       return error?.message ?? 'The update could not be saved.'
     }
     const updatedReport = toReport(data as ReportRow) as Report
-    void deliverNotificationEmails(updatedReport.id, session.access_token)
+    void deliverNotificationEmails(updatedReport.id)
     setSavedStaffReportDetail(updatedReport)
     setReports((current) => current.map((report) => report.id === updatedReport.id ? { ...report, ...updatedReport } : report))
     setStaffQueue((current) => current.map((report) => report.id === updatedReport.id ? { ...report, ...updatedReport } : report))
@@ -3349,7 +3352,7 @@ function App() {
       {celebrating && <SuccessBurst message="Report submitted. Thank you!" onDone={() => setCelebrating(false)} />}
       <ViewLoader visible={viewTransition.loaderVisible} label={activeViewLabel} dark={theme === 'dark'} />
 
-      {followUpReport && session && <ResidentReportModal report={followUpReport} userId={session.user.id} onClose={() => setFollowUpId(undefined)} onPosted={() => void deliverNotificationEmails(followUpReport.id, session.access_token)} />}
+      {followUpReport && session && <ResidentReportModal report={followUpReport} userId={session.user.id} onClose={() => setFollowUpId(undefined)} onPosted={() => void deliverNotificationEmails(followUpReport.id)} />}
 
       {reporting && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReporting(false) }}>
         {reportStep === 'start' ? <Suspense fallback={<section className="report-modal report-start-modal is-loading" role="dialog" aria-modal="true" aria-label="Report an issue"><span className="search-spinner" aria-label="Loading" /></section>}>

@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js'
 import { toPhotoVisibility } from './report-photo-access'
+import type { SessionTokens } from './session-fetch'
 
 const environment = (import.meta as ImportMeta & { env?: Record<string, string | undefined> }).env ?? {}
 const supabaseUrl = environment.VITE_SUPABASE_URL
@@ -7,6 +8,15 @@ const supabaseAnonKey = environment.VITE_SUPABASE_ANON_KEY
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey)
 export const supabase = isSupabaseConfigured ? createClient(supabaseUrl!, supabaseAnonKey!) : null
+
+/**
+ * The signed-in user's access token for API calls. `getSession()` renews an expired token before
+ * returning it; `refreshSession()` forces a renewal. Null in demo mode.
+ */
+export const sessionTokens: SessionTokens | null = supabase ? {
+  current: async () => (await supabase.auth.getSession()).data.session?.access_token ?? null,
+  refresh: async () => (await supabase.auth.refreshSession()).data.session?.access_token ?? null,
+} : null
 
 export function getAuthRedirectUrl() {
   return environment.VITE_APP_URL || window.location.origin
