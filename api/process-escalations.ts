@@ -36,7 +36,8 @@ async function handler(request: Request): Promise<Response> {
       auth: { autoRefreshToken: false, persistSession: false },
     })
     const { data: { user }, error: authError } = await authClient.auth.getUser(token)
-    if (authError || !user) return jsonResponse({ error: 'Sign in as an administrator to run this check.' }, 401)
+    // A token that fails here is usually an expired one, not a non-admin: the role is checked next.
+    if (authError || !user) return jsonResponse({ error: 'Your session expired. Sign in again, then check deadlines.' }, 401)
     const { data: profile, error: profileError } = await authClient.from('profiles').select('role').eq('id', user.id).maybeSingle()
     if (profileError || profile?.role !== 'admin') return jsonResponse({ error: 'Only administrators can run this check.' }, 403)
   }
