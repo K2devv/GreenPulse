@@ -27,7 +27,7 @@ const copy = {
   optionalTracking: 'Optional · tracking code and status updates',
   cancel: 'Cancel',
   submitReport: 'Submit report',
-  publicConsent: 'I understand that the report title, category, issue type, urgency, description, observation time, status, barangay, submission and update times, and approximate location may appear on the public community map. If verified, my display name may also appear. My email, phone number, additional information, and uploaded photos stay private. Authorized staff can view full report details. I will not include private personal information in the public report title or description.',
+  publicConsent: 'I understand that the report title, category, issue type, urgency, description, observation time, status, barangay, submission and update times, and approximate location may appear on the public community map. If verified, my display name may also appear. My email, phone number, and additional information stay private. Uploaded photos stay private unless I make them public, in which case anyone can see them on the map once staff verify the report. Authorized staff can view full report details. I will not include private personal information in the public report title or description.',
   retentionNotice: 'Reports and photos are retained until the participating Quezon City office sets an approved retention policy.',
   incidentMap: 'Incident map',
   recentReports: 'Recent reports',

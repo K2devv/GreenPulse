@@ -255,7 +255,7 @@ async function handler(request: Request): Promise<Response> {
     barangay: barangay || null,
     photo_path: photos[0]?.path ?? null,
     photo_paths: photos.map((photo) => photo.path),
-    consent_version: '2026-10-v2',
+    consent_version: '2026-11-v3',
   })
   if (reportError) {
     if (uploadedPhotoPaths.length) await admin.storage.from('report-photos').remove(uploadedPhotoPaths)

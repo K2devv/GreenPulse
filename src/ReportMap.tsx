@@ -10,6 +10,7 @@ import { clusterBubbleSize, clusterClearance } from './lib/map-pin-clearance'
 import { buildMapStyle, VECTOR_SOURCE_ID, type Basemap, type HeatCell, type MapTheme } from './lib/map-style'
 import type { Bounds, Padding } from './lib/map-viewport'
 import { ReportPhotoStrip } from './ReportPhotoStrip'
+import type { ReportPhotos } from './lib/report-photo-access'
 
 /** A report as the incident map draws it. */
 export type MapReport = {
@@ -55,7 +56,7 @@ type ReportMapProps = {
   onSelect: (id: string) => void
   onDiscuss: (id: string) => void
   /** Resolves to the reporter's photos this viewer may see, shown at the top of the popup. Empty shows none. */
-  loadPhotos?: (reportId: string) => Promise<string[]>
+  loadPhotos?: (reportId: string) => Promise<ReportPhotos>
 }
 
 type View = { zoom: number; bounds: Bounds }

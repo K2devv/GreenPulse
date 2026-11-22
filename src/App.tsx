@@ -32,6 +32,8 @@ import {
   Users,
   Search,
   ShieldCheck,
+  Globe,
+  Lock,
   Siren,
   Sparkles,
   Sun,
@@ -61,7 +63,7 @@ import { usePhotoIssueSuggestion } from './usePhotoIssueSuggestion'
 import { photoCheckerSupported, usePhotoChecker } from './usePhotoChecker'
 import type { PhotoIssueGuess } from './lib/photo-issue-classifier'
 import { isReportCategory, issueTypesByCategory } from './lib/report-categories'
-import { SIGNED_PHOTO_RENEW_MS, SIGNED_PHOTO_SECONDS, canViewReportPhotos, knownPhotoPaths, photoPathList } from './lib/report-photo-access'
+import { SIGNED_PHOTO_RENEW_MS, SIGNED_PHOTO_SECONDS, canViewReportPhotos, knownPhotoPaths, photoPathList, photoSharing, toPhotoVisibility, type PhotoVisibility, type ReportPhotos } from './lib/report-photo-access'
 import { StatReportsModal, type StatReportRow } from './StatReportsModal'
 import { AdminBarChart, AdminTrendChart, ChartEmpty, ChartSkeleton } from './AdminCharts'
 import { AdminSectionNav, adminTabId, type AdminSection } from './AdminSectionNav'
@@ -139,6 +141,8 @@ type Report = {
   observedAt?: string
   additionalInfo?: string
   photoPaths?: string[]
+  /** Who can see the reporter's photos: only staff and the reporter, or everyone once verified. */
+  photoVisibility?: PhotoVisibility
   status: Status
   urgency: Urgency
   description: string
@@ -633,6 +637,7 @@ function App() {
   const [formNotice, setFormNotice] = useState('')
   const [formStartedAt, setFormStartedAt] = useState(0)
   const [photoFiles, setPhotoFiles] = useState<File[]>([])
+  const [photoVisibility, setPhotoVisibility] = useState<PhotoVisibility>('private')
   // Photo suggestions: set once the reporter picks a category themself, which a suggestion never overrides.
   const categoryChosen = useRef(false)
   // The text a photo suggestion last wrote into each field, so a later suggestion replaces only its own text.
@@ -1447,42 +1452,48 @@ function App() {
   useFlip(staffQueueRef, staffQueue.map((report) => report.id).join('|'))
   // Every report the app has loaded, each once. A report in both lists keeps its staff queue row, which has more fields.
   const allKnownReports = useMemo(() => [...new Map([...reports, ...staffQueue].map((report) => [report.id, report])).values()], [reports, staffQueue])
-  // The reporter's photos for a map preview. Photos are private (see lib/report-photo-access): only
-  // staff and the reporter get them, as short-lived signed links, fetched when a preview opens.
+  // The reporter's photos for a map preview, as short-lived signed links fetched when a preview opens.
+  // Private photos go only to staff and the reporter; public ones to everyone once the report is
+  // verified (see lib/report-photo-access).
   const photoContext = useRef({ reports: allKnownReports, userId: session?.user.id, role: profile?.role })
   photoContext.current = { reports: allKnownReports, userId: session?.user.id, role: profile?.role }
   // One request per report: a second caller (or React's development double effect) shares it, and
   // the signed links are reused until shortly before they expire. A failed request is not kept.
-  const photoRequests = useRef(new Map<string, { urls: Promise<string[]>; renewAt: number }>())
+  const photoRequests = useRef(new Map<string, { photos: Promise<ReportPhotos>; renewAt: number; key: string }>())
   useEffect(() => { photoRequests.current.clear() }, [session?.user.id, profile?.role])
-  const loadReportPhotos = useCallback((reportId: string): Promise<string[]> => {
+  const loadReportPhotos = useCallback((reportId: string): Promise<ReportPhotos> => {
     const { reports: known, userId, role } = photoContext.current
     const report = known.find((item) => item.id === reportId)
+    const none: ReportPhotos = { urls: [], sharing: report ? photoSharing(report) : 'private' }
     // Demo mode keeps a report's first photo on this device.
-    if (!supabase) return Promise.resolve(report?.image ? [report.image] : [])
-    if (!canViewReportPhotos({ userId, role }, { reporterId: report?.reporterId })) return Promise.resolve([])
+    if (!supabase) return Promise.resolve(report?.image ? { urls: [report.image], sharing: photoSharing(report) } : none)
+    if (!canViewReportPhotos({ userId, role }, report ?? {})) return Promise.resolve(none)
+    // A change of status or visibility (a report verified, or its photos made private) fetches again.
+    const key = report ? `${report.status}|${report.photoVisibility ?? ''}` : ''
     const cached = photoRequests.current.get(reportId)
-    if (cached && cached.renewAt > Date.now()) return cached.urls
+    if (cached && cached.key === key && cached.renewAt > Date.now()) return cached.photos
     const client = supabase
     const requests = photoRequests.current
-    const urls = (async () => {
+    const photos = (async (): Promise<ReportPhotos> => {
       let paths = report ? knownPhotoPaths(report) : undefined
+      let sharing = none.sharing
       if (paths === undefined) {
-        const { data, error } = await client.from('reports').select('photo_path, photo_paths').eq('id', reportId).maybeSingle()
+        const { data, error } = await client.from('reports').select('photo_path, photo_paths, photo_visibility, status').eq('id', reportId).maybeSingle()
         if (error) throw error
-        if (!data) return []
+        if (!data) return none
         paths = photoPathList(data.photo_paths as string[] | null, data.photo_path as string | null)
+        sharing = photoSharing({ photoVisibility: toPhotoVisibility(data.photo_visibility), status: data.status as string })
       }
-      if (!paths.length) return []
+      if (!paths.length) return { urls: [], sharing }
       const { data: signed, error } = await client.storage.from('report-photos').createSignedUrls(paths, SIGNED_PHOTO_SECONDS)
       if (error) throw error
-      return (signed ?? []).flatMap((entry) => entry.signedUrl ? [entry.signedUrl] : [])
+      return { urls: (signed ?? []).flatMap((entry) => entry.signedUrl ? [entry.signedUrl] : []), sharing }
     })().catch(() => {
       requests.delete(reportId)
-      return [] as string[]
+      return none
     })
-    requests.set(reportId, { urls, renewAt: Date.now() + SIGNED_PHOTO_SECONDS * 1000 - SIGNED_PHOTO_RENEW_MS })
-    return urls
+    requests.set(reportId, { photos, renewAt: Date.now() + SIGNED_PHOTO_SECONDS * 1000 - SIGNED_PHOTO_RENEW_MS, key })
+    return photos
   }, [])
   const changedStatuses = useStatusChanges(allKnownReports)
   const [paletteOpen, setPaletteOpen] = useState(false)
@@ -2187,6 +2198,7 @@ function App() {
     setBarangayAutofill('')
     setPhotoPreviews([])
     setPhotoFiles([])
+    setPhotoVisibility('private')
     setObservedAt(toLocalDateTimeInput(new Date()))
     setLocationQuery('')
     setLocationSuggestions([])
@@ -2259,6 +2271,7 @@ function App() {
       const prepared = await Promise.all(draft.photos.map((photo) => prepareReportPhoto(photo, Boolean(isSupabaseConfigured && !session))))
       setPhotoFiles(prepared.map((photo) => photo.file))
       setPhotoPreviews(prepared.map((photo) => photo.preview))
+      setPhotoVisibility(draft.formValues.photos_public === 'on' ? 'public' : 'private')
       autoSubmitAfterRestore.current = automatic
       setPendingDraftRestore(draft)
       setReporting(true)
@@ -2491,7 +2504,8 @@ function App() {
         longitude: location[1],
         photo_path: photoPaths[0] ?? null,
         photo_paths: photoPaths,
-        consent_version: '2026-10-v2',
+        photo_visibility: photoPaths.length ? photoVisibility : 'private',
+        consent_version: '2026-11-v3',
       }
       let { data, error } = await supabase.from('reports').insert({ ...newReport, barangay: barangay || null }).select('*').single()
       // Keep submissions working if the barangay migration has not been applied yet.
@@ -2573,6 +2587,7 @@ function App() {
         reporterName: 'Guest reporter',
         image: photoPreviews[0],
         photoPaths: [],
+        photoVisibility: 'private',
       }
     } else {
       report = {
@@ -2590,6 +2605,7 @@ function App() {
         barangay: barangay || undefined,
         createdAt: new Date().toISOString(),
         image: photoPreviews[0],
+        photoVisibility: photoPreviews.length ? photoVisibility : 'private',
       }
     }
     if (supabase && session) void deliverNotificationEmails(report.id, session.access_token)
@@ -3415,6 +3431,17 @@ function App() {
             <h3 className="form-section-title"><span>3</span>{t('photo')}</h3>
             <div className="photo-row"><label className="upload-button"><Camera size={15} />{photoFiles.length ? `${t('addPhotos')} (${photoFiles.length}/${MAX_REPORT_PHOTOS})` : t('addPhotos')}<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => { void handlePhotos(event.target.files); event.currentTarget.value = '' }} /></label><span>Optional · up to {MAX_REPORT_PHOTOS} JPEG, PNG, or WebP photos · max {isSupabaseConfigured && !session ? '2.5 MB each for guests' : '5 MB each'} · compressed before upload</span></div>
             {photoPreviews.length > 0 && <div className="report-photo-previews">{photoPreviews.map((preview, index) => <div className="report-photo-preview" key={`${index}-${preview.slice(-24)}`}><img className="photo-preview" src={preview} alt={`Selected report attachment ${index + 1}`} /><button className="remove-photo" type="button" aria-label={`Remove report photo ${index + 1}`} onClick={() => { setPhotoPreviews((current) => current.filter((_, photoIndex) => photoIndex !== index)); setPhotoFiles((current) => current.filter((_, photoIndex) => photoIndex !== index)) }}><X size={13} /> Remove</button></div>)}</div>}
+            {/* Off keeps the photos private; on shares them publicly once the report is verified. */}
+            {photoFiles.length > 0 && (session || !isSupabaseConfigured) && <div className="photo-visibility">
+              <label className={`photo-visibility-toggle${photoVisibility === 'public' ? ' is-public' : ''}`}>
+                <span className="photo-visibility-icon" aria-hidden="true">{photoVisibility === 'public' ? <Globe size={16} /> : <Lock size={16} />}</span>
+                <span className="photo-visibility-copy"><b>Make photos public</b><small id="photo-visibility-state">{photoVisibility === 'public' ? 'Public: anyone on the map, guests included, can see them once staff verify the report.' : 'Private: only you, responders and admins can see them.'}</small></span>
+                <input type="checkbox" role="switch" name="photos_public" checked={photoVisibility === 'public'} onChange={(event) => setPhotoVisibility(event.target.checked ? 'public' : 'private')} aria-describedby="photo-visibility-state" />
+                <i aria-hidden="true" />
+              </label>
+              {photoVisibility === 'public' && <p className="workflow-hint" role="status">Make sure your photos don't show faces, plate numbers or anything else you don't want to share.</p>}
+            </div>}
+            {photoFiles.length > 0 && isSupabaseConfigured && !session && <p className="workflow-hint photo-visibility-note"><Lock size={13} aria-hidden="true" /> Guest photos stay private: only responders and admins see them.</p>}
             <PhotoIssueSuggestion
               state={photoSuggestion.state}
               applied={photoGuessApplied}
