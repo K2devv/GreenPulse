@@ -1,3 +1,4 @@
+import { t } from './i18n'
 /**
  * Zoom and pan for the photo viewer. Points are in CSS pixels measured from the middle of the
  * stage; `x` and `y` move the middle of the photo, and `scale` is relative to the photo fitted
@@ -66,6 +67,6 @@ export function stepZoom(scale: number, direction: 1 | -1): number {
 
 /** The zoom readout: "Fit" for the whole photo, otherwise "1.5×", "2×". */
 export function zoomLabel(scale: number): string {
-  if (scale <= MIN_ZOOM + 0.01) return 'Fit'
+  if (scale <= MIN_ZOOM + 0.01) return t('Fit')
   return `${Math.round(scale * 10) / 10}×`
 }

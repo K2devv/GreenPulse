@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { MapPin, PenLine, Radar, X } from 'lucide-react'
 import type { CSSProperties } from 'react'
+import { t } from './lib/i18n'
 
 const STEPS = [
   { icon: MapPin, title: 'Spot it', text: 'See what neighbours already reported nearby.' },
@@ -14,16 +15,16 @@ const isApplePlatform = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPo
 export function WelcomeTour({ onDismiss, onSeen }: { onDismiss: () => void; onSeen: () => void }) {
   // Showing the introduction once is enough: it will not reappear on the next visit.
   useEffect(() => { onSeen() }, [onSeen])
-  return <section className="welcome-tour" aria-label="How GreenPulse works">
+  return <section className="welcome-tour" aria-label={t('How GreenPulse works')}>
     <div className="welcome-tour-head">
-      <h2>How GreenPulse works</h2>
-      <span className="welcome-tip">Tip: press <kbd>{isApplePlatform ? '⌘' : 'Ctrl'}</kbd> <kbd>K</kbd> to search and jump anywhere.</span>
-      <button className="icon-button" type="button" onClick={onDismiss} aria-label="Dismiss the introduction"><X size={15} /></button>
+      <h2>{t('How GreenPulse works')}</h2>
+      <span className="welcome-tip">{t('Tip: press')} <kbd>{isApplePlatform ? '⌘' : 'Ctrl'}</kbd> <kbd>K</kbd> {t('to search and jump anywhere.')}</span>
+      <button className="icon-button" type="button" onClick={onDismiss} aria-label={t('Dismiss the introduction')}><X size={15} /></button>
     </div>
     <ol className="welcome-steps">
       {STEPS.map((step, index) => <li key={step.title} style={{ '--i': index } as CSSProperties}>
         <span className="welcome-step-icon"><step.icon size={16} aria-hidden="true" /></span>
-        <span><strong>{index + 1}. {step.title}</strong><small>{step.text}</small></span>
+        <span><strong>{index + 1}. {t(step.title)}</strong><small>{t(step.text)}</small></span>
       </li>)}
     </ol>
   </section>

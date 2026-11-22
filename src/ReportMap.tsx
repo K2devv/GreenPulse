@@ -11,6 +11,8 @@ import { buildMapStyle, VECTOR_SOURCE_ID, type Basemap, type HeatCell, type MapT
 import type { Bounds, Padding } from './lib/map-viewport'
 import { ReportPhotoStrip } from './ReportPhotoStrip'
 import type { ReportPhotos } from './lib/report-photo-access'
+import { t } from './lib/i18n'
+import { translateServerText } from './lib/server-text'
 
 /** A report as the incident map draws it. */
 export type MapReport = {
@@ -320,9 +322,9 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
     if (popupColor) popupRef.current?.getElement()?.style.setProperty('--pin-color', popupColor)
   }, [popupColor, popupId])
 
-  if (failed) return <MapUnavailable detail="This browser or device could not start the map. You can still browse and submit reports." />
+  if (failed) return <MapUnavailable detail={t('This browser or device could not start the map. You can still browse and submit reports.')} />
 
-  return <div className={`map-canvas ${ready ? 'is-ready' : ''}`} role="region" aria-label="Incident map of District 5">
+  return <div className={`map-canvas ${ready ? 'is-ready' : ''}`} role="region" aria-label={t('Incident map of District 5')}>
     <MapView
       ref={mapRef}
       mapLib={mapLib}
@@ -368,7 +370,7 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
           <MapPin
             color={report.color}
             icon={report.icon}
-            label={`${report.title}. ${report.category} report, ${report.status}${report.urgent ? ', high urgency' : ''}.`}
+            label={`${report.title}. ${t('{category} report, {status}', { category: t(report.category), status: t(report.status) })}${report.urgent ? `, ${t('high urgency')}` : ''}.`}
             title={report.title}
             status={report.status}
             urgent={report.urgent}
@@ -405,15 +407,15 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
             }}
           />}
           <header>
-            <span className="map-popup-category"><popupReport.icon size={13} aria-hidden="true" />{popupReport.category}</span>
-            <span className={`status-pill status-${statusSlug(popupReport.status)}`}><i />{popupReport.status}</span>
-            <button className="icon-button map-popup-close" type="button" onClick={() => setPopupId(undefined)} aria-label="Close report preview"><X size={14} /></button>
+            <span className="map-popup-category"><popupReport.icon size={13} aria-hidden="true" />{t(popupReport.category)}</span>
+            <span className={`status-pill status-${statusSlug(popupReport.status)}`}><i />{t(popupReport.status)}</span>
+            <button className="icon-button map-popup-close" type="button" onClick={() => setPopupId(undefined)} aria-label={t('Close report preview')}><X size={14} /></button>
           </header>
           <strong>{popupReport.title}</strong>
           <small><MapPinIcon size={12} aria-hidden="true" />{popupReport.place} · {popupReport.createdLabel}</small>
-          <small><UserRound size={12} aria-hidden="true" />Reported by {popupReport.reporterName || 'Community resident'}</small>
+          <small><UserRound size={12} aria-hidden="true" />{t('Reported by {name}', { name: popupReport.reporterName ? translateServerText(popupReport.reporterName) : t('Community resident') })}</small>
           <p>{popupReport.description}</p>
-          <button className="popup-discussion-button" type="button" onClick={() => onDiscuss(popupReport.id)}><MessageSquare size={12} aria-hidden="true" /> Comments and discussion</button>
+          <button className="popup-discussion-button" type="button" onClick={() => onDiscuss(popupReport.id)}><MessageSquare size={12} aria-hidden="true" /> {t('Comments and discussion')}</button>
         </article>
       </Popup>}
     </MapView>

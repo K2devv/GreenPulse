@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent } from 'react'
 import { ArrowLeft, Check, Mail, RotateCw } from 'lucide-react'
 import { OTP_CODE_LENGTH, clearDigit, codeValue, emptyCode, fillDigits, formatCountdown, isCodeComplete } from './lib/otp-code'
+import { t, tn } from './lib/i18n'
 
 export type CodeStatus = 'waiting' | 'verifying' | 'error' | 'success'
 
@@ -114,15 +115,15 @@ export function EmailCodeStep({ email, status, errorMessage, errorNonce, notice,
       <span className="email-code-spark" />
       <span className="email-code-spark" />
     </div>
-    <p className="eyebrow">{purpose === 'recovery' ? 'RESET YOUR PASSWORD' : 'VERIFY YOUR EMAIL'}</p>
-    <h2 id="auth-title">{status === 'success' ? (purpose === 'recovery' ? 'Code accepted' : 'Email confirmed') : 'Enter your 6-digit code'}</h2>
+    <p className="eyebrow">{purpose === 'recovery' ? t('RESET YOUR PASSWORD') : t('VERIFY YOUR EMAIL')}</p>
+    <h2 id="auth-title">{status === 'success' ? (purpose === 'recovery' ? t('Code accepted') : t('Email confirmed')) : t('Enter your 6-digit code')}</h2>
     <p className="email-code-lead">{status === 'success'
-      ? (purpose === 'recovery' ? 'Next, choose a new password.' : 'Your account is ready. Signing you in…')
+      ? (purpose === 'recovery' ? t('Next, choose a new password.') : t('Your account is ready. Signing you in…'))
       : purpose === 'recovery'
-        ? <>If an account uses <strong>{email}</strong>, we sent it a code. It can take a minute to arrive; check your spam folder too.</>
-        : <>We sent a code to <strong>{email}</strong>. It can take a minute to arrive; check your spam folder too.</>}</p>
+        ? <>{t('If an account uses this email, we sent it a code:')} <strong>{email}</strong>. {t('It can take a minute to arrive; check your spam folder too.')}</>
+        : <>{t('We sent a code to')} <strong>{email}</strong>. {t('It can take a minute to arrive; check your spam folder too.')}</>}</p>
 
-    <div className="email-code-boxes" role="group" aria-label="6-digit confirmation code" key={shake} data-shake={shake > 0 ? 'true' : undefined}>
+    <div className="email-code-boxes" role="group" aria-label={t('6-digit confirmation code')} key={shake} data-shake={shake > 0 ? 'true' : undefined}>
       {digits.map((digit, index) => <input
         key={index}
         ref={(element) => { inputs.current[index] = element }}
@@ -134,7 +135,7 @@ export function EmailCodeStep({ email, status, errorMessage, errorNonce, notice,
         autoComplete={index === 0 ? 'one-time-code' : 'off'}
         maxLength={OTP_CODE_LENGTH}
         value={digit}
-        aria-label={`Digit ${index + 1} of ${OTP_CODE_LENGTH}`}
+        aria-label={t('Digit {number} of {total}', { number: index + 1, total: OTP_CODE_LENGTH })}
         aria-invalid={status === 'error' || undefined}
         disabled={locked}
         onKeyDown={(event) => onKeyDown(event, index)}
@@ -145,24 +146,24 @@ export function EmailCodeStep({ email, status, errorMessage, errorNonce, notice,
     </div>
 
     <div className="email-code-status" aria-live="polite">
-      {status === 'verifying' ? <span className="email-code-checking"><span className="email-code-spinner" aria-hidden="true" />Checking your code…</span>
-        : status === 'success' ? <span className="email-code-done"><Check size={15} aria-hidden="true" />Confirmed</span>
+      {status === 'verifying' ? <span className="email-code-checking"><span className="email-code-spinner" aria-hidden="true" />{t('Checking your code…')}</span>
+        : status === 'success' ? <span className="email-code-done"><Check size={15} aria-hidden="true" />{t('Confirmed')}</span>
           : status === 'error' && errorMessage ? <span className="email-code-error" role="alert">{errorMessage}</span>
             : notice ? <span className="email-code-notice">{notice}</span>
-              : <span className="email-code-waiting">{filledCount ? `${OTP_CODE_LENGTH - filledCount} more digit${OTP_CODE_LENGTH - filledCount === 1 ? '' : 's'}` : 'Waiting for your code'}<span className="email-code-dots" aria-hidden="true"><i /><i /><i /></span></span>}
+              : <span className="email-code-waiting">{filledCount ? tn('{count} more digit', '{count} more digits', OTP_CODE_LENGTH - filledCount) : t('Waiting for your code')}<span className="email-code-dots" aria-hidden="true"><i /><i /><i /></span></span>}
     </div>
 
     {status !== 'success' && <div className="email-code-footer">
       <div className="email-code-resend">
-        <span>Didn't get it?</span>
+        <span>{t('Didn\'t get it?')}</span>
         {resendSeconds > 0
-          ? <span className="email-code-countdown" aria-label={`You can request a new code in ${resendSeconds} seconds`}>
+          ? <span className="email-code-countdown" aria-label={t('You can request a new code in {seconds} seconds', { seconds: resendSeconds })}>
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle className="email-code-ring-track" cx="12" cy="12" r={RING_RADIUS} /><circle className="email-code-ring-fill" cx="12" cy="12" r={RING_RADIUS} strokeDasharray={RING_LENGTH} strokeDashoffset={ringOffset} /></svg>
-            Resend in {formatCountdown(resendSeconds)}
+            {t('Resend in {time}', { time: formatCountdown(resendSeconds) })}
           </span>
-          : <button className="text-button email-code-resend-button" type="button" onClick={onResend} disabled={resendBusy || locked}><RotateCw size={13} className={resendBusy ? 'is-spinning' : undefined} />{resendBusy ? 'Sending…' : 'Send a new code'}</button>}
+          : <button className="text-button email-code-resend-button" type="button" onClick={onResend} disabled={resendBusy || locked}><RotateCw size={13} className={resendBusy ? 'is-spinning' : undefined} />{resendBusy ? t('Sending…') : t('Send a new code')}</button>}
       </div>
-      <button className="text-button email-code-change" type="button" onClick={onChangeEmail} disabled={locked}><ArrowLeft size={13} />Use a different email</button>
+      <button className="text-button email-code-change" type="button" onClick={onChangeEmail} disabled={locked}><ArrowLeft size={13} />{t('Use a different email')}</button>
     </div>}
   </div>
 }

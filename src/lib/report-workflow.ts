@@ -1,4 +1,5 @@
 import { formatReportId } from './report-filters'
+import { t } from './i18n'
 
 export const ASSIGNABLE_STATUSES = ['Verified', 'In progress', 'Awaiting verification']
 export const VERIFICATION_STATUSES = ['Submitted', 'Under review', 'Additional information requested', 'Verified', 'Rejected', 'Duplicate']
@@ -34,7 +35,7 @@ export function resolveReportReference(input: string, reports: readonly { id: st
 }
 
 const tooShort = (note: string) => note.trim().length < MIN_NOTE_LENGTH
-const noteError = (what: string) => `Add ${what} of at least ${MIN_NOTE_LENGTH} characters.`
+const noteError = (what: string) => t('Add {what} of at least {count} characters.', { what: t(what), count: MIN_NOTE_LENGTH })
 
 export type VerificationAction = 'save' | 'verify' | 'needs_info' | 'reject' | 'duplicate'
 
@@ -50,7 +51,7 @@ export function buildVerificationUpdate(input: {
   if ((input.action === 'reject' || input.action === 'needs_info') && tooShort(note)) {
     return { error: noteError(input.action === 'reject' ? 'a rejection reason' : 'a note describing the information needed') }
   }
-  if (input.action === 'duplicate' && !input.duplicateOf) return { error: 'Enter the ID of the original report this one duplicates.' }
+  if (input.action === 'duplicate' && !input.duplicateOf) return { error: t('Enter the ID of the original report this one duplicates.') }
 
   const status = { verify: 'Verified', needs_info: 'Additional information requested', reject: 'Rejected', duplicate: 'Duplicate', save: undefined }[input.action]
   return {
@@ -75,11 +76,11 @@ export function buildAssignmentUpdate(input: {
   currentDueDate?: string
   today?: Date
 }): WorkflowResult {
-  if (!ASSIGNABLE_STATUSES.includes(input.status)) return { error: 'Verify the report before assigning it.' }
-  if (!input.responderId && !input.teamId) return { error: 'Choose a responder or a team to assign this task to.' }
+  if (!ASSIGNABLE_STATUSES.includes(input.status)) return { error: t('Verify the report before assigning it.') }
+  if (!input.responderId && !input.teamId) return { error: t('Choose a responder or a team to assign this task to.') }
   if (input.dueDate) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.dueDate)) return { error: 'Enter a valid due date.' }
-    if (input.dueDate !== input.currentDueDate && input.dueDate < localDateKey(input.today ?? new Date())) return { error: 'The due date cannot be in the past.' }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.dueDate)) return { error: t('Enter a valid due date.') }
+    if (input.dueDate !== input.currentDueDate && input.dueDate < localDateKey(input.today ?? new Date())) return { error: t('The due date cannot be in the past.') }
   }
   return {
     payload: {

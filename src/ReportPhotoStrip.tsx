@@ -3,6 +3,7 @@ import { ChevronLeft, ChevronRight, Globe, Hourglass, ImageOff, Lock } from 'luc
 import { motionIsReduced } from './display-prefs'
 import { PhotoViewer } from './PhotoViewer'
 import type { PhotoSharing, ReportPhotos } from './lib/report-photo-access'
+import { t } from './lib/i18n'
 
 type ReportPhotoStripProps = {
   reportId: string
@@ -26,7 +27,7 @@ export const PHOTO_SHARING_BADGES: Record<PhotoSharing, { label: string; title: 
 export function PhotoSharingBadge({ sharing, className }: { sharing: PhotoSharing; className: string }) {
   const badge = PHOTO_SHARING_BADGES[sharing]
   const Icon = sharing === 'private' ? Lock : sharing === 'public' ? Globe : Hourglass
-  return <span className={`${className} is-${sharing}`} title={badge.title}><Icon size={10} strokeWidth={2.6} aria-hidden="true" />{badge.label}<span className="sr-only">: {badge.title}</span></span>
+  return <span className={`${className} is-${sharing}`} title={t(badge.title)}><Icon size={10} strokeWidth={2.6} aria-hidden="true" />{t(badge.label)}<span className="sr-only">: {t(badge.title)}</span></span>
 }
 
 /**
@@ -75,27 +76,27 @@ export function ReportPhotoStrip({ reportId, load, variant, onReady, caption }: 
   }
   const mark = (set: (update: (current: ReadonlySet<number>) => ReadonlySet<number>) => void, photo: number) => set((current) => new Set(current).add(photo))
 
-  return <div className={`report-photos is-${variant}`} role="group" aria-label={count > 1 ? `${count} photos from the reporter` : 'Photo from the reporter'}>
+  return <div className={`report-photos is-${variant}`} role="group" aria-label={count > 1 ? t('{count} photos from the reporter', { count }) : t('Photo from the reporter')}>
     <div className="report-photos-track" ref={trackRef} onScroll={(event) => setIndex(Math.round(event.currentTarget.scrollLeft / Math.max(1, event.currentTarget.clientWidth)))}>
       {urls.map((url, photo) => <button
         key={url}
         type="button"
         className={`report-photo${loaded.has(photo) ? ' is-loaded' : ''}${failed.has(photo) ? ' is-failed' : ''}`}
         onClick={() => { if (!failed.has(photo)) setViewing(photo) }}
-        title={failed.has(photo) ? undefined : 'View the full photo'}
+        title={failed.has(photo) ? undefined : t('View the full photo')}
         tabIndex={photo === index ? 0 : -1}
       >
         {failed.has(photo)
-          ? <span className="report-photo-missing"><ImageOff size={18} aria-hidden="true" />Photo unavailable</span>
-          : <img src={url} alt={count > 1 ? `Photo ${photo + 1} of ${count} from the reporter` : 'Photo from the reporter'} loading={photo === 0 ? 'eager' : 'lazy'} decoding="async" draggable={false} onLoad={() => mark(setLoaded, photo)} onError={() => mark(setFailed, photo)} />}
+          ? <span className="report-photo-missing"><ImageOff size={18} aria-hidden="true" />{t('Photo unavailable')}</span>
+          : <img src={url} alt={count > 1 ? t('Photo {number} of {total} from the reporter', { number: photo + 1, total: count }) : t('Photo from the reporter')} loading={photo === 0 ? 'eager' : 'lazy'} decoding="async" draggable={false} onLoad={() => mark(setLoaded, photo)} onError={() => mark(setFailed, photo)} />}
       </button>)}
     </div>
     <PhotoSharingBadge sharing={sharing} className="report-photos-private" />
     {count > 1 && <>
       <span className="report-photos-count" aria-live="polite">{index + 1} / {count}</span>
-      <button className="report-photos-nav is-prev" type="button" onClick={() => go(index - 1)} disabled={index === 0} aria-label="Previous photo"><ChevronLeft size={16} aria-hidden="true" /></button>
-      <button className="report-photos-nav is-next" type="button" onClick={() => go(index + 1)} disabled={index === count - 1} aria-label="Next photo"><ChevronRight size={16} aria-hidden="true" /></button>
+      <button className="report-photos-nav is-prev" type="button" onClick={() => go(index - 1)} disabled={index === 0} aria-label={t('Previous photo')}><ChevronLeft size={16} aria-hidden="true" /></button>
+      <button className="report-photos-nav is-next" type="button" onClick={() => go(index + 1)} disabled={index === count - 1} aria-label={t('Next photo')}><ChevronRight size={16} aria-hidden="true" /></button>
     </>}
-    {viewing !== undefined && <PhotoViewer urls={urls} startIndex={viewing} label="Photo from the reporter" caption={caption} isPrivate={sharing !== 'public'} onClose={() => setViewing(undefined)} />}
+    {viewing !== undefined && <PhotoViewer urls={urls} startIndex={viewing} label={t('Photo from the reporter')} caption={caption} isPrivate={sharing !== 'public'} onClose={() => setViewing(undefined)} />}
   </div>
 }

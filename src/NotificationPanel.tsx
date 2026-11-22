@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { AlertTriangle, Bell, BellRing, CheckCheck, CheckCircle2, ChevronRight, Clock3, FileText, MessageSquare, RefreshCw, UserRound, X, XCircle } from 'lucide-react'
 import { motionIsReduced } from './display-prefs'
 import { badgeCount, filterNotifications, groupNotifications, notificationKind, notificationTime, type NotificationFilter, type NotificationIcon } from './lib/notification-inbox'
+import { t, useLanguage } from './lib/i18n'
+import { translateServerText } from './lib/server-text'
 
 export type PanelNotification = {
   id: number | string
@@ -40,10 +42,10 @@ export function NotificationBell({ unread, open, onToggle }: { unread: number; o
     className={`icon-button notification-toggle${open ? ' active' : ''}${unread ? ' has-unread' : ''}`}
     type="button"
     onClick={onToggle}
-    aria-label={`Notifications${unread ? `, ${unread} unread` : ''}`}
+    aria-label={unread ? t('Notifications, {count} unread', { count: unread }) : t('Notifications')}
     aria-expanded={open}
     aria-haspopup="dialog"
-    title="Notifications"
+    title={t('Notifications')}
   >
     <span className="notification-bell" key={ringKey} data-ring={ringKey > 0 ? 'true' : undefined}><Bell size={16} /></span>
     {unread > 0 && <span className="notification-count" key={`count-${unread}`}>{badgeCount(unread)}</span>}
@@ -97,33 +99,34 @@ function NotificationInbox({ notifications, unread, onSelect, onMarkAllRead, onC
     const bell = document.querySelector('.notification-toggle')?.getBoundingClientRect()
     if (panel && bell) panel.style.setProperty('--origin-x', `${Math.round(bell.left + bell.width / 2 - panel.offsetLeft)}px`)
   }, [])
-  const groups = useMemo(() => groupNotifications(filterNotifications(notifications, filter), now), [notifications, filter, now])
+  const language = useLanguage()
+  const groups = useMemo(() => groupNotifications(filterNotifications(notifications, filter), now), [notifications, filter, now, language])
   let order = 0
 
   return <>
     <div className={`notification-scrim${closing ? ' is-closing' : ''}`} role="presentation" onMouseDown={onClose} />
-    <section className={`notification-panel${closing ? ' is-closing' : ''}`} ref={panelRef} role="dialog" aria-label="Notifications" inert={closing}>
+    <section className={`notification-panel${closing ? ' is-closing' : ''}`} ref={panelRef} role="dialog" aria-label={t('Notifications')} inert={closing}>
       <header className="notification-panel-heading">
         <span className={`notification-panel-mark${unread ? ' has-unread' : ''}`} aria-hidden="true">{unread ? <BellRing size={17} /> : <Bell size={17} />}</span>
         <div className="notification-panel-title">
-          <strong>Notifications</strong>
-          <span className={`notification-unread-pill${unread ? '' : ' is-zero'}`}>{unread ? `${badgeCount(unread)} unread` : 'All caught up'}</span>
+          <strong>{t('Notifications')}</strong>
+          <span className={`notification-unread-pill${unread ? '' : ' is-zero'}`}>{unread ? t('{count} unread', { count: badgeCount(unread) }) : t('All caught up')}</span>
         </div>
         <div className="notification-panel-actions">
-          <button className="notification-mark-all" type="button" onClick={onMarkAllRead} disabled={unread === 0} title="Mark all as read"><CheckCheck size={14} /><span>Mark all read</span></button>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close notifications"><X size={15} /></button>
+          <button className="notification-mark-all" type="button" onClick={onMarkAllRead} disabled={unread === 0} title={t('Mark all as read')}><CheckCheck size={14} /><span>{t('Mark all read')}</span></button>
+          <button className="icon-button" type="button" onClick={onClose} aria-label={t('Close notifications')}><X size={15} /></button>
         </div>
       </header>
-      <div className="notification-tabs" role="tablist" aria-label="Show notifications" data-active={filter}>
+      <div className="notification-tabs" role="tablist" aria-label={t('Show notifications')} data-active={filter}>
         <span className="notification-tab-indicator" aria-hidden="true" />
-        <button role="tab" type="button" aria-selected={filter === 'all'} onClick={() => setFilter('all')}>All</button>
-        <button role="tab" type="button" aria-selected={filter === 'unread'} onClick={() => setFilter('unread')}>Unread{unread ? <b key={unread}>{badgeCount(unread)}</b> : null}</button>
+        <button role="tab" type="button" aria-selected={filter === 'all'} onClick={() => setFilter('all')}>{t('All')}</button>
+        <button role="tab" type="button" aria-selected={filter === 'unread'} onClick={() => setFilter('unread')}>{t('Unread')}{unread ? <b key={unread}>{badgeCount(unread)}</b> : null}</button>
       </div>
       <div className="notification-list" key={filter}>
         {groups.length === 0 ? <div className="notification-empty">
           <span className="notification-empty-icon" aria-hidden="true"><CheckCheck size={22} /></span>
-          <strong>{filter === 'unread' && notifications.length ? "You're all caught up" : 'No notifications yet'}</strong>
-          <span>{filter === 'unread' && notifications.length ? 'New alerts about your reports will appear here.' : 'Updates about reports you follow or handle will appear here.'}</span>
+          <strong>{filter === 'unread' && notifications.length ? t('You\'re all caught up') : t('No notifications yet')}</strong>
+          <span>{filter === 'unread' && notifications.length ? t('New alerts about your reports will appear here.') : t('Updates about reports you follow or handle will appear here.')}</span>
         </div> : groups.map((group) => <section className="notification-group" key={group.key} aria-label={group.label}>
           <h3><span>{group.label}</span><i aria-hidden="true" /><b>{group.items.length}</b></h3>
           <ul>
@@ -135,13 +138,13 @@ function NotificationInbox({ notifications, unread, onSelect, onMarkAllRead, onC
                 <button className={`notification-item tone-${kind.tone}${isNew ? ' is-new' : ''}`} type="button" onClick={() => onSelect(notification)}>
                   <span className="notification-icon" aria-hidden="true">{ICONS[kind.icon]}</span>
                   <span className="notification-copy">
-                    <strong>{notification.title}</strong>
-                    <span>{notification.message}</span>
+                    <strong>{translateServerText(notification.title)}</strong>
+                    <span>{translateServerText(notification.message)}</span>
                   </span>
                   <span className="notification-meta">
                     <time dateTime={notification.created_at}>{notificationTime(notification.created_at, now)}</time>
                     <span className="notification-state">
-                      <span className="notification-dot">{isNew && <span className="sr-only">Unread</span>}</span>
+                      <span className="notification-dot">{isNew && <span className="sr-only">{t('Unread')}</span>}</span>
                       <ChevronRight className="notification-go" size={15} aria-hidden="true" />
                     </span>
                   </span>
@@ -150,11 +153,11 @@ function NotificationInbox({ notifications, unread, onSelect, onMarkAllRead, onC
             })}
           </ul>
         </section>)}
-        {onLoadOlder && groups.length > 0 && <button className="notification-older" type="button" onClick={onLoadOlder}>Show older notifications</button>}
+        {onLoadOlder && groups.length > 0 && <button className="notification-older" type="button" onClick={onLoadOlder}>{t('Show older notifications')}</button>}
       </div>
       <footer className="notification-panel-footer">
-        <span>In-app alerts for your reports and tasks</span>
-        {onOpenSettings && <button type="button" onClick={onOpenSettings}>Email alerts</button>}
+        <span>{t('In-app alerts for your reports and tasks')}</span>
+        {onOpenSettings && <button type="button" onClick={onOpenSettings}>{t('Email alerts')}</button>}
       </footer>
     </section>
   </>

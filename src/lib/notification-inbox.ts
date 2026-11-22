@@ -1,3 +1,4 @@
+import { t, dateLocale } from './i18n'
 /** How the notification inbox labels, groups and dates notifications. */
 
 export type NotificationTone = 'danger' | 'warn' | 'success' | 'info' | 'accent' | 'neutral'
@@ -35,15 +36,15 @@ export function notificationTime(createdAt: string, now: number): string {
   const time = Date.parse(createdAt)
   if (Number.isNaN(time)) return ''
   const elapsed = Math.max(0, now - time)
-  if (elapsed < 60_000) return 'Just now'
-  if (elapsed < 60 * 60_000) return `${Math.floor(elapsed / 60_000)} min`
+  if (elapsed < 60_000) return t('Just now')
+  if (elapsed < 60 * 60_000) return t('{count} min', { count: Math.floor(elapsed / 60_000) })
   const today = startOfDay(now)
-  if (time >= today) return `${Math.floor(elapsed / (60 * 60_000))} h`
-  if (time >= today - DAY) return 'Yesterday'
+  if (time >= today) return t('{count} h', { count: Math.floor(elapsed / (60 * 60_000)) })
+  if (time >= today - DAY) return t('Yesterday')
   const date = new Date(time)
-  if (time >= today - 6 * DAY) return date.toLocaleDateString('en-US', { weekday: 'short' })
+  if (time >= today - 6 * DAY) return date.toLocaleDateString(dateLocale() ?? 'en-US', { weekday: 'short' })
   const sameYear = date.getFullYear() === new Date(now).getFullYear()
-  return date.toLocaleDateString('en-US', sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' })
+  return date.toLocaleDateString(dateLocale() ?? 'en-US', sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
 export type NotificationGroup<T> = { key: 'today' | 'yesterday' | 'week' | 'earlier'; label: string; items: T[] }
@@ -52,10 +53,10 @@ export type NotificationGroup<T> = { key: 'today' | 'yesterday' | 'week' | 'earl
 export function groupNotifications<T extends InboxItem>(items: readonly T[], now: number): NotificationGroup<T>[] {
   const today = startOfDay(now)
   const groups: NotificationGroup<T>[] = [
-    { key: 'today', label: 'Today', items: [] },
-    { key: 'yesterday', label: 'Yesterday', items: [] },
-    { key: 'week', label: 'This week', items: [] },
-    { key: 'earlier', label: 'Earlier', items: [] },
+    { key: 'today', label: t('Today'), items: [] },
+    { key: 'yesterday', label: t('Yesterday'), items: [] },
+    { key: 'week', label: t('This week'), items: [] },
+    { key: 'earlier', label: t('Earlier'), items: [] },
   ]
   for (const item of items) {
     const time = Date.parse(item.created_at)

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Camera, ChevronLeft, ChevronRight, ImageOff, Lock, RotateCw, X, ZoomIn, ZoomOut } from 'lucide-react'
 import { motionIsReduced } from './display-prefs'
 import { FITTED, MAX_ZOOM, TAP_ZOOM, clampPan, fitSize, panBy, pinchZoom, stepZoom, zoomAt, zoomLabel, type Point, type Size, type ZoomState } from './lib/photo-zoom'
+import { t } from './lib/i18n'
 
 type PhotoViewerProps = {
   /** The photo links, in the order they are shown. */
@@ -326,7 +327,7 @@ export function PhotoViewer({ urls, startIndex = 0, label, caption, isPrivate = 
     }
   }
 
-  const alt = count > 1 ? `${label} ${current + 1} of ${count}` : label
+  const alt = count > 1 ? t('{label} {number} of {total}', { label, number: current + 1, total: count }) : label
   const ready = Boolean(natural) && photo.width > 0
   const attempt = attempts[url] ?? 0
   const photoClass = [ready ? 'is-loaded' : '', `is-from-${direction}`, zoomed ? 'is-zoomed' : ''].filter(Boolean).join(' ')
@@ -353,18 +354,18 @@ export function PhotoViewer({ urls, startIndex = 0, label, caption, isPrivate = 
         <div className="photo-viewer-titles">
           <h2 id={titleId} className="photo-viewer-title">
             <span>{label}</span>
-            {count > 1 && <span className="photo-viewer-count" aria-live="polite" aria-label={`Photo ${current + 1} of ${count}`}>{current + 1} / {count}</span>}
+            {count > 1 && <span className="photo-viewer-count" aria-live="polite" aria-label={t('Photo {number} of {total}', { number: current + 1, total: count })}>{current + 1} / {count}</span>}
           </h2>
           {caption && <p className="photo-viewer-caption">{caption}</p>}
         </div>
       </div>
       <div className="photo-viewer-tools">
-        <div className="photo-viewer-zoom" role="group" aria-label="Zoom">
-          <button type="button" onClick={() => zoomBy(-1)} aria-disabled={zoomDisabled || !zoomed} aria-label="Zoom out" title="Zoom out (−)"><ZoomOut size={17} aria-hidden="true" /></button>
-          <button className="photo-viewer-zoom-level" type="button" onClick={() => setZoom(FITTED)} aria-disabled={zoomDisabled || !zoomed} aria-label={zoomed ? `Zoomed to ${zoomLabel(zoom.scale)}. Fit the whole photo` : 'Showing the whole photo'} title="Fit the whole photo (0)">{zoomLabel(zoom.scale)}</button>
-          <button type="button" onClick={() => zoomBy(1)} aria-disabled={zoomDisabled || zoom.scale >= MAX_ZOOM - 0.001} aria-label="Zoom in" title="Zoom in (+)"><ZoomIn size={17} aria-hidden="true" /></button>
+        <div className="photo-viewer-zoom" role="group" aria-label={t('Zoom')}>
+          <button type="button" onClick={() => zoomBy(-1)} aria-disabled={zoomDisabled || !zoomed} aria-label={t('Zoom out')} title={t('Zoom out (−)')}><ZoomOut size={17} aria-hidden="true" /></button>
+          <button className="photo-viewer-zoom-level" type="button" onClick={() => setZoom(FITTED)} aria-disabled={zoomDisabled || !zoomed} aria-label={zoomed ? t('Zoomed to {zoom}. Fit the whole photo', { zoom: zoomLabel(zoom.scale) }) : t('Showing the whole photo')} title={t('Fit the whole photo (0)')}>{zoomLabel(zoom.scale)}</button>
+          <button type="button" onClick={() => zoomBy(1)} aria-disabled={zoomDisabled || zoom.scale >= MAX_ZOOM - 0.001} aria-label={t('Zoom in')} title={t('Zoom in (+)')}><ZoomIn size={17} aria-hidden="true" /></button>
         </div>
-        <button ref={closeRef} className="photo-viewer-close" type="button" onClick={requestClose} aria-label="Close photo" title="Close (Esc)"><X size={20} aria-hidden="true" /></button>
+        <button ref={closeRef} className="photo-viewer-close" type="button" onClick={requestClose} aria-label={t('Close photo')} title={t('Close (Esc)')}><X size={20} aria-hidden="true" /></button>
       </div>
     </header>
 
@@ -379,9 +380,9 @@ export function PhotoViewer({ urls, startIndex = 0, label, caption, isPrivate = 
       {state === 'failed'
         ? <div className="photo-viewer-missing">
           <span className="photo-viewer-missing-icon" aria-hidden="true"><ImageOff size={26} /></span>
-          <strong>This photo could not be loaded</strong>
-          <span>Check your connection, then try again.</span>
-          <button type="button" onClick={() => retry(url)}><RotateCw size={15} aria-hidden="true" /> Try again</button>
+          <strong>{t('This photo could not be loaded')}</strong>
+          <span>{t('Check your connection, then try again.')}</span>
+          <button type="button" onClick={() => retry(url)}><RotateCw size={15} aria-hidden="true" /> {t('Try again')}</button>
         </div>
         : <img
           key={`${url}#${attempt}`}
@@ -400,34 +401,34 @@ export function PhotoViewer({ urls, startIndex = 0, label, caption, isPrivate = 
           onLoad={(event) => mark(url, { natural: { width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight } })}
           onError={() => mark(url, 'failed')}
         />}
-      {!state && <div className="photo-viewer-loading" role="status"><span className="photo-viewer-spinner" aria-hidden="true" />Loading photo…</div>}
+      {!state && <div className="photo-viewer-loading" role="status"><span className="photo-viewer-spinner" aria-hidden="true" />{t('Loading photo…')}</div>}
       {count > 1 && <>
-        <button className="photo-viewer-nav is-prev" type="button" onClick={() => step(-1)} aria-label="Previous photo" title="Previous (←)"><ChevronLeft size={26} aria-hidden="true" /></button>
-        <button className="photo-viewer-nav is-next" type="button" onClick={() => step(1)} aria-label="Next photo" title="Next (→)"><ChevronRight size={26} aria-hidden="true" /></button>
+        <button className="photo-viewer-nav is-prev" type="button" onClick={() => step(-1)} aria-label={t('Previous photo')} title={t('Previous (←)')}><ChevronLeft size={26} aria-hidden="true" /></button>
+        <button className="photo-viewer-nav is-next" type="button" onClick={() => step(1)} aria-label={t('Next photo')} title={t('Next (→)')}><ChevronRight size={26} aria-hidden="true" /></button>
       </>}
     </div>
 
     <footer className="photo-viewer-footer">
-      {isPrivate && <span className="photo-viewer-private"><Lock size={12} strokeWidth={2.4} aria-hidden="true" />Private<span className="photo-viewer-private-detail"> · only staff and the reporter can see this photo</span></span>}
-      {count > 1 && <div className="photo-viewer-filmstrip" role="group" aria-label="All photos">
+      {isPrivate && <span className="photo-viewer-private"><Lock size={12} strokeWidth={2.4} aria-hidden="true" />{t('Private')}<span className="photo-viewer-private-detail"> {t('· only staff and the reporter can see this photo')}</span></span>}
+      {count > 1 && <div className="photo-viewer-filmstrip" role="group" aria-label={t('All photos')}>
         {urls.map((thumb, photoIndex) => <button
           key={thumb}
           type="button"
           className={photoIndex === current ? 'is-active' : undefined}
           onClick={() => { if (photoIndex !== current) show(photoIndex, photoIndex > current ? 'next' : 'prev') }}
-          aria-label={`Show photo ${photoIndex + 1} of ${count}`}
+          aria-label={t('Show photo {number} of {total}', { number: photoIndex + 1, total: count })}
           aria-current={photoIndex === current ? 'true' : undefined}
         >
           {loaded[thumb] === 'failed' ? <ImageOff size={16} aria-hidden="true" /> : <img src={thumb} alt="" draggable={false} />}
         </button>)}
       </div>}
       <p className="photo-viewer-hints is-pointer" aria-hidden="true">
-        {count > 1 && <span><kbd>←</kbd><kbd>→</kbd> Browse</span>}
-        <span>Click or <kbd>+</kbd><kbd>−</kbd> Zoom</span>
-        <span><kbd>Esc</kbd> Close</span>
+        {count > 1 && <span><kbd>←</kbd><kbd>→</kbd> {t('Browse')}</span>}
+        <span>{t('Click or')} <kbd>+</kbd><kbd>−</kbd> {t('Zoom')}</span>
+        <span><kbd>Esc</kbd> {t('Close')}</span>
       </p>
       <p className="photo-viewer-hints is-touch" aria-hidden="true">
-        <span>{count > 1 ? 'Swipe to browse · ' : ''}Double-tap or pinch to zoom</span>
+        <span>{count > 1 ? `${t('Swipe to browse')} · ` : ''}{t('Double-tap or pinch to zoom')}</span>
       </p>
     </footer>
   </div>, document.body)

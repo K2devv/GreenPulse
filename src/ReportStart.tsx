@@ -7,6 +7,7 @@ import { PHOTO_MODEL_MEGABYTES, type PhotoIssueGuess } from './lib/photo-issue-c
 import { REPORT_PHOTO_TYPES, reportPhotoProblem, type PreparedReportPhoto } from './lib/report-photos'
 import { remainingScanTime } from './lib/photo-scan'
 import { photoModelIsCached, type PhotoChecker } from './usePhotoChecker'
+import { t } from './lib/i18n'
 
 type ReportStartProps = {
   checker: PhotoChecker
@@ -44,7 +45,7 @@ const headings: Record<View['name'], { eyebrow: string; title: string; subtitle:
 const failedCopy: Record<Exclude<PhotoCheckFailure, 'photo'>, { subtitle: string; detail: string }> = {
   download: {
     subtitle: "The photo checker couldn't be downloaded.",
-    detail: `The photo checker needs a one-time ${PHOTO_MODEL_MEGABYTES} MB download. Check your connection and try again, or fill in the form yourself.`,
+    detail: 'The photo checker needs a one-time {size} MB download. Check your connection and try again, or fill in the form yourself.',
   },
   app: {
     subtitle: "Part of GreenPulse didn't load.",
@@ -58,7 +59,7 @@ const failedCopy: Record<Exclude<PhotoCheckFailure, 'photo'>, { subtitle: string
 
 const pause = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms))
 
-const describeGuess = (guess: PhotoIssueGuess) => guess.issueType ? `${guess.category} · ${guess.issueType}` : guess.category
+const describeGuess = (guess: PhotoIssueGuess) => guess.issueType ? `${t(guess.category)} · ${t(guess.issueType)}` : t(guess.category)
 
 /** The three parts of the flow; moving between them slides the new content in. */
 const stageOf = (view: View['name']) => view === 'choose' || view === 'camera' ? view : 'photo'
@@ -171,7 +172,7 @@ export default function ReportStart({ checker, guest, preparePhotos, onForm, onF
     try {
       photos = await preparePhotos(files)
     } catch (failure) {
-      if (run.current === id) backToStart(failure instanceof Error ? failure.message : 'The photo could not be prepared.')
+      if (run.current === id) backToStart(failure instanceof Error ? t(failure.message) : t('The photo could not be prepared.'))
       return
     }
     if (run.current !== id) return
@@ -205,11 +206,11 @@ export default function ReportStart({ checker, guest, preparePhotos, onForm, onF
   return <section ref={sectionRef} className={`report-modal report-start-modal is-${view.name}`} role="dialog" aria-modal="true" aria-labelledby="report-start-title">
     <div className="modal-header">
       <div key={view.name} className="report-start-heading">
-        <p className="eyebrow">{heading.eyebrow}</p>
-        <h2 id="report-start-title" ref={headingRef} tabIndex={-1}>{heading.title}</h2>
-        <p>{heading.subtitle}</p>
+        <p className="eyebrow">{t(heading.eyebrow)}</p>
+        <h2 id="report-start-title" ref={headingRef} tabIndex={-1}>{t(heading.title)}</h2>
+        <p>{t(heading.subtitle)}</p>
       </div>
-      <button className="icon-button" type="button" onClick={onClose} aria-label="Close report form"><X size={19} /></button>
+      <button className="icon-button" type="button" onClick={onClose} aria-label={t('Close report form')}><X size={19} /></button>
     </div>
 
     <div key={stageOf(view.name)} className={`report-start-stage is-${stageOf(view.name)}`}>
@@ -219,21 +220,21 @@ export default function ReportStart({ checker, guest, preparePhotos, onForm, onF
           <div className="report-start-photo-head">
             <span className="report-start-mark" aria-hidden="true"><Sparkles size={21} /></span>
             <div>
-              <h3 id="report-start-photo-title">Report with a photo <span className="report-start-badge">Quickest</span></h3>
-              <p>Scan the area with your camera or upload a photo. GreenPulse spots the issue and fills in the form for you.</p>
+              <h3 id="report-start-photo-title">{t('Report with a photo')} <span className="report-start-badge">{t('Quickest')}</span></h3>
+              <p>{t('Scan the area with your camera or upload a photo. GreenPulse spots the issue and fills in the form for you.')}</p>
             </div>
           </div>
           <div className="report-start-actions">
-            <button className="primary-button" type="button" onClick={() => { setError(''); setView({ name: 'camera' }) }}><ScanLine size={17} />Scan with camera</button>
-            <button className="secondary-button" type="button" onClick={() => uploadRef.current?.click()}><ImageUp size={17} />Upload a photo</button>
+            <button className="primary-button" type="button" onClick={() => { setError(''); setView({ name: 'camera' }) }}><ScanLine size={17} />{t('Scan with camera')}</button>
+            <button className="secondary-button" type="button" onClick={() => uploadRef.current?.click()}><ImageUp size={17} />{t('Upload a photo')}</button>
           </div>
-          <p className="report-start-note"><ShieldCheck size={14} aria-hidden="true" />The issue check runs on this device. Photos are only sent when you submit the report.{downloadNeeded ? ` First use downloads ${PHOTO_MODEL_MEGABYTES} MB.` : ''}</p>
+          <p className="report-start-note"><ShieldCheck size={14} aria-hidden="true" />{t('The issue check runs on this device. Photos are only sent when you submit the report.')}{downloadNeeded ? ` ${t('First use downloads {size} MB.', { size: PHOTO_MODEL_MEGABYTES })}` : ''}</p>
         </section>
-        {error && <p className="form-error" role="alert">{error}</p>}
-        <div className="report-start-or" aria-hidden="true">or</div>
+        {error && <p className="form-error" role="alert">{t(error)}</p>}
+        <div className="report-start-or" aria-hidden="true">{t('or')}</div>
         <button className="report-start-form" type="button" onClick={() => onForm([])}>
           <span className="report-start-form-icon" aria-hidden="true"><ClipboardList size={19} /></span>
-          <span className="report-start-form-copy"><strong>Fill in the form</strong><small>Choose the category and describe the issue yourself.</small></span>
+          <span className="report-start-form-copy"><strong>{t('Fill in the form')}</strong><small>{t('Choose the category and describe the issue yourself.')}</small></span>
           <ChevronRight size={18} aria-hidden="true" />
         </button>
       </div>}
@@ -248,39 +249,39 @@ export default function ReportStart({ checker, guest, preparePhotos, onForm, onF
 
       {stageOf(view.name) === 'photo' && <>
         <div className={`scan-viewport is-photo is-${view.name}`}>
-          {preview ? <img src={preview} alt="Your report photo" /> : <div className="scan-viewport-empty" aria-hidden="true" />}
+          {preview ? <img src={preview} alt={t('Your report photo')} /> : <div className="scan-viewport-empty" aria-hidden="true" />}
           <div className="scan-frame" aria-hidden="true"><i /><i /><i /><i /></div>
           {view.name === 'checking' && <><div className="scan-sweep" aria-hidden="true" /><ScanPoints /></>}
           {view.name === 'found' && <span className="scan-ripple" aria-hidden="true" />}
-          {photos.length > 1 && <span className="scan-count">{photos.length} photos</span>}
+          {photos.length > 1 && <span className="scan-count">{t('{count} photos', { count: photos.length })}</span>}
           {view.name === 'none' && <span className="scan-badge" aria-hidden="true"><SearchX size={26} /></span>}
           {view.name === 'failed' && <span className="scan-badge is-warn" aria-hidden="true"><TriangleAlert size={26} /></span>}
           {(view.name === 'checking' || view.name === 'found') && <p className={`scan-status${view.name === 'found' ? ' is-found' : ''}`} role="status">
             {view.name === 'found'
-              ? <span key="found" className="scan-status-line"><Check size={15} aria-hidden="true" />Found {describeGuess(view.guess)}</span>
+              ? <span key="found" className="scan-status-line"><Check size={15} aria-hidden="true" />{t('Found {issue}', { issue: describeGuess(view.guess) })}</span>
               : checker.downloadProgress !== undefined
                 ? <span key="download" className="scan-status-download">
-                  <span><span className="search-spinner" aria-hidden="true" />Getting the photo checker ready… {Math.round(checker.downloadProgress * 100)}%</span>
+                  <span><span className="search-spinner" aria-hidden="true" />{t('Getting the photo checker ready… {percent}%', { percent: Math.round(checker.downloadProgress * 100) })}</span>
                   <span className="scan-status-bar" aria-hidden="true"><i style={{ width: `${Math.round(checker.downloadProgress * 100)}%` }} /></span>
                 </span>
-                : <span key={preparing ? 'preparing' : 'checking'} className="scan-status-line"><span className="search-spinner" aria-hidden="true" />{preparing ? 'Preparing your photo' : 'Checking'}<span className="scan-dots" aria-hidden="true"><i /><i /><i /></span></span>}
+                : <span key={preparing ? 'preparing' : 'checking'} className="scan-status-line"><span className="search-spinner" aria-hidden="true" />{preparing ? t('Preparing your photo') : t('Checking')}<span className="scan-dots" aria-hidden="true"><i /><i /><i /></span></span>}
           </p>}
         </div>
 
         {view.name === 'checking' && <div className="report-start-result">
-          <button className="text-button" type="button" onClick={() => backToStart()}>Cancel</button>
+          <button className="text-button" type="button" onClick={() => backToStart()}>{t('Cancel')}</button>
         </div>}
         {view.name === 'none' && <div className="report-start-result" role="status">
-          <p>No waste, pollution, flooding or drainage problem was found in this photo. Try again with a closer, clearer photo of the issue, or fill in the form yourself.</p>
-          <div className="report-start-result-actions"><button className="primary-button" type="button" onClick={() => backToStart()}><RefreshCw size={16} />Try again</button></div>
+          <p>{t('No waste, pollution, flooding or drainage problem was found in this photo. Try again with a closer, clearer photo of the issue, or fill in the form yourself.')}</p>
+          <div className="report-start-result-actions"><button className="primary-button" type="button" onClick={() => backToStart()}><RefreshCw size={16} />{t('Try again')}</button></div>
         </div>}
         {view.name === 'failed' && <div className="report-start-result" role="status">
-          <p>{failedCopy[view.failure].detail}{photos.length ? ' The form keeps your photo.' : ''}</p>
+          <p>{t(failedCopy[view.failure].detail, { size: PHOTO_MODEL_MEGABYTES })}{photos.length ? ` ${t('The form keeps your photo.')}` : ''}</p>
           <div className="report-start-result-actions">
-            {view.failure === 'download' && <button className="primary-button" type="button" onClick={() => backToStart()}><RefreshCw size={16} />Try again</button>}
-            {view.failure === 'app' && <button className="primary-button" type="button" onClick={() => window.location.reload()}><RotateCw size={16} />Reload page</button>}
-            <button className={view.failure === 'device' ? 'primary-button' : 'secondary-button'} type="button" onClick={() => onForm(photos)}><ClipboardList size={16} />Fill in the form</button>
-            {view.failure === 'device' && <button className="secondary-button" type="button" onClick={() => backToStart()}><RefreshCw size={16} />Try again</button>}
+            {view.failure === 'download' && <button className="primary-button" type="button" onClick={() => backToStart()}><RefreshCw size={16} />{t('Try again')}</button>}
+            {view.failure === 'app' && <button className="primary-button" type="button" onClick={() => window.location.reload()}><RotateCw size={16} />{t('Reload page')}</button>}
+            <button className={view.failure === 'device' ? 'primary-button' : 'secondary-button'} type="button" onClick={() => onForm(photos)}><ClipboardList size={16} />{t('Fill in the form')}</button>
+            {view.failure === 'device' && <button className="secondary-button" type="button" onClick={() => backToStart()}><RefreshCw size={16} />{t('Try again')}</button>}
           </div>
         </div>}
       </>}

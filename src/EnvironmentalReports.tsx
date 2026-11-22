@@ -3,6 +3,7 @@ import { FileSpreadsheet, FileText, TrendingUp } from 'lucide-react'
 import { buildSummaryCsv, buildSummaryHtml } from './lib/report-export'
 import { ChartEmpty } from './AdminCharts'
 import { DESCRIPTIVE_NOTE, FOCUS_LABELS, buildEnvironmentalSummary, formatDuration, localDateInput, resolveRange, type Count, type SummaryFocus, type SummaryPeriod, type SummaryReport } from './lib/report-summary'
+import { t, useLanguage } from './lib/i18n'
 
 const PERIODS: { value: SummaryPeriod; label: string }[] = [
   { value: 'daily', label: 'Daily' },
@@ -16,7 +17,7 @@ function BreakdownTable({ title, entries }: { title: string; entries: Count[] })
   const hasData = entries.some((entry) => entry.value > 0)
   return <article className="analytics-chart summary-table">
     <div className="analytics-chart-heading"><div><strong>{title}</strong></div></div>
-    {hasData ? <ul>{entries.map((entry, index) => <li key={entry.label} style={{ '--i': index } as CSSProperties}><span title={entry.label}>{entry.label}</span><i><b style={{ width: `${(entry.value / max) * 100}%` }} /></i><strong>{entry.value}</strong></li>)}</ul> : <ChartEmpty title="No data" hint="Nothing recorded for this period." />}
+    {hasData ? <ul>{entries.map((entry, index) => <li key={entry.label} style={{ '--i': index } as CSSProperties}><span title={t(entry.label)}>{t(entry.label)}</span><i><b style={{ width: `${(entry.value / max) * 100}%` }} /></i><strong>{entry.value}</strong></li>)}</ul> : <ChartEmpty title={t('No data')} hint={t('Nothing recorded for this period.')} />}
   </article>
 }
 
@@ -49,47 +50,48 @@ export function EnvironmentalReports({ reports }: { reports: readonly SummaryRep
   const [focus, setFocus] = useState<SummaryFocus>('overview')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState(() => localDateInput(new Date()))
-  const range = useMemo(() => resolveRange(period, new Date(), { from, to }), [period, from, to])
-  const summary = useMemo(() => 'error' in range ? undefined : buildEnvironmentalSummary(reports, range, focus), [range, reports, focus])
+  const language = useLanguage()
+  const range = useMemo(() => resolveRange(period, new Date(), { from, to }), [period, from, to, language])
+  const summary = useMemo(() => 'error' in range ? undefined : buildEnvironmentalSummary(reports, range, focus), [range, reports, focus, language])
 
   const exportName = `greenpulse-${focus}-${localDateInput(new Date())}`
 
   return <section className="env-reports" id="admin-summary" role="tabpanel" aria-labelledby="admin-summary-tab">
     <div className="analytics-heading">
-      <div><p className="eyebrow">ENVIRONMENTAL REPORTS</p><h2>Generate a summary report</h2></div>
+      <div><p className="eyebrow">{t('ENVIRONMENTAL REPORTS')}</p><h2>{t('Generate a summary report')}</h2></div>
       <div className="analytics-heading-actions">
-        <button className="secondary-button" type="button" disabled={!summary} onClick={() => summary && printHtml(buildSummaryHtml(summary, new Date()))}><FileText size={14} /> Export PDF</button>
-        <button className="secondary-button" type="button" disabled={!summary} onClick={() => summary && download(`${exportName}.csv`, buildSummaryCsv(summary, new Date()), 'text/csv;charset=utf-8')}><FileSpreadsheet size={14} /> Export Excel / CSV</button>
+        <button className="secondary-button" type="button" disabled={!summary} onClick={() => summary && printHtml(buildSummaryHtml(summary, new Date()))}><FileText size={14} /> {t('Export PDF')}</button>
+        <button className="secondary-button" type="button" disabled={!summary} onClick={() => summary && download(`${exportName}.csv`, buildSummaryCsv(summary, new Date()), 'text/csv;charset=utf-8')}><FileSpreadsheet size={14} /> {t('Export Excel / CSV')}</button>
       </div>
     </div>
     <div className="env-controls">
-      <label className="filter-field"><span>Period</span><select value={period} onChange={(event) => setPeriod(event.target.value as SummaryPeriod)}>{PERIODS.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}</select></label>
-      <label className="filter-field"><span>Report type</span><select value={focus} onChange={(event) => setFocus(event.target.value as SummaryFocus)}>{(Object.keys(FOCUS_LABELS) as SummaryFocus[]).map((key) => <option key={key} value={key}>{FOCUS_LABELS[key]}</option>)}</select></label>
+      <label className="filter-field"><span>{t('Period')}</span><select value={period} onChange={(event) => setPeriod(event.target.value as SummaryPeriod)}>{PERIODS.map((entry) => <option key={entry.value} value={entry.value}>{t(entry.label)}</option>)}</select></label>
+      <label className="filter-field"><span>{t('Report type')}</span><select value={focus} onChange={(event) => setFocus(event.target.value as SummaryFocus)}>{(Object.keys(FOCUS_LABELS) as SummaryFocus[]).map((key) => <option key={key} value={key}>{t(FOCUS_LABELS[key])}</option>)}</select></label>
       {period === 'custom' && <>
-        <label className="filter-field"><span>From</span><input type="date" value={from} max={to || undefined} onChange={(event) => setFrom(event.target.value)} /></label>
-        <label className="filter-field"><span>To</span><input type="date" value={to} min={from || undefined} onChange={(event) => setTo(event.target.value)} /></label>
+        <label className="filter-field"><span>{t('From')}</span><input type="date" value={from} max={to || undefined} onChange={(event) => setFrom(event.target.value)} /></label>
+        <label className="filter-field"><span>{t('To')}</span><input type="date" value={to} min={from || undefined} onChange={(event) => setTo(event.target.value)} /></label>
       </>}
     </div>
     {!summary ? <p className="form-error" role="status">{'error' in range ? range.error : ''}</p> : <>
-      <p className="env-period">{summary.range.label} · {FOCUS_LABELS[summary.focus]}</p>
+      <p className="env-period">{summary.range.label} · {t(FOCUS_LABELS[summary.focus])}</p>
       <div className="admin-metrics-grid env-metrics">
         {[
           { label: 'Total reports', value: summary.total },
           { label: 'Resolution rate', value: `${Math.round(summary.resolutionRate)}%` },
           { label: 'Avg. response time', value: formatDuration(summary.averageResponseMs) },
           { label: 'Avg. resolution time', value: formatDuration(summary.averageResolutionMs) },
-        ].map((metric) => <article className="admin-metric" key={metric.label}><strong>{metric.value}</strong><span>{metric.label}</span></article>)}
+        ].map((metric) => <article className="admin-metric" key={metric.label}><strong>{metric.value}</strong><span>{t(metric.label)}</span></article>)}
       </div>
       <article className="analytics-chart env-trends">
-        <div className="analytics-chart-heading"><div><strong>Trends</strong><span>{DESCRIPTIVE_NOTE}</span></div><TrendingUp size={17} /></div>
-        {summary.total === 0 ? <ChartEmpty icon={<TrendingUp size={20} aria-hidden="true" />} title="No reports were submitted in this period" hint="Try a longer period or a custom range." /> : <ul>{summary.trends.map((trend) => <li key={trend}>{trend}</li>)}</ul>}
+        <div className="analytics-chart-heading"><div><strong>{t('Trends')}</strong><span>{t(DESCRIPTIVE_NOTE)}</span></div><TrendingUp size={17} /></div>
+        {summary.total === 0 ? <ChartEmpty icon={<TrendingUp size={20} aria-hidden="true" />} title={t('No reports were submitted in this period')} hint={t('Try a longer period or a custom range.')} /> : <ul>{summary.trends.map((trend) => <li key={trend}>{trend}</li>)}</ul>}
       </article>
-      {summary.total === 0 ? <ChartEmpty title="Nothing to break down yet" hint="Category, barangay, status and location tables appear once the period has reports." /> : <div className="env-tables">
-        <BreakdownTable title="Categories" entries={summary.byCategory} />
-        <BreakdownTable title="Barangays" entries={summary.byBarangay} />
-        <BreakdownTable title="Status" entries={summary.byStatus.filter((entry) => entry.value > 0)} />
-        <BreakdownTable title="Urgency" entries={summary.byUrgency} />
-        <BreakdownTable title="Top locations" entries={summary.byLocation} />
+      {summary.total === 0 ? <ChartEmpty title={t('Nothing to break down yet')} hint={t('Category, barangay, status and location tables appear once the period has reports.')} /> : <div className="env-tables">
+        <BreakdownTable title={t('Categories')} entries={summary.byCategory} />
+        <BreakdownTable title={t('Barangays')} entries={summary.byBarangay} />
+        <BreakdownTable title={t('Status')} entries={summary.byStatus.filter((entry) => entry.value > 0)} />
+        <BreakdownTable title={t('Urgency')} entries={summary.byUrgency} />
+        <BreakdownTable title={t('Top locations')} entries={summary.byLocation} />
       </div>}
     </>}
   </section>

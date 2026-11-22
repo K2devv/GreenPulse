@@ -72,6 +72,17 @@
         d.dataset.contrast = p.highContrast ? 'high' : 'normal'
         d.dataset.density = p.compact ? 'compact' : 'comfortable'
       } catch (e) {}
+      // Mirrors readLanguageChoice in src/lib/i18n.ts: a saved choice wins, otherwise the browser's first language.
+      try {
+        var language = localStorage.getItem('greenpulse-language')
+        var browser = ((navigator.languages && navigator.languages[0]) || navigator.language || '').toLowerCase()
+        if (language !== 'en' && language !== 'fil') language = /^(fil|tl)/.test(browser) ? 'fil' : 'en'
+        if (language === 'fil') {
+          document.documentElement.lang = 'fil'
+          document.querySelector('#boot-splash .gp-loader-label').textContent = 'Binubuksan ang GreenPulse…'
+          document.getElementById('boot-splash').setAttribute('aria-label', 'Binubuksan ang GreenPulse')
+        }
+      } catch (e) {}
     </script>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>

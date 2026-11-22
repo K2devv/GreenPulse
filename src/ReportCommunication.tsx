@@ -4,11 +4,13 @@ import { supabase } from './lib/supabase'
 import { PhotoViewer } from './PhotoViewer'
 import { buildTimeline, formatTimelineStamp, type TimelineEvent } from './lib/report-timeline'
 import { MAX_COMMENT_LENGTH, MAX_REPLY_PHOTOS, allowedCommentKinds, buildCommentInsert, commentKindOptionLabel, commentLabel, commentPlaceholder, commentSubmitLabel, commentsLoadErrorMessage, isMissingTableError, type CommentKind, type ReportComment, type ViewerRole } from './lib/report-comments'
+import { t, dateLocale } from './lib/i18n'
+import { translateServerText } from './lib/server-text'
 
 export function ReportTimeline({ events }: { events: readonly TimelineEvent[] }) {
   const entries = buildTimeline(events)
-  return <div className="event-history report-timeline"><h4>Report timeline</h4>
-    {entries.length ? <ol>{entries.map((entry) => <li className="event-item" key={entry.id}><span className="event-mark" /><span><small>{formatTimelineStamp(entry.at)}</small><strong>{entry.label}</strong></span></li>)}</ol> : <p>No history entries yet.</p>}
+  return <div className="event-history report-timeline"><h4>{t('Report timeline')}</h4>
+    {entries.length ? <ol>{entries.map((entry) => <li className="event-item" key={entry.id}><span className="event-mark" /><span><small>{formatTimelineStamp(entry.at, dateLocale())}</small><strong>{translateServerText(entry.label)}</strong></span></li>)}</ol> : <p>{t('No history entries yet.')}</p>}
   </div>
 }
 
@@ -16,9 +18,9 @@ export function ReportTimeline({ events }: { events: readonly TimelineEvent[] })
 function CommentPhotos({ urls, caption }: { urls: string[]; caption: string }) {
   const [viewing, setViewing] = useState<number>()
   if (!urls.length) return null
-  const label = 'Photo added to this report'
+  const label = t('Photo added to this report')
   return <div className="photo-strip">
-    {urls.map((url, photo) => <button key={url} type="button" onClick={() => setViewing(photo)} aria-label={urls.length > 1 ? `View photo ${photo + 1} of ${urls.length}` : 'View photo'}><img src={url} alt="" /></button>)}
+    {urls.map((url, photo) => <button key={url} type="button" onClick={() => setViewing(photo)} aria-label={urls.length > 1 ? t('View photo {number} of {total}', { number: photo + 1, total: urls.length }) : t('View photo')}><img src={url} alt="" /></button>)}
     {viewing !== undefined && <PhotoViewer urls={urls} startIndex={viewing} label={label} caption={caption} onClose={() => setViewing(undefined)} />}
   </div>
 }
@@ -117,10 +119,10 @@ export function ReportConversation({ reportId, status, viewerRole, userId, isRep
   async function post() {
     if (!supabase || !activeKind) return
     const files = Array.from(fileInput.current?.files ?? [])
-    if (files.length > MAX_REPLY_PHOTOS) return setError(`You can attach up to ${MAX_REPLY_PHOTOS} photos.`)
-    if (files.some((file) => !EXTENSIONS[file.type] || file.size > 5 * 1024 * 1024)) return setError('Photos must be JPEG, PNG, or WebP images of 5 MB or less.')
+    if (files.length > MAX_REPLY_PHOTOS) return setError(t('You can attach up to {count} photos.', { count: MAX_REPLY_PHOTOS }))
+    if (files.some((file) => !EXTENSIONS[file.type] || file.size > 5 * 1024 * 1024)) return setError(t('Photos must be JPEG, PNG, or WebP images of 5 MB or less.'))
     const check = buildCommentInsert({ reportId, kind: activeKind, message })
-    if (check.error !== undefined) return setError(check.error)
+    if (check.error !== undefined) return setError(t(check.error))
     setBusy(true)
     setError('')
     const uploaded: string[] = []
@@ -150,24 +152,24 @@ export function ReportConversation({ reportId, status, viewerRole, userId, isRep
   // Posting would only fail while the table is missing, so the form waits for the migration.
   const formKind = tableMissing ? undefined : activeKind
 
-  return <section className="conversation" aria-label="Report updates">
-    <h4><MessageSquare size={14} /> Updates and replies</h4>
-    <p className="workflow-hint">Everyone involved with this report, including the reporter, can read these messages. New messages appear here as they are posted.</p>
+  return <section className="conversation" aria-label={t('Report updates')}>
+    <h4><MessageSquare size={14} /> {t('Updates and replies')}</h4>
+    <p className="workflow-hint">{t('Everyone involved with this report, including the reporter, can read these messages. New messages appear here as they are posted.')}</p>
     {loadError && <p className="form-error" role="alert">{loadError}</p>}
-    {loading ? <p className="workflow-hint">Loading updates…</p> : comments.length === 0 ? (loadError ? null : <p className="workflow-hint">No messages yet.</p>) : <ul className="conversation-list" aria-live="polite">
+    {loading ? <p className="workflow-hint">{t('Loading updates…')}</p> : comments.length === 0 ? (loadError ? null : <p className="workflow-hint">{t('No messages yet.')}</p>) : <ul className="conversation-list" aria-live="polite">
       {comments.map((comment) => <li key={comment.id} className={`conversation-item conversation-${comment.kind}`}>
-        <div className="conversation-head"><strong>{comment.author_name}</strong><span className="conversation-tag">{commentLabel(comment)}</span><small>{formatTimelineStamp(comment.created_at)}</small></div>
+        <div className="conversation-head"><strong>{translateServerText(comment.author_name)}</strong><span className="conversation-tag">{commentLabel(comment)}</span><small>{formatTimelineStamp(comment.created_at, dateLocale())}</small></div>
         <p>{comment.message}</p>
-        {comment.photo_paths?.length > 0 && <CommentPhotos urls={comment.photo_paths.flatMap((path) => photoUrls[path] ? [photoUrls[path]] : [])} caption={`${comment.author_name} · ${formatTimelineStamp(comment.created_at)}`} />}
+        {comment.photo_paths?.length > 0 && <CommentPhotos urls={comment.photo_paths.flatMap((path) => photoUrls[path] ? [photoUrls[path]] : [])} caption={`${translateServerText(comment.author_name)} · ${formatTimelineStamp(comment.created_at, dateLocale())}`} />}
       </li>)}
     </ul>}
     {formKind ? <form className="conversation-form" onSubmit={(event) => { event.preventDefault(); void post() }}>
-      {kinds.length > 1 && <label className="field-label">Message type<select value={formKind} onChange={(event) => setKind(event.target.value as CommentKind)}>{kinds.map((option) => <option key={option} value={option}>{commentKindOptionLabel(option, viewerRole)}</option>)}</select></label>}
-      <label className="field-label">Message<textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={3} maxLength={MAX_COMMENT_LENGTH} placeholder={commentPlaceholder(formKind, viewerRole)} /></label>
-      {formKind === 'reply' && <label className="upload-button"><Camera size={14} /> Add photos (up to {MAX_REPLY_PHOTOS})<input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" multiple /></label>}
+      {kinds.length > 1 && <label className="field-label">{t('Message type')}<select value={formKind} onChange={(event) => setKind(event.target.value as CommentKind)}>{kinds.map((option) => <option key={option} value={option}>{commentKindOptionLabel(option, viewerRole)}</option>)}</select></label>}
+      <label className="field-label">{t('Message')}<textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={3} maxLength={MAX_COMMENT_LENGTH} placeholder={commentPlaceholder(formKind, viewerRole)} /></label>
+      {formKind === 'reply' && <label className="upload-button"><Camera size={14} /> {t('Add photos (up to {count})', { count: MAX_REPLY_PHOTOS })}<input ref={fileInput} type="file" accept="image/jpeg,image/png,image/webp" multiple /></label>}
       {error && <p className="form-error" role="alert">{error}</p>}
-      <div className="workflow-actions"><button className="primary-button" type="submit" disabled={busy}><Send size={14} /> {busy ? 'Sending…' : commentSubmitLabel(formKind, viewerRole)}</button></div>
-    </form> : tableMissing ? null : <>{error && <p className="form-error" role="alert">{error}</p>}<p className="workflow-hint">{viewerRole === 'responder' ? 'Only the assigned responder or team can comment on this report.' : 'This report is no longer open for replies.'}</p></>}
+      <div className="workflow-actions"><button className="primary-button" type="submit" disabled={busy}><Send size={14} /> {busy ? t('Sending…') : commentSubmitLabel(formKind, viewerRole)}</button></div>
+    </form> : tableMissing ? null : <>{error && <p className="form-error" role="alert">{error}</p>}<p className="workflow-hint">{viewerRole === 'responder' ? t('Only the assigned responder or team can comment on this report.') : t('This report is no longer open for replies.')}</p></>}
   </section>
 }
 
@@ -184,7 +186,7 @@ export function ResidentReportModal({ report, userId, onClose, onPosted }: { rep
 
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
     <section className="report-modal report-updates-modal" role="dialog" aria-modal="true" aria-labelledby="updates-title">
-      <div className="modal-header"><div><p className="eyebrow">YOUR REPORT</p><h2 id="updates-title">{report.title}</h2><p>Status: {report.status}</p></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close report updates"><X size={19} /></button></div>
+      <div className="modal-header"><div><p className="eyebrow">{t('YOUR REPORT')}</p><h2 id="updates-title">{report.title}</h2><p>{t('Status: {status}', { status: t(report.status) })}</p></div><button className="icon-button" type="button" onClick={onClose} aria-label={t('Close report updates')}><X size={19} /></button></div>
       {/* Every staff message also adds a timeline entry, so the timeline reloads when one arrives. */}
       <ReportConversation reportId={report.id} status={report.status} viewerRole="resident" userId={userId} isReporter isOnTask={false} onPosted={() => { void refresh(); onPosted() }} onActivity={() => void refresh()} />
       <ReportTimeline events={events} />
@@ -234,7 +236,7 @@ export function CommunityComments({ report, userId, canComment, onSignIn, latest
       .eq('report_id', report.id)
       .order('created_at', { ascending: true })
     if (loadError) {
-      setError('Community comments could not be loaded. Apply the community comments migration to enable this feature.')
+      setError(t('Community comments could not be loaded. Apply the community comments migration to enable this feature.'))
       setLoading(false)
       return
     }
@@ -254,14 +256,14 @@ export function CommunityComments({ report, userId, canComment, onSignIn, latest
     event.preventDefault()
     if (!supabase || !canPost) return
     const trimmedMessage = message.trim()
-    if (!trimmedMessage) return setError('Write a comment first.')
-    if (trimmedMessage.length > MAX_COMMENT_LENGTH) return setError(`Comments can be up to ${MAX_COMMENT_LENGTH} characters.`)
+    if (!trimmedMessage) return setError(t('Write a comment first.'))
+    if (trimmedMessage.length > MAX_COMMENT_LENGTH) return setError(t('Comments can be up to {count} characters.', { count: MAX_COMMENT_LENGTH }))
     setBusy(true)
     setError('')
     const { error: insertError } = await supabase.from('community_report_comments').insert({ report_id: report.id, message: trimmedMessage })
     if (insertError) {
       setBusy(false)
-      return setError(insertError.message)
+      return setError(t(insertError.message))
     }
     setMessage('')
     await load()
@@ -273,18 +275,18 @@ export function CommunityComments({ report, userId, canComment, onSignIn, latest
   const hiddenCount = comments.length - shown.length
 
   return <>
-    {!supabase ? null : loading ? <p className="workflow-hint">Loading comments…</p> : comments.length === 0 ? <p className="workflow-hint">No comments yet. Start the conversation.</p> : <ul className="conversation-list">
+    {!supabase ? null : loading ? <p className="workflow-hint">{t('Loading comments…')}</p> : comments.length === 0 ? <p className="workflow-hint">{t('No comments yet. Start the conversation.')}</p> : <ul className="conversation-list">
       {shown.map((comment) => <li key={comment.id} className="conversation-item">
-        <div className="conversation-head"><strong>{comment.author_name}</strong><small>{formatTimelineStamp(comment.created_at)}</small></div>
+        <div className="conversation-head"><strong>{translateServerText(comment.author_name)}</strong><small>{formatTimelineStamp(comment.created_at, dateLocale())}</small></div>
         <p>{comment.message}</p>
       </li>)}
     </ul>}
-    {hiddenCount > 0 && onShowAll && <button className="text-button community-comments-more" type="button" onClick={onShowAll}>View all {comments.length} comments</button>}
+    {hiddenCount > 0 && onShowAll && <button className="text-button community-comments-more" type="button" onClick={onShowAll}>{t('View all {count} comments', { count: comments.length })}</button>}
     {canPost ? <form className="conversation-form" onSubmit={(event) => void post(event)}>
-      <label className="field-label">Add a comment<textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={compact ? 2 : 3} maxLength={MAX_COMMENT_LENGTH} placeholder="Share a helpful update about this report." /></label>
+      <label className="field-label">{t('Add a comment')}<textarea value={message} onChange={(event) => setMessage(event.target.value)} rows={compact ? 2 : 3} maxLength={MAX_COMMENT_LENGTH} placeholder={t('Share a helpful update about this report.')} /></label>
       {error && <p className="form-error" role="alert">{error}</p>}
-      <div className="workflow-actions"><button className="primary-button" type="submit" disabled={busy}><Send size={14} /> {busy ? 'Posting…' : 'Post comment'}</button></div>
-    </form> : !supabase ? <p className="workflow-hint">Community comments are available when shared reports are configured.</p> : !userId ? <div className="community-comment-signin"><p className="workflow-hint">Sign in to add a comment.</p><button className="secondary-button" type="button" onClick={onSignIn}><LogIn size={14} /> Sign in</button></div> : !canComment ? <p className="workflow-hint">Public comments are for resident accounts. Staff can use the report conversation in the Staff desk.</p> : <p className="workflow-hint">This report is closed to new comments.</p>}
+      <div className="workflow-actions"><button className="primary-button" type="submit" disabled={busy}><Send size={14} /> {busy ? t('Posting…') : t('Post comment')}</button></div>
+    </form> : !supabase ? <p className="workflow-hint">{t('Community comments are available when shared reports are configured.')}</p> : !userId ? <div className="community-comment-signin"><p className="workflow-hint">{t('Sign in to add a comment.')}</p><button className="secondary-button" type="button" onClick={onSignIn}><LogIn size={14} /> {t('Sign in')}</button></div> : !canComment ? <p className="workflow-hint">{t('Public comments are for resident accounts. Staff can use the report conversation in the Staff desk.')}</p> : <p className="workflow-hint">{t('This report is closed to new comments.')}</p>}
     {error && !canPost && <p className="form-error" role="alert">{error}</p>}
   </>
 }
@@ -298,10 +300,10 @@ export function CommunityReportDiscussion({ report, userId, canComment, onSignIn
 }) {
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
     <section className="report-modal report-updates-modal community-discussion-modal" role="dialog" aria-modal="true" aria-labelledby="community-discussion-title">
-      <div className="modal-header"><div><p className="eyebrow">COMMUNITY DISCUSSION</p><h2 id="community-discussion-title">{report.title}</h2><p>Status: {report.status}</p></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close community discussion"><X size={19} /></button></div>
-      <section className="conversation" aria-label="Community comments">
-        <h4><MessageSquare size={14} /> Public comments</h4>
-        <p className="workflow-hint">Comments here are visible to anyone viewing this report on the map. Your account name stays private.</p>
+      <div className="modal-header"><div><p className="eyebrow">{t('COMMUNITY DISCUSSION')}</p><h2 id="community-discussion-title">{report.title}</h2><p>{t('Status: {status}', { status: t(report.status) })}</p></div><button className="icon-button" type="button" onClick={onClose} aria-label={t('Close community discussion')}><X size={19} /></button></div>
+      <section className="conversation" aria-label={t('Community comments')}>
+        <h4><MessageSquare size={14} /> {t('Public comments')}</h4>
+        <p className="workflow-hint">{t('Comments here are visible to anyone viewing this report on the map. Your account name stays private.')}</p>
         <CommunityComments report={report} userId={userId} canComment={canComment} onSignIn={onSignIn} />
       </section>
     </section>
