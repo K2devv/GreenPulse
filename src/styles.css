@@ -1449,12 +1449,20 @@ button.escalation-title:hover { color: var(--accent-text); text-decoration: unde
 .review-callout { display: flex; flex-direction: column; gap: 3px; margin: 0; padding: 10px 12px; border-radius: var(--radius-sm); font-size: var(--fs-md); }
 .review-callout small { color: var(--text-faint); }
 .review-approved { color: #2f6a50; background: #e8f2ed; }
-.review-rejected { color: #8b4437; background: #fbefeb; }
+.review-rejected { color: var(--danger-strong); background: var(--danger-soft); }
 .review-action_requested { color: #7d5a26; background: #fbefdc; }
+/* Dark mode: tinted dark panels from the theme tokens instead of the light fills. */
+.theme-dark .review-approved { color: var(--accent-strong); background: var(--accent-soft); }
+.theme-dark .review-action_requested { color: var(--warn-text); background: var(--warn-soft); }
+.theme-dark .review-callout small { color: var(--text-muted); }
 .theme-dark .workflow-note-text strong, .theme-dark .workflow-hint { color: #a0aaa1; }
-.theme-dark .vstate-pending-verification, .theme-dark .vstate-verified, .theme-dark .vstate-rejected, .theme-dark .vstate-duplicate, .theme-dark .vstate-needs-more-information, .theme-dark .meta-chip-alert { filter: brightness(.86) saturate(.92); }
+/* Dark mode: the same tints as the report status pills, instead of dimmed light colors. */
+.theme-dark .vstate-pending-verification { color: #e6c78b; background: var(--warn-soft); }
+.theme-dark .vstate-verified { color: var(--accent-text); background: var(--accent-soft); }
+.theme-dark .vstate-rejected, .theme-dark .meta-chip-alert { color: #f0a89a; background: rgba(240, 168, 154, .14); }
+.theme-dark .vstate-duplicate { color: var(--text-muted); background: var(--surface-3); }
+.theme-dark .vstate-needs-more-information { color: #efc07a; background: var(--warn-soft); }
 .theme-dark .button-danger { border-color: #5a3d36; }
-.theme-dark .review-approved, .theme-dark .review-rejected, .theme-dark .review-action_requested { filter: brightness(.86); }
 @media (max-width: 760px) {
   .workflow-grid { grid-template-columns: 1fr; }
 }
@@ -2231,6 +2239,7 @@ button.legend-filter:focus-visible { outline-offset: 1px; }
 .theme-dark .status-additional-information-requested { color: #efc07a; }
 .theme-dark .status-awaiting-verification { color: #cdb8e8; background: rgba(205, 184, 232, .14); }
 .theme-dark .status-closed { color: #c4cec6; background: rgba(196, 206, 198, .12); }
+.theme-dark .status-duplicate { color: #c4cad4; background: rgba(196, 202, 212, .12); }
 .theme-dark .urgency-pill { background: rgba(242, 165, 146, .14); }
 .theme-dark button.legend-filter.is-active { color: #cfe5cf; background: rgba(145, 189, 145, .24); }
 
