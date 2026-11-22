@@ -396,6 +396,7 @@ export default function ReportMap({ theme, outline, reports, categoryColors, cat
             reportId={popupReport.id}
             load={loadPhotos}
             variant="banner"
+            caption={popupReport.title}
             onReady={(count) => {
               if (count === 0) return
               setPhotoPopupId(popupReport.id)

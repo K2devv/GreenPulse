@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import { Camera, LogIn, MessageSquare, Send, X } from 'lucide-react'
 import { supabase } from './lib/supabase'
+import { PhotoViewer } from './PhotoViewer'
 import { buildTimeline, formatTimelineStamp, type TimelineEvent } from './lib/report-timeline'
 import { MAX_COMMENT_LENGTH, MAX_REPLY_PHOTOS, allowedCommentKinds, buildCommentInsert, commentKindOptionLabel, commentLabel, commentPlaceholder, commentSubmitLabel, commentsLoadErrorMessage, isMissingTableError, type CommentKind, type ReportComment, type ViewerRole } from './lib/report-comments'
 
@@ -8,6 +9,17 @@ export function ReportTimeline({ events }: { events: readonly TimelineEvent[] })
   const entries = buildTimeline(events)
   return <div className="event-history report-timeline"><h4>Report timeline</h4>
     {entries.length ? <ol>{entries.map((entry) => <li className="event-item" key={entry.id}><span className="event-mark" /><span><small>{formatTimelineStamp(entry.at)}</small><strong>{entry.label}</strong></span></li>)}</ol> : <p>No history entries yet.</p>}
+  </div>
+}
+
+/** A message's photos as thumbnails; each opens full size in the photo viewer. */
+function CommentPhotos({ urls, caption }: { urls: string[]; caption: string }) {
+  const [viewing, setViewing] = useState<number>()
+  if (!urls.length) return null
+  const label = 'Photo added to this report'
+  return <div className="photo-strip">
+    {urls.map((url, photo) => <button key={url} type="button" onClick={() => setViewing(photo)} aria-label={urls.length > 1 ? `View photo ${photo + 1} of ${urls.length}` : 'View photo'}><img src={url} alt="" /></button>)}
+    {viewing !== undefined && <PhotoViewer urls={urls} startIndex={viewing} label={label} caption={caption} onClose={() => setViewing(undefined)} />}
   </div>
 }
 
@@ -146,7 +158,7 @@ export function ReportConversation({ reportId, status, viewerRole, userId, isRep
       {comments.map((comment) => <li key={comment.id} className={`conversation-item conversation-${comment.kind}`}>
         <div className="conversation-head"><strong>{comment.author_name}</strong><span className="conversation-tag">{commentLabel(comment)}</span><small>{formatTimelineStamp(comment.created_at)}</small></div>
         <p>{comment.message}</p>
-        {comment.photo_paths?.length > 0 && <div className="photo-strip">{comment.photo_paths.map((path) => photoUrls[path] ? <a key={path} href={photoUrls[path]} target="_blank" rel="noreferrer"><img src={photoUrls[path]} alt="Photo added to this report" /></a> : null)}</div>}
+        {comment.photo_paths?.length > 0 && <CommentPhotos urls={comment.photo_paths.flatMap((path) => photoUrls[path] ? [photoUrls[path]] : [])} caption={`${comment.author_name} · ${formatTimelineStamp(comment.created_at)}`} />}
       </li>)}
     </ul>}
     {formKind ? <form className="conversation-form" onSubmit={(event) => { event.preventDefault(); void post() }}>
