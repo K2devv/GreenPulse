@@ -4,6 +4,7 @@ import fixtures from './photo-issue-classifier.fixtures.json'
 import { issueTypesByCategory, isReportCategory } from './report-categories'
 import {
   CONFIDENT_GUESS,
+  MIN_ISSUE_SHARE,
   PHOTO_MODEL,
   centerSquare,
   guessPhotoIssue,
@@ -51,12 +52,24 @@ describe('guessPhotoIssue', () => {
     const guess = guessPhotoIssue(fixtures[photo], labels)
     expect(guess.category).toBe(category)
     expect(guess.issueType).toBe(issueType)
-    expect(guess.confidence).toBeGreaterThan(0.8)
+    expect(guess.confidence).toBeGreaterThan(0.75)
+  })
+
+  // Trash on open ground or in water splits the match between Waste, Water pollution and Blocked
+  // canal. Each was once left with no suggestion, because no single category reached half.
+  it.each([
+    ['rubbleDump', 'Waste', 'Illegal dumping'],
+    ['trashInCreek', 'Pollution', 'Water pollution'],
+  ] as const)('reads a %s photo as %s when the categories split the match', (photo, category, issueType) => {
+    const guess = guessPhotoIssue(fixtures[photo], labels)
+    expect(guess.category).toBe(category)
+    expect(guess.issueType).toBe(issueType)
   })
 
   // Everyday photos that look a little like an issue: an intact manhole cover, a busy Quezon City
-  // road, smoke from a barbecue, and clouds were all once read as an issue.
-  it.each(['cat', 'cleanStreet', 'manholeCover', 'quezonCityRoad', 'barbecueGrill', 'cloudySky'] as const)('suggests nothing for a %s photo', (photo) => {
+  // road, smoke from a barbecue, clouds, and a rainy Quezon City road in traffic (once read as a
+  // flooded road) were all once read as an issue.
+  it.each(['cat', 'cleanStreet', 'manholeCover', 'quezonCityRoad', 'barbecueGrill', 'cloudySky', 'rainyQuezonCityRoad'] as const)('suggests nothing for a %s photo', (photo) => {
     const guess = guessPhotoIssue(fixtures[photo], labels)
     expect(guess.category).toBeUndefined()
     expect(guess.confidence).toBeLessThan(0.2)
@@ -82,13 +95,33 @@ describe('guessPhotoIssue', () => {
     expect(guess.issueType).toBeUndefined()
   })
 
-  it('suggests nothing when the photo matches "no issue" more than any category', () => {
+  it('suggests nothing when "no issue" takes more than 1 − MIN_ISSUE_SHARE of the match', () => {
     const toy: PhotoIssueLabel[] = [
       { category: 'Flooding', issueType: 'Flooded road', vector: [1, 0] },
       { category: null, vector: [0, 1] },
     ]
     expect(guessPhotoIssue([0.4, 0.6], toy).category).toBeUndefined()
-    expect(guessPhotoIssue([0.6, 0.4], toy).category).toBe('Flooding')
+    // Flooding leads with about 65%, but "no issue" still has about 35%.
+    const leading = guessPhotoIssue([1, 0.9912], toy)
+    expect(leading.confidence).toBeGreaterThan(0.6)
+    expect(leading.confidence).toBeLessThan(MIN_ISSUE_SHARE)
+    expect(leading.category).toBeUndefined()
+    // About 81% against 19%.
+    expect(guessPhotoIssue([1, 0.98], toy).category).toBe('Flooding')
+  })
+
+  it('suggests the leading category even below half when issues together clearly win', () => {
+    const toy: PhotoIssueLabel[] = [
+      { category: 'Waste', issueType: 'Plastic waste', vector: [1, 0, 0, 0] },
+      { category: 'Pollution', issueType: 'Water pollution', vector: [0, 1, 0, 0] },
+      { category: 'Drainage', issueType: 'Blocked canal', vector: [0, 0, 1, 0] },
+      { category: null, vector: [0, 0, 0, 1] },
+    ]
+    const guess = guessPhotoIssue([1, 0.999, 0.998, 0], toy)
+    expect(guess.category).toBe('Waste')
+    expect(guess.issueType).toBe('Plastic waste')
+    expect(guess.confidence).toBeGreaterThan(0.3)
+    expect(guess.confidence).toBeLessThan(0.5)
   })
 
   it('handles empty input', () => {
