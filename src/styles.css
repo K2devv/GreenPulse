@@ -2764,6 +2764,111 @@ html[data-contrast="high"] .stat-row { border-color: var(--hc-border); }
 .map-popup-card.has-photos .map-popup-close:hover { color: #fff; background: rgba(10, 18, 13, .78); }
 @keyframes photos-in { from { opacity: 0; } to { opacity: 1; } }
 
+/* ---------- Photo viewer: a report photo full size, over everything ---------- */
+/* Drawn on document.body (outside .app-shell's theme), so it is always dark, with its own
+   light-on-dark colors that read the same in both themes. Above the modals and the palette. The
+   photo's own colors glow behind it (.photo-viewer-ambient), and the toolbar, arrows and chips are
+   frosted glass over that glow. */
+.photo-viewer { position: fixed; z-index: 2100; inset: 0; isolation: isolate; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left); color: #fff; background: rgba(4, 9, 6, .94); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); overscroll-behavior: contain; touch-action: none; user-select: none; -webkit-user-select: none; animation: fade-in var(--dur-med) var(--ease-out) backwards; }
+.photo-viewer.is-closing { pointer-events: none; animation: fade-out var(--dur-fast) var(--ease-out) forwards; }
+.photo-viewer :focus-visible { outline-color: #9fe0ae; }
+.photo-viewer-ambient { position: absolute; z-index: -1; inset: 0; overflow: hidden; pointer-events: none; }
+.photo-viewer-ambient img { position: absolute; top: -12%; left: -12%; width: 124%; height: 124%; object-fit: cover; filter: blur(72px) saturate(1.6) brightness(.62); opacity: .72; animation: fade-in var(--dur-slow) var(--ease-out) backwards; }
+.photo-viewer-ambient::after { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse 72% 62% at 50% 50%, transparent, rgba(4, 9, 6, .5) 72%, rgba(4, 9, 6, .82)), linear-gradient(180deg, rgba(4, 9, 6, .6), transparent 20%, transparent 76%, rgba(4, 9, 6, .72)); }
+
+/* Header: what the photo is, then the zoom controls and close. */
+.photo-viewer-bar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 18px 10px 20px; animation: photo-viewer-bar-in var(--dur-slow) var(--ease-out) backwards; }
+.photo-viewer-heading { min-width: 0; display: flex; align-items: center; gap: 12px; }
+.photo-viewer-icon { width: 40px; height: 40px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 13px; color: #b9eec4; background: linear-gradient(145deg, rgba(159, 224, 174, .28), rgba(159, 224, 174, .08)); box-shadow: inset 0 0 0 1px rgba(159, 224, 174, .3), 0 10px 24px -12px rgba(0, 0, 0, .7); animation: pop-in var(--dur-slow) .06s var(--ease-spring) backwards; }
+.photo-viewer-titles { min-width: 0; display: grid; gap: 2px; }
+.photo-viewer-title { min-width: 0; display: flex; align-items: center; gap: 10px; margin: 0; color: #fff; font-size: var(--fs-lg); font-weight: 680; letter-spacing: -.01em; line-height: 1.25; }
+.photo-viewer-title > span:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.photo-viewer-count { flex: 0 0 auto; padding: 2px 9px; border-radius: var(--radius-pill); color: rgba(255, 255, 255, .9); background: rgba(255, 255, 255, .12); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1); font-size: var(--fs-xs); font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+.photo-viewer-caption { margin: 0; overflow: hidden; color: rgba(255, 255, 255, .62); font-size: var(--fs-sm); white-space: nowrap; text-overflow: ellipsis; }
+.photo-viewer-tools { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; }
+.photo-viewer-zoom { display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: var(--radius-pill); background: rgba(255, 255, 255, .08); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1), 0 12px 30px -14px rgba(0, 0, 0, .7); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+.photo-viewer-zoom button { min-width: 36px; height: 36px; display: grid; place-items: center; padding: 0 8px; border: 0; border-radius: var(--radius-pill); color: #fff; background: transparent; cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out); }
+.photo-viewer-zoom button:hover:not([aria-disabled="true"]) { background: rgba(255, 255, 255, .15); }
+.photo-viewer-zoom button[aria-disabled="true"] { opacity: .36; cursor: default; }
+.photo-viewer-zoom .photo-viewer-zoom-level { min-width: 52px; font-size: var(--fs-sm); font-weight: 650; font-variant-numeric: tabular-nums; }
+.photo-viewer-zoom .photo-viewer-zoom-level[aria-disabled="true"] { opacity: .72; }
+.photo-viewer-close { width: 44px; height: 44px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; color: #fff; background: rgba(255, 255, 255, .1); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14); cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), transform var(--dur-med) var(--ease-spring); }
+.photo-viewer-close:hover { background: rgba(255, 255, 255, .2); transform: rotate(90deg); }
+
+/* Stage: the photo fitted inside the padding, zoomed and moved by an inline transform. */
+.photo-viewer-stage { position: relative; min-height: 0; overflow: hidden; padding: 8px 88px; touch-action: none; }
+.photo-viewer-stage > img { position: absolute; display: block; max-width: none; border-radius: var(--radius-md); box-shadow: 0 0 0 1px rgba(255, 255, 255, .08), 0 44px 100px -34px rgba(0, 0, 0, .9), 0 14px 34px -14px rgba(0, 0, 0, .6); opacity: 0; cursor: zoom-in; transform-origin: center; transition: transform var(--dur-med) var(--ease-out); will-change: transform; -webkit-user-drag: none; }
+.photo-viewer-stage > img.is-loaded { opacity: 1; }
+.photo-viewer-stage > img.is-loaded.is-from-open { animation: photo-viewer-open var(--dur-slow) var(--ease-spring) backwards; }
+.photo-viewer-stage > img.is-loaded.is-from-next { animation: photo-viewer-from-next var(--dur-med) var(--ease-out) backwards; }
+.photo-viewer-stage > img.is-loaded.is-from-prev { animation: photo-viewer-from-prev var(--dur-med) var(--ease-out) backwards; }
+.photo-viewer-stage > img.is-zoomed { cursor: grab; }
+.photo-viewer.is-gesturing .photo-viewer-stage > img { transition: none; }
+.photo-viewer.is-gesturing .photo-viewer-stage > img.is-zoomed { cursor: grabbing; }
+.photo-viewer-loading { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; color: rgba(255, 255, 255, .7); font-size: var(--fs-sm); pointer-events: none; animation: fade-in var(--dur-med) .15s var(--ease-out) backwards; }
+.photo-viewer-spinner { width: 34px; height: 34px; border: 3px solid rgba(255, 255, 255, .16); border-top-color: #9fe0ae; border-radius: 50%; animation: spin .8s linear infinite; }
+.photo-viewer-missing { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 6px; padding: 0 24px; color: rgba(255, 255, 255, .64); font-size: var(--fs-sm); text-align: center; animation: pop-in var(--dur-med) var(--ease-out) backwards; }
+.photo-viewer-missing-icon { width: 60px; height: 60px; display: grid; place-items: center; margin-bottom: 8px; border-radius: 50%; color: rgba(255, 255, 255, .82); background: rgba(255, 255, 255, .08); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12); }
+.photo-viewer-missing strong { color: #fff; font-size: var(--fs-md); }
+.photo-viewer-missing button { min-height: 40px; display: inline-flex; align-items: center; gap: 7px; margin-top: 12px; padding: 0 16px; border: 0; border-radius: var(--radius-pill); color: #0d2417; background: #9fe0ae; font-weight: 650; cursor: pointer; transition: transform var(--dur-med) var(--ease-spring), background-color var(--dur-fast) var(--ease-out); }
+.photo-viewer-missing button:hover { background: #b9eec4; transform: translateY(-1px); }
+.photo-viewer-nav { position: absolute; z-index: 1; top: 50%; width: 50px; height: 50px; display: grid; place-items: center; margin-top: -25px; padding: 0; border: 0; border-radius: 50%; color: #fff; background: rgba(255, 255, 255, .1); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14), 0 12px 30px -12px rgba(0, 0, 0, .7); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), transform var(--dur-med) var(--ease-spring); }
+.photo-viewer-nav.is-prev { left: 20px; }
+.photo-viewer-nav.is-next { right: 20px; }
+.photo-viewer-nav:hover { background: rgba(255, 255, 255, .2); }
+.photo-viewer-nav.is-prev:hover { transform: translateX(-2px) scale(1.06); }
+.photo-viewer-nav.is-next:hover { transform: translateX(2px) scale(1.06); }
+
+/* Footer: privacy on the left, the filmstrip in the middle, shortcuts on the right. */
+.photo-viewer-footer { min-height: 64px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 16px; padding: 10px 22px 16px; animation: photo-viewer-footer-in var(--dur-slow) var(--ease-out) backwards; }
+.photo-viewer-private { grid-column: 1; justify-self: start; max-width: 100%; display: inline-flex; align-items: center; gap: 6px; overflow: hidden; padding: 6px 12px; border-radius: var(--radius-pill); color: rgba(255, 255, 255, .88); background: rgba(255, 255, 255, .08); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1); font-size: var(--fs-xs); font-weight: 650; white-space: nowrap; }
+.photo-viewer-private svg { flex: 0 0 auto; color: #9fe0ae; }
+.photo-viewer-private-detail { overflow: hidden; color: rgba(255, 255, 255, .6); font-weight: 500; text-overflow: ellipsis; }
+.photo-viewer-filmstrip { grid-column: 2; max-width: 100%; display: flex; gap: 8px; overflow-x: auto; padding: 4px; scrollbar-width: none; touch-action: pan-x; }
+.photo-viewer-filmstrip::-webkit-scrollbar { display: none; }
+.photo-viewer-filmstrip button { position: relative; width: 60px; height: 44px; flex: 0 0 auto; display: grid; place-items: center; overflow: hidden; padding: 0; border: 0; border-radius: 10px; color: rgba(255, 255, 255, .6); background: rgba(255, 255, 255, .08); opacity: .5; cursor: pointer; transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-med) var(--ease-spring), box-shadow var(--dur-fast) var(--ease-out); }
+.photo-viewer-filmstrip button:hover { opacity: .86; transform: translateY(-2px); }
+.photo-viewer-filmstrip button.is-active { opacity: 1; box-shadow: 0 0 0 2px #9fe0ae, 0 8px 20px -8px rgba(0, 0, 0, .8); transform: translateY(-2px); }
+.photo-viewer-filmstrip img { width: 100%; height: 100%; display: block; object-fit: cover; }
+.photo-viewer-hints { grid-column: 3; justify-self: end; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 14px; margin: 0; color: rgba(255, 255, 255, .52); font-size: var(--fs-xs); }
+.photo-viewer-hints span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.photo-viewer-hints kbd { min-width: 20px; padding: 0 5px; border-color: rgba(255, 255, 255, .2); color: rgba(255, 255, 255, .88); background: rgba(255, 255, 255, .07); font-size: var(--fs-2xs); line-height: 1.6; }
+.photo-viewer-hints.is-touch { display: none; }
+@media (hover: none) {
+  .photo-viewer-hints.is-pointer { display: none; }
+  .photo-viewer-hints.is-touch { display: flex; }
+  .photo-viewer-stage > img { cursor: default; }
+}
+@keyframes photo-viewer-bar-in { from { opacity: 0; translate: 0 -10px; } }
+@keyframes photo-viewer-footer-in { from { opacity: 0; translate: 0 10px; } }
+@keyframes photo-viewer-open { from { opacity: 0; scale: .94; } }
+@keyframes photo-viewer-from-next { from { opacity: 0; translate: 44px 0; } }
+@keyframes photo-viewer-from-prev { from { opacity: 0; translate: -44px 0; } }
+/* The closing fade ends invisible; with motion reduced the viewer is removed at once instead. */
+@media (prefers-reduced-motion: reduce) { .photo-viewer.is-closing { animation: none; } }
+html[data-motion="reduced"] .photo-viewer.is-closing { animation: none; }
+/* Narrow desktop windows keep the privacy chip short so the footer stays on one row. */
+@media (min-width: 641px) and (max-width: 1100px) { .photo-viewer-private-detail { display: none; } }
+/* Phones: the photo runs edge to edge, zoom is pinch and double tap, and the footer stacks. */
+@media (max-width: 640px) {
+  .photo-viewer-bar { gap: 10px; padding: 10px 10px 8px 16px; }
+  .photo-viewer-icon, .photo-viewer-zoom { display: none; }
+  .photo-viewer-title { font-size: var(--fs-md); }
+  .photo-viewer-stage { padding: 0; }
+  .photo-viewer-stage > img { border-radius: 0; box-shadow: none; }
+  .photo-viewer-nav { width: 42px; height: 42px; margin-top: -21px; background: rgba(4, 9, 6, .5); }
+  .photo-viewer-nav.is-prev { left: 10px; }
+  .photo-viewer-nav.is-next { right: 10px; }
+  .photo-viewer-footer { grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 10px; padding: 12px 14px 14px; }
+  .photo-viewer-private, .photo-viewer-filmstrip, .photo-viewer-hints { grid-column: 1; justify-self: center; }
+  .photo-viewer-filmstrip { order: -1; }
+}
+
+/* Thumbnails that open the photo viewer. */
+.photo-strip button { display: block; padding: 0; border: 0; border-radius: var(--radius-sm); background: var(--surface-3); cursor: zoom-in; transition: transform var(--dur-med) var(--ease-spring), box-shadow var(--dur-fast) var(--ease-out); }
+.photo-strip button:hover { box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+.report-photo { padding: 0; border: 0; color: inherit; font: inherit; text-align: inherit; }
+
 /* ---------- Dropdown lists in dark mode ---------- */
 /* The root follows the theme (see App.tsx), which darkens an open list. Browsers that draw the list
    from the options' own colors get them here, so the text never ends up pale on a light list. */

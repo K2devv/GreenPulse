@@ -55,6 +55,7 @@ import { StaffWorkflowPanel } from './StaffWorkflowPanel'
 import { AnimatedNumber } from './AnimatedNumber'
 import { HeroPanel, type HeroStat } from './HeroPanel'
 import { ReportPhotoStrip } from './ReportPhotoStrip'
+import { closePhotoViewer } from './PhotoViewer'
 import { PhotoIssueSuggestion } from './PhotoIssueSuggestion'
 import { usePhotoIssueSuggestion } from './usePhotoIssueSuggestion'
 import { photoCheckerSupported, usePhotoChecker } from './usePhotoChecker'
@@ -1636,6 +1637,8 @@ function App() {
       'staff-mode': () => setStaffMode(false),
     }
     nativeBackRef.current = () => {
+      // A full-size photo sits above every layer, so back closes it first.
+      if (closePhotoViewer()) return
       const layer = topBackLayer(open)
       if (layer) close[layer]()
       else void NativeApp.minimizeApp()
@@ -3240,7 +3243,7 @@ function App() {
                 <span className="map-sheet-meta">{selectedReport.category} · {selectedReport.status}</span>
                 <strong>{selectedReport.title}</strong>
                 <small><MapPin size={12} />{placeLabel(selectedReport)} · {formatCreatedAt(selectedReport.createdAt)}</small>
-                <ReportPhotoStrip reportId={selectedReport.id} load={loadReportPhotos} variant="inline" />
+                <ReportPhotoStrip reportId={selectedReport.id} load={loadReportPhotos} variant="inline" caption={selectedReport.title} />
                 <p>{selectedReport.description}</p>
                 <button className="secondary-button map-sheet-discussion" type="button" onClick={() => setCommunityDiscussionId(selectedReport.id)}><MessageSquare size={14} /> Comments and discussion</button>
               </div>}

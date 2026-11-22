@@ -42,8 +42,13 @@ export type PhotoIssueGuess = {
 
 /** CLIP's learned temperature: cosine similarities are multiplied by this before softmax. */
 const LOGIT_SCALE = 100
-/** A category is suggested only when it takes at least this share and beats "no issue". */
-export const MIN_CATEGORY_CONFIDENCE = 0.5
+/**
+ * A category is suggested only when the issue labels together take at least this share of the
+ * match, so "no issue" has at most the rest. The leading category is then suggested even when it
+ * holds less than half: trash in water, say, splits between Waste, Water pollution and Blocked
+ * canal, and asking each one for half left such photos with no suggestion at all.
+ */
+export const MIN_ISSUE_SHARE = 0.7
 /** An issue type is filled in only when it takes at least this share of its category. */
 export const MIN_ISSUE_TYPE_SHARE = 0.5
 /** A photo this sure of its category ends the search; later photos are not checked. */
@@ -58,7 +63,8 @@ function unitLength(values: ArrayLike<number>): number[] {
 
 /**
  * Turns a photo's image embedding into a guess: the closest labels, by softmax over cosine
- * similarity, summed per category. Labels without a category pull the guess toward "no issue".
+ * similarity, summed per category. Labels without a category pull the guess toward "no issue";
+ * when they take more than 1 − MIN_ISSUE_SHARE, nothing is suggested.
  */
 export function guessPhotoIssue(embedding: ArrayLike<number>, labels: readonly PhotoIssueLabel[]): PhotoIssueGuess {
   if (!labels.length || !embedding.length) return { confidence: 0 }
@@ -80,7 +86,7 @@ export function guessPhotoIssue(embedding: ArrayLike<number>, labels: readonly P
     }
   }
   const noIssue = byCategory.get(null) ?? 0
-  if (!best || bestShare < MIN_CATEGORY_CONFIDENCE || bestShare <= noIssue) return { confidence: bestShare }
+  if (!best || 1 - noIssue < MIN_ISSUE_SHARE) return { confidence: bestShare }
 
   let issueType: string | undefined
   let issueShare = 0

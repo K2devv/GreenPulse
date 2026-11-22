@@ -1,6 +1,7 @@
 import { useRef, useState, type ReactNode } from 'react'
 import { AlertTriangle, CalendarDays, Camera, Check, ClipboardCheck, MapPin, ShieldCheck, UserRound, Users, X } from 'lucide-react'
 import type { Team } from './lib/supabase'
+import { PhotoViewer } from './PhotoViewer'
 import { formatDuration } from './lib/report-summary'
 import { elapsedMs, responseStages, type StageEvent } from './lib/report-response-times'
 import { needsImmediateAttention } from './lib/report-escalation'
@@ -80,9 +81,13 @@ function WorkflowCard({ step, title, icon, badge, children }: { step: number; ti
   </section>
 }
 
-function PhotoStrip({ urls, label }: { urls: string[]; label: string }) {
+function PhotoStrip({ urls, label, caption, isPrivate }: { urls: string[]; label: string; caption?: string; isPrivate?: boolean }) {
+  const [viewing, setViewing] = useState<number>()
   if (!urls.length) return null
-  return <div className="photo-strip" aria-label={label}>{urls.map((url) => <a key={url} href={url} target="_blank" rel="noreferrer"><img src={url} alt={label} /></a>)}</div>
+  return <div className="photo-strip" aria-label={label}>
+    {urls.map((url, photo) => <button key={url} type="button" onClick={() => setViewing(photo)} aria-label={`View ${urls.length > 1 ? `${label.toLowerCase()} ${photo + 1} of ${urls.length}` : label.toLowerCase()}`}><img src={url} alt="" /></button>)}
+    {viewing !== undefined && <PhotoViewer urls={urls} startIndex={viewing} label={label} caption={caption} isPrivate={isPrivate} onClose={() => setViewing(undefined)} />}
+  </div>
 }
 
 export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, allReports, originalPhotoUrls, resolutionPhotoUrls, events, residentFeedback, onSubmit }: StaffWorkflowPanelProps) {
@@ -101,6 +106,7 @@ export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, al
   const assigned = Boolean(report.assignedTo || report.assignedTeamId)
   const duplicateOfReport = allReports.find((candidate) => candidate.id === report.duplicateOf)
   const overdue = isOverdue(report)
+  const photoCaption = `Report ${formatReportId(report.id)} · ${report.category}`
   const signature = [report.id, report.status, report.category, report.urgency, report.assignedTo, report.assignedTeamId, report.dueDate, report.taskPriority, report.taskInstructions, report.verificationNote, report.resolutionNote, report.resolutionDecision, report.resolutionPhotoPaths?.length].join('|')
 
   async function run(card: string, result: WorkflowResult, options?: { resolutionFiles?: File[] }) {
@@ -187,7 +193,7 @@ export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, al
       {report.verifiedAt && <p className="workflow-meta"><Check size={12} /> Verified by {nameOf(report.verifiedBy) ?? 'staff'} · {formatDate(report.verifiedAt)}</p>}
       {report.status === 'Duplicate' && <p className="workflow-meta"><AlertTriangle size={12} /> Duplicate of {report.duplicateOf ? formatReportId(report.duplicateOf) : 'another report'}{duplicateOfReport ? ` · ${duplicateOfReport.title}` : ''}</p>}
       <a className="workflow-meta workflow-link" href={`https://www.openstreetmap.org/?mlat=${report.coordinates[0]}&mlon=${report.coordinates[1]}#map=18/${report.coordinates[0]}/${report.coordinates[1]}`} target="_blank" rel="noreferrer"><MapPin size={12} /> Check the location on the map</a>
-      <PhotoStrip urls={originalPhotoUrls} label="Report photo" />
+      <PhotoStrip urls={originalPhotoUrls} label="Report photo" caption={photoCaption} isPrivate />
       {isAdmin ? <form className="workflow-grid" ref={verificationForm} key={`v-${signature}`} onSubmit={(event) => event.preventDefault()}>
         <label className="field-label">Category<select name="category" defaultValue={report.category}>{[...new Set([...categories, report.category])].map((category) => <option key={category}>{category}</option>)}</select></label>
         <label className="field-label">Urgency<select name="urgency" defaultValue={report.urgency}><option>Low</option><option>Medium</option><option>High</option></select></label>
@@ -239,7 +245,7 @@ export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, al
 
     <WorkflowCard step={3} title="Resolution" icon={<Check size={15} />}>
       {report.resolutionNote && <p className="workflow-note-text"><strong>Response notes</strong>{report.resolutionNote}</p>}
-      <PhotoStrip urls={resolutionPhotoUrls} label="After-photo" />
+      <PhotoStrip urls={resolutionPhotoUrls} label="After-photo" caption={photoCaption} />
       {report.resolutionDecision && <p className={`review-callout review-${report.resolutionDecision}`}><strong>{decisionLabels[report.resolutionDecision]}</strong>{report.resolutionReviewNote && <span>{report.resolutionReviewNote}</span>}<small>{nameOf(report.resolutionReviewedBy) ?? 'Administrator'}{report.resolutionReviewedAt ? ` · ${formatDate(report.resolutionReviewedAt)}` : ''}</small></p>}
       <form className="workflow-grid" ref={resolutionForm} key={`r-${signature}`} onSubmit={(event) => event.preventDefault()}>
         {isAdmin && report.status === 'Awaiting verification' && <>
