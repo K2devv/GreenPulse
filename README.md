@@ -67,7 +67,7 @@ Responder invitations use `VITE_APP_URL`, falling back to the current site's ori
 - `https://greenpulse-district5.vercel.app/**`
 - `http://localhost:5173/**`
 
-Responder invitations do not assign a password. After accepting the link, responders choose one under Profile settings → Sign-in password and then sign in with their email and password.
+Responder invitations do not assign a password. Accepting the link signs the responder in and opens a **Choose your password** step (the same checklist as a password reset; the link lands with `type=invite`). A responder who closes it is reminded to set one from Profile settings → Sign-in password before signing out. From then on they sign in with their email and password.
 
 ### Accounts and sign-in
 
@@ -78,6 +78,7 @@ Required Supabase dashboard settings:
 - **Authentication → Sign In / Providers → Email**: enabled, with **Confirm email** on and **Email OTP Length** set to 6. The Phone provider is not used.
 - **Authentication → Emails → Templates → Confirm signup**: paste `supabase/templates/confirm-signup.html` as the message body and use the subject `Your GreenPulse code is {{ .Token }}`. The template shows `{{ .Token }}` and has no confirmation link.
 - **Authentication → Emails → Templates → Reset Password**: paste `supabase/templates/reset-password.html` as the message body and use the subject `Your GreenPulse password reset code is {{ .Token }}`.
+- **Authentication → Emails → Templates → Invite user**: paste `supabase/templates/invite-user.html` as the message body and use the subject `You're invited to GreenPulse as a District 5 responder`. It greets the responder by the name the administrator entered, links to `{{ .ConfirmationURL }}`, and walks through accepting, choosing a password, and opening the Staff desk.
 - **Authentication → URL Configuration**: the Site URL and redirect URLs listed above.
 - **Custom SMTP** (Authentication → Emails → SMTP Settings): the built-in sender only delivers to project team members and has a very low hourly limit. Configure a custom SMTP provider before inviting residents. The app cannot bypass Supabase delivery limits.
 - **Authentication → Rate Limits**: the hourly email limit caps how many codes the whole project can send.
