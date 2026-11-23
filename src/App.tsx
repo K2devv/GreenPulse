@@ -115,6 +115,7 @@ import { formatDuration } from './lib/report-summary'
 import { buildResponseTimeMetrics } from './lib/report-response-times'
 import { buildReportAnalytics, unrecordedBarangayLast } from './lib/report-analytics'
 import { findRecurringHotspots, type RecurringHotspot } from './lib/report-recurrence'
+import { guestSameAreaLimitMessage, reachedSameAreaLimit, sameAreaLimitMessage } from './lib/report-area-limit'
 import { GuestReportTracking } from './GuestReportTracking'
 import { MAX_REPORT_PHOTOS, prepareReportPhoto, reportPhotoProblem, type PreparedReportPhoto } from './lib/report-photos'
 import { translate } from './lib/ui-copy'
@@ -2467,6 +2468,16 @@ function App() {
       setFormError(t(outsideDistrictSubmitMessage))
       return
     }
+    // A reporter may have only a few open reports at one spot (3 signed in, 2 as a guest). This
+    // uses the reports already loaded; the database (signed in) and the guest endpoint enforce it
+    // for every report. Demo mode has no accounts, so it follows the guest limit.
+    const ownReports = session
+      ? reports.filter((existing) => existing.reporterId === session.user.id)
+      : supabase ? [] : reports.filter((existing) => existing.id.startsWith('GP-NEW-'))
+    if (reachedSameAreaLimit(ownReports, location, { guest: !session })) {
+      setFormError(t(session ? sameAreaLimitMessage : guestSameAreaLimitMessage))
+      return
+    }
     if (title.length < 3 || description.length < 8) {
       setFormError(t('Add a title of at least 3 characters and a description of at least 8 characters.'))
       return
@@ -2531,7 +2542,7 @@ function App() {
       }
       if (error || !data) {
         if (photoPaths.length) await supabase.storage.from('report-photos').remove(photoPaths)
-        setFormError(error?.code === '22023' ? t(outsideDistrictSubmitMessage) : error?.message ?? t('The report could not be saved. Please try again.'))
+        setFormError(error?.code === '22023' ? t(outsideDistrictSubmitMessage) : error?.code === 'GP429' ? t(sameAreaLimitMessage) : error?.message ?? t('The report could not be saved. Please try again.'))
         return
       }
       report = toReport(data as ReportRow)

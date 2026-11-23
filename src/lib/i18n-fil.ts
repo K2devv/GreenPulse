@@ -1134,6 +1134,8 @@ export const fil: Record<string, string> = {
   "This photo could not be loaded": "Hindi ma-load ang larawang ito",
   "This photo couldn't be read. Try another photo.": "Hindi mabasa ang larawang ito. Sumubok ng ibang larawan.",
   "This photo is too detailed to send as a guest report. Choose a smaller image.": "Masyadong detalyado ang larawang ito para ipadala bilang ulat ng guest. Pumili ng mas maliit na larawan.",
+  "You already have 2 reports at this spot. Wait for staff to resolve them, or sign in and follow an existing report instead of submitting another.": "May 2 ulat ka na sa lugar na ito. Hintaying maresolba ito ng staff, o mag-sign in at sundan ang isang umiiral na ulat sa halip na magpadala ng panibago.",
+  "You already have 3 reports at this spot. Wait for staff to resolve them, or follow an existing report instead of submitting another.": "May 3 ulat ka na sa lugar na ito. Hintaying maresolba ito ng staff, o sundan ang isang umiiral na ulat sa halip na magpadala ng panibago.",
   "This report cannot be submitted because its location is outside District 5, Quezon City. Move the pin inside the district.": "Hindi maipapadala ang ulat na ito dahil labas sa District 5, Quezon City ang lokasyon nito. Ilipat ang pin sa loob ng distrito.",
   "This report could not be loaded": "Hindi ma-load ang ulat na ito",
   "This report has no responder assigned: {title}.": "Wala pang naka-assign na responder sa ulat na ito: {title}.",

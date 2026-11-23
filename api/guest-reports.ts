@@ -6,6 +6,7 @@ import { withAppCors } from '../server/app-cors'
 import { normalizePhoneNumber } from '../src/lib/phone-number'
 import { findBarangayAt } from '../src/lib/barangay-lookup'
 import bundledBoundaries from '../src/data/district5-barangays.json'
+import { GUEST_SAME_AREA_REPORT_LIMIT, guestSameAreaLimitMessage } from '../src/lib/report-area-limit'
 
 declare const process: { env: Record<string, string | undefined> }
 
@@ -225,6 +226,22 @@ async function handler(request: Request): Promise<Response> {
   }
 
   const ip = await hashRateLimitSubject(`ip:${address}`, trackingSecret)
+  // One guest (same connection, email, or phone) may have only a few open reports at one spot.
+  const { data: sameAreaCount, error: sameAreaError } = await admin.rpc('guest_same_area_report_count', {
+    p_ip_hash: ip,
+    p_email: email || null,
+    p_phone: phone ?? null,
+    p_latitude: latitude,
+    p_longitude: longitude,
+  })
+  // Before the same-area migration is applied the function does not exist yet; keep accepting reports.
+  if (sameAreaError && sameAreaError.code !== 'PGRST202' && sameAreaError.code !== '42883') {
+    return jsonResponse({ error: 'Guest reporting is temporarily unavailable.' }, 503)
+  }
+  if (sameAreaError) console.warn('Same-area report limit is not installed:', sameAreaError.message)
+  if (typeof sameAreaCount === 'number' && sameAreaCount >= GUEST_SAME_AREA_REPORT_LIMIT) {
+    return jsonResponse({ error: guestSameAreaLimitMessage }, 429)
+  }
   const { data: allowed, error: limitError } = await admin.rpc('claim_guest_report_slot', { p_ip_hash: ip })
   if (limitError) return jsonResponse({ error: 'Guest reporting is temporarily unavailable.' }, 500)
   if (!allowed) return jsonResponse({ error: 'Too many guest reports from this connection. Please try again later or sign in.' }, 429)
@@ -263,7 +280,10 @@ async function handler(request: Request): Promise<Response> {
     return jsonResponse({ error: 'The report could not be saved. Please try again.' }, 500)
   }
 
-  const { error: accessError } = await admin.from('guest_report_access').insert({ report_id: reportId, client_submission_id: submissionId, access_token_hash: tokenHash, contact_email: email || null, contact_phone: phone ?? null })
+  const access = { report_id: reportId, client_submission_id: submissionId, access_token_hash: tokenHash, contact_email: email || null, contact_phone: phone ?? null }
+  let { error: accessError } = await admin.from('guest_report_access').insert({ ...access, guest_ip_hash: ip })
+  // Keep submissions working if the same-area migration (which adds guest_ip_hash) is not applied yet.
+  if (accessError?.message.includes('guest_ip_hash')) ({ error: accessError } = await admin.from('guest_report_access').insert(access))
   if (accessError) {
     await admin.from('reports').delete().eq('id', reportId)
     if (uploadedPhotoPaths.length) await admin.storage.from('report-photos').remove(uploadedPhotoPaths)

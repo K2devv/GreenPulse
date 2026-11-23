@@ -205,6 +205,33 @@ test.describe('report intake', () => {
       barangay: 'North Fairview',
     })
   })
+
+  test('refuses a third open report from the same guest at the same spot', async ({ page }) => {
+    await page.route('https://photon.komoot.io/api/?**', (route) => route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ features: [{ geometry: { coordinates: [121.0611, 14.7109] }, properties: { name: 'Gulod Street', city: 'Quezon City' } }] }),
+    }))
+    await page.goto('/')
+    // Demo mode has no accounts, so it follows the guest limit of 2 reports per spot.
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const dialog = await openReportForm(page)
+      await dialog.locator('input[name="title"]').fill(`Same spot report ${attempt}`)
+      await dialog.locator('input[name="issue_type"]').fill('Blocked drainage')
+      await dialog.locator('textarea[name="description"]').fill('Water is collecting beside the road after rain.')
+      await dialog.locator('input[name="location"]').fill('Gulod Street')
+      await dialog.getByRole('option', { name: /Gulod Street, Quezon City/ }).click()
+      await dialog.locator('input[name="public_display_consent"]').check()
+      await dialog.getByRole('button', { name: 'Submit report' }).click()
+      if (attempt < 3) {
+        await expect(dialog).toHaveCount(0)
+        continue
+      }
+      await expect(dialog.getByText('You already have 2 reports at this spot.', { exact: false })).toBeVisible()
+    }
+    const saved = await page.evaluate(() => (JSON.parse(localStorage.getItem('greenpulse-reports') ?? '[]') as Array<{ title: string }>)
+      .filter((report) => report.title.startsWith('Same spot report')).length)
+    expect(saved).toBe(2)
+  })
 })
 
 test.describe('incident map', () => {
