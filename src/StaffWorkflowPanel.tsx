@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from 'react'
-import { AlertTriangle, CalendarDays, Camera, Check, ClipboardCheck, Lock, MapPin, ShieldCheck, UserRound, Users, X } from 'lucide-react'
+import { AlertTriangle, CalendarDays, Camera, Check, ClipboardCheck, Columns2, Lock, MapPin, ShieldCheck, UserRound, Users, X } from 'lucide-react'
 import type { Team } from './lib/supabase'
-import { PhotoViewer } from './PhotoViewer'
+import { PhotoViewer, type PhotoComparison } from './PhotoViewer'
 import { PhotoSharingBadge } from './ReportPhotoStrip'
 import { photoSharing, type PhotoVisibility } from './lib/report-photo-access'
 import { formatDuration } from './lib/report-summary'
@@ -85,12 +85,25 @@ function WorkflowCard({ step, title, icon, badge, children }: { step: number; ti
   </section>
 }
 
-function PhotoStrip({ urls, label, caption, isPrivate }: { urls: string[]; label: string; caption?: string; isPrivate?: boolean }) {
-  const [viewing, setViewing] = useState<number>()
+type PhotoStripProps = {
+  urls: string[]
+  label: string
+  caption?: string
+  isPrivate?: boolean
+  /** The report's other photos, shown beside these when the viewer compares before and after. */
+  compareWith?: PhotoComparison
+  /** Adds a button that opens the viewer straight on the comparison. */
+  offerCompare?: boolean
+}
+
+function PhotoStrip({ urls, label, caption, isPrivate, compareWith, offerCompare }: PhotoStripProps) {
+  const [viewing, setViewing] = useState<{ index: number; comparing: boolean }>()
   if (!urls.length) return null
+  const canCompare = Boolean(compareWith?.urls.length)
   return <div className="photo-strip" aria-label={label}>
-    {urls.map((url, photo) => <button key={url} type="button" onClick={() => setViewing(photo)} aria-label={urls.length > 1 ? t('View {label} {number} of {total}', { label: label.toLowerCase(), number: photo + 1, total: urls.length }) : t('View {label}', { label: label.toLowerCase() })}><img src={url} alt="" /></button>)}
-    {viewing !== undefined && <PhotoViewer urls={urls} startIndex={viewing} label={label} caption={caption} isPrivate={isPrivate} onClose={() => setViewing(undefined)} />}
+    {urls.map((url, photo) => <button key={url} type="button" onClick={() => setViewing({ index: photo, comparing: false })} aria-label={urls.length > 1 ? t('View {label} {number} of {total}', { label: label.toLowerCase(), number: photo + 1, total: urls.length }) : t('View {label}', { label: label.toLowerCase() })}><img src={url} alt="" /></button>)}
+    {offerCompare && canCompare && <button className="photo-strip-compare" type="button" onClick={() => setViewing({ index: 0, comparing: true })}><Columns2 size={14} aria-hidden="true" />{t('Compare with the report photos')}</button>}
+    {viewing && <PhotoViewer urls={urls} startIndex={viewing.index} label={label} caption={caption} isPrivate={isPrivate} compareWith={canCompare ? compareWith : undefined} startComparing={viewing.comparing} onClose={() => setViewing(undefined)} />}
   </div>
 }
 
@@ -198,7 +211,7 @@ export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, al
       {report.verifiedAt && <p className="workflow-meta"><Check size={12} /> {t('Verified by {name}', { name: nameOf(report.verifiedBy) ?? t('staff') })} · {formatDate(report.verifiedAt)}</p>}
       {report.status === 'Duplicate' && <p className="workflow-meta"><AlertTriangle size={12} /> {t('Duplicate of {report}', { report: report.duplicateOf ? formatReportId(report.duplicateOf) : t('another report') })}{duplicateOfReport ? ` · ${duplicateOfReport.title}` : ''}</p>}
       <a className="workflow-meta workflow-link" href={`https://www.openstreetmap.org/?mlat=${report.coordinates[0]}&mlon=${report.coordinates[1]}#map=18/${report.coordinates[0]}/${report.coordinates[1]}`} target="_blank" rel="noreferrer"><MapPin size={12} /> {t('Check the location on the map')}</a>
-      <PhotoStrip urls={originalPhotoUrls} label={t('Report photo')} caption={photoCaption} isPrivate={photoShare !== 'public'} />
+      <PhotoStrip urls={originalPhotoUrls} label={t('Report photo')} caption={photoCaption} isPrivate={photoShare !== 'public'} compareWith={{ label: t('After-photo'), urls: resolutionPhotoUrls, side: 'after' }} />
       {originalPhotoUrls.length > 0 && <div className="photo-sharing-note">
         <PhotoSharingBadge sharing={photoShare} className="photo-sharing-badge" />
         <span>{photoShare === 'private'
@@ -261,7 +274,7 @@ export function StaffWorkflowPanel({ report, role, userId, staffUsers, teams, al
 
     <WorkflowCard step={3} title={t('Resolution')} icon={<Check size={15} />}>
       {report.resolutionNote && <p className="workflow-note-text"><strong>{t('Response notes')}</strong>{report.resolutionNote}</p>}
-      <PhotoStrip urls={resolutionPhotoUrls} label={t('After-photo')} caption={photoCaption} />
+      <PhotoStrip urls={resolutionPhotoUrls} label={t('After-photo')} caption={photoCaption} compareWith={{ label: t('Report photo'), urls: originalPhotoUrls, side: 'before' }} offerCompare />
       {report.resolutionDecision && <p className={`review-callout review-${report.resolutionDecision}`}><strong>{t(decisionLabels[report.resolutionDecision] ?? report.resolutionDecision)}</strong>{report.resolutionReviewNote && <span>{report.resolutionReviewNote}</span>}<small>{nameOf(report.resolutionReviewedBy) ?? t('Administrator')}{report.resolutionReviewedAt ? ` · ${formatDate(report.resolutionReviewedAt)}` : ''}</small></p>}
       <form className="workflow-grid" ref={resolutionForm} key={`r-${signature}`} onSubmit={(event) => event.preventDefault()}>
         {isAdmin && report.status === 'Awaiting verification' && <>

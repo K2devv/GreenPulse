@@ -2811,10 +2811,15 @@ html[data-contrast="high"] .stat-row { border-color: var(--hc-border); }
 .photo-viewer-count { flex: 0 0 auto; padding: 2px 9px; border-radius: var(--radius-pill); color: rgba(255, 255, 255, .9); background: rgba(255, 255, 255, .12); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1); font-size: var(--fs-xs); font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: .02em; }
 .photo-viewer-caption { margin: 0; overflow: hidden; color: rgba(255, 255, 255, .62); font-size: var(--fs-sm); white-space: nowrap; text-overflow: ellipsis; }
 .photo-viewer-tools { flex: 0 0 auto; display: flex; align-items: center; gap: 10px; }
-.photo-viewer-zoom { display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: var(--radius-pill); background: rgba(255, 255, 255, .08); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1), 0 12px 30px -14px rgba(0, 0, 0, .7); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
-.photo-viewer-zoom button { min-width: 36px; height: 36px; display: grid; place-items: center; padding: 0 8px; border: 0; border-radius: var(--radius-pill); color: #fff; background: transparent; cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out); }
-.photo-viewer-zoom button:hover:not([aria-disabled="true"]) { background: rgba(255, 255, 255, .15); }
-.photo-viewer-zoom button[aria-disabled="true"] { opacity: .36; cursor: default; }
+.photo-viewer-group { display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: var(--radius-pill); background: rgba(255, 255, 255, .08); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1), 0 12px 30px -14px rgba(0, 0, 0, .7); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+.photo-viewer-group button { min-width: 36px; height: 36px; display: grid; place-items: center; padding: 0 8px; border: 0; border-radius: var(--radius-pill); color: #fff; background: transparent; cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out); }
+.photo-viewer-group button:hover:not([aria-disabled="true"]) { background: rgba(255, 255, 255, .15); }
+.photo-viewer-group button[aria-disabled="true"] { opacity: .36; cursor: default; }
+.photo-viewer-group button[aria-pressed="true"] { color: #c9f3d2; background: rgba(159, 224, 174, .22); box-shadow: inset 0 0 0 1px rgba(159, 224, 174, .35); }
+.photo-viewer-compare-toggle { height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 16px 0 14px; border: 0; border-radius: var(--radius-pill); color: #fff; background: rgba(255, 255, 255, .08); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12), 0 12px 30px -14px rgba(0, 0, 0, .7); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); font-size: var(--fs-sm); font-weight: 650; cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out); }
+.photo-viewer-compare-toggle:hover { background: rgba(255, 255, 255, .15); }
+.photo-viewer-compare-toggle[aria-pressed="true"] { color: #0d2417; background: #9fe0ae; box-shadow: 0 10px 26px -12px rgba(159, 224, 174, .7); }
+.photo-viewer-compare-toggle[aria-pressed="true"]:hover { background: #b9eec4; }
 .photo-viewer-zoom .photo-viewer-zoom-level { min-width: 52px; font-size: var(--fs-sm); font-weight: 650; font-variant-numeric: tabular-nums; }
 .photo-viewer-zoom .photo-viewer-zoom-level[aria-disabled="true"] { opacity: .72; }
 .photo-viewer-close { width: 44px; height: 44px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; color: #fff; background: rgba(255, 255, 255, .1); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14); cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), transform var(--dur-med) var(--ease-spring); }
@@ -2822,12 +2827,15 @@ html[data-contrast="high"] .stat-row { border-color: var(--hc-border); }
 
 /* Stage: the photo fitted inside the padding, zoomed and moved by an inline transform. */
 .photo-viewer-stage { position: relative; min-height: 0; overflow: hidden; padding: 8px 88px; touch-action: none; }
-.photo-viewer-stage > img { position: absolute; display: block; max-width: none; border-radius: var(--radius-md); box-shadow: 0 0 0 1px rgba(255, 255, 255, .08), 0 44px 100px -34px rgba(0, 0, 0, .9), 0 14px 34px -14px rgba(0, 0, 0, .6); opacity: 0; cursor: zoom-in; transform-origin: center; transition: transform var(--dur-med) var(--ease-out); will-change: transform; -webkit-user-drag: none; }
+.photo-viewer-stage > img { position: absolute; display: block; max-width: none; border-radius: var(--radius-md); box-shadow: 0 0 0 1px rgba(255, 255, 255, .08), 0 44px 100px -34px rgba(0, 0, 0, .9), 0 14px 34px -14px rgba(0, 0, 0, .6); opacity: 0; cursor: zoom-in; transform-origin: center; transition: transform var(--dur-med) var(--ease-out), filter var(--dur-med) var(--ease-out); will-change: transform; -webkit-user-drag: none; }
 .photo-viewer-stage > img.is-loaded { opacity: 1; }
 .photo-viewer-stage > img.is-loaded.is-from-open { animation: photo-viewer-open var(--dur-slow) var(--ease-spring) backwards; }
 .photo-viewer-stage > img.is-loaded.is-from-next { animation: photo-viewer-from-next var(--dur-med) var(--ease-out) backwards; }
 .photo-viewer-stage > img.is-loaded.is-from-prev { animation: photo-viewer-from-prev var(--dur-med) var(--ease-out) backwards; }
 .photo-viewer-stage > img.is-zoomed { cursor: grab; }
+.photo-viewer-stage > img.is-rotating { transition: transform var(--dur-med) var(--ease-out), width var(--dur-med) var(--ease-out), height var(--dur-med) var(--ease-out), left var(--dur-med) var(--ease-out), top var(--dur-med) var(--ease-out), filter var(--dur-med) var(--ease-out); }
+/* Brighten: lifts a dark or night photo so its detail can be checked. */
+.photo-viewer.is-brightened :is(.photo-viewer-stage > img, .photo-viewer-pane-frame img, .photo-viewer-slider-layer img, .photo-viewer-navigator img) { filter: brightness(1.45) contrast(1.06) saturate(1.04); }
 .photo-viewer.is-gesturing .photo-viewer-stage > img { transition: none; }
 .photo-viewer.is-gesturing .photo-viewer-stage > img.is-zoomed { cursor: grabbing; }
 .photo-viewer-loading { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; color: rgba(255, 255, 255, .7); font-size: var(--fs-sm); pointer-events: none; animation: fade-in var(--dur-med) .15s var(--ease-out) backwards; }
@@ -2843,6 +2851,33 @@ html[data-contrast="high"] .stat-row { border-color: var(--hc-border); }
 .photo-viewer-nav:hover { background: rgba(255, 255, 255, .2); }
 .photo-viewer-nav.is-prev:hover { transform: translateX(-2px) scale(1.06); }
 .photo-viewer-nav.is-next:hover { transform: translateX(2px) scale(1.06); }
+
+/* Zoom navigator: the whole photo small, with the part on screen outlined. Press or drag to move. */
+.photo-viewer-navigator { position: absolute; z-index: 2; right: 20px; bottom: 16px; display: grid; place-items: center; overflow: hidden; border-radius: 10px; background: rgba(4, 9, 6, .6); box-shadow: 0 0 0 1px rgba(255, 255, 255, .18), 0 14px 34px -12px rgba(0, 0, 0, .85); cursor: crosshair; touch-action: none; animation: pop-in var(--dur-med) var(--ease-out) backwards; }
+.photo-viewer-navigator img { max-width: none; display: block; opacity: .9; pointer-events: none; transition: filter var(--dur-med) var(--ease-out); }
+.photo-viewer-navigator-view { position: absolute; border-radius: 3px; box-shadow: 0 0 0 1.5px #9fe0ae, 0 0 0 999px rgba(4, 9, 6, .5); pointer-events: none; }
+
+/* Before and after: two panes side by side (stacked when the window is taller than wide). */
+.photo-viewer-compare { position: absolute; inset: 4px 24px 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; animation: fade-in var(--dur-med) var(--ease-out) backwards; }
+.photo-viewer-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 8px; border-radius: var(--radius-lg); background: rgba(255, 255, 255, .04); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .08); animation: photo-viewer-pane-in var(--dur-slow) var(--ease-out) backwards; }
+.photo-viewer-pane.is-after { animation-delay: .06s; }
+.photo-viewer-pane-frame { position: relative; flex: 1 1 auto; min-height: 0; container-type: size; }
+/* Fitted with container units, so a photo turned sideways fits too. */
+.photo-viewer-pane-frame img { position: absolute; top: 50%; left: 50%; max-width: 100cqw; max-height: 100cqh; display: block; border-radius: var(--radius-md); box-shadow: 0 30px 70px -30px rgba(0, 0, 0, .9); translate: -50% -50%; transition: rotate var(--dur-med) var(--ease-out), max-width var(--dur-med) var(--ease-out), max-height var(--dur-med) var(--ease-out), filter var(--dur-med) var(--ease-out); user-select: none; -webkit-user-drag: none; }
+.photo-viewer-pane-frame img.is-sideways { max-width: 100cqh; max-height: 100cqw; }
+.photo-viewer-pane-missing { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 8px; margin: 0; color: rgba(255, 255, 255, .64); font-size: var(--fs-sm); text-align: center; }
+.photo-viewer-pane-bar { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0 2px; }
+.photo-viewer-pane-side { flex: 0 0 auto; padding: 3px 10px; border-radius: var(--radius-pill); color: #ffe0b3; background: rgba(255, 190, 110, .18); box-shadow: inset 0 0 0 1px rgba(255, 190, 110, .32); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .03em; text-transform: uppercase; }
+:is(.photo-viewer-pane.is-after, .photo-viewer-pane-bar.is-after) .photo-viewer-pane-side { color: #c9f3d2; background: rgba(159, 224, 174, .18); box-shadow: inset 0 0 0 1px rgba(159, 224, 174, .34); }
+.photo-viewer-pane-label { min-width: 0; flex: 1 1 auto; overflow: hidden; color: rgba(255, 255, 255, .72); font-size: var(--fs-sm); white-space: nowrap; text-overflow: ellipsis; }
+.photo-viewer-pane-nav { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 2px; }
+.photo-viewer-pane-count { min-width: 38px; color: rgba(255, 255, 255, .78); font-size: var(--fs-xs); font-weight: 650; font-variant-numeric: tabular-nums; text-align: center; }
+.photo-viewer-pane-bar button { width: 30px; height: 30px; flex: 0 0 auto; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; color: #fff; background: rgba(255, 255, 255, .08); cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out); }
+.photo-viewer-pane-bar button:hover { background: rgba(255, 255, 255, .18); }
+@keyframes photo-viewer-pane-in { from { opacity: 0; translate: 0 12px; } }
+@media (max-aspect-ratio: 1/1) {
+  .photo-viewer-compare { grid-template-columns: minmax(0, 1fr); grid-template-rows: repeat(2, minmax(0, 1fr)); }
+}
 
 /* Footer: privacy on the left, the filmstrip in the middle, shortcuts on the right. */
 .photo-viewer-footer { min-height: 64px; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 16px; padding: 10px 22px 16px; animation: photo-viewer-footer-in var(--dur-slow) var(--ease-out) backwards; }
@@ -2864,6 +2899,60 @@ html[data-contrast="high"] .stat-row { border-color: var(--hc-border); }
   .photo-viewer-hints.is-touch { display: flex; }
   .photo-viewer-stage > img { cursor: default; }
 }
+/* The rows are fixed, so hiding the bars leaves the stage in the middle row, now full height. */
+.photo-viewer-bar { grid-row: 1; }
+.photo-viewer-stage { grid-row: 2; }
+.photo-viewer-footer { grid-row: 3; }
+/* The viewer itself takes focus only while its controls are hidden; it is a container, not a control. */
+.photo-viewer:focus { outline: none; }
+/* Swiping a photo down to close fades the viewer as it goes (--dismiss runs from 0 to 1). */
+.photo-viewer { background: rgba(4, 9, 6, calc(.94 - var(--dismiss, 0) * .7)); }
+.photo-viewer-ambient, .photo-viewer-bar, .photo-viewer-footer { opacity: calc(1 - var(--dismiss, 0)); }
+/* Hidden controls (a tap on a phone, or H): only the photo stays. */
+.photo-viewer.is-immersive :is(.photo-viewer-bar, .photo-viewer-footer, .photo-viewer-nav, .photo-viewer-navigator) { display: none; }
+.photo-viewer.is-comparing .photo-viewer-zoom { display: none; }
+
+/* Comparison view switch: side by side or slider. */
+.photo-viewer-segmented { display: flex; gap: 2px; padding: 4px; border-radius: var(--radius-pill); background: rgba(255, 255, 255, .08); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .1), 0 12px 30px -14px rgba(0, 0, 0, .7); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); animation: pop-in var(--dur-med) var(--ease-out) backwards; }
+.photo-viewer-segmented button { height: 36px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; border: 0; border-radius: var(--radius-pill); color: rgba(255, 255, 255, .78); background: transparent; font-size: var(--fs-sm); font-weight: 650; cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+.photo-viewer-segmented button:hover { color: #fff; background: rgba(255, 255, 255, .1); }
+.photo-viewer-segmented button[aria-pressed="true"] { color: #0d2417; background: #fff; box-shadow: 0 6px 16px -8px rgba(0, 0, 0, .6); }
+
+/* Slider: the before and after photos in one frame, the after photo shown right of the divider. */
+.photo-viewer-slider { position: absolute; inset: 4px 24px 0; display: flex; flex-direction: column; gap: 10px; animation: fade-in var(--dur-med) var(--ease-out) backwards; }
+.photo-viewer-slider-area { flex: 1 1 auto; min-height: 0; display: grid; place-items: center; container-type: size; }
+/* The frame takes the before photo's shape (--ratio, width over height), as large as fits. */
+.photo-viewer-slider-frame { position: relative; width: min(100cqw, calc(100cqh * var(--ratio, 1.3333))); aspect-ratio: var(--ratio, 1.3333); container-type: size; overflow: hidden; border-radius: var(--radius-md); background: rgba(255, 255, 255, .04); box-shadow: 0 0 0 1px rgba(255, 255, 255, .1), 0 40px 90px -30px rgba(0, 0, 0, .9); cursor: ew-resize; touch-action: none; user-select: none; -webkit-user-select: none; animation: photo-viewer-open var(--dur-slow) var(--ease-spring) backwards; }
+.photo-viewer-slider-layer { position: absolute; inset: 0; overflow: hidden; }
+.photo-viewer-slider-layer img { position: absolute; top: 50%; left: 50%; width: 100cqw; height: 100cqh; max-width: none; display: block; object-fit: cover; translate: -50% -50%; pointer-events: none; -webkit-user-drag: none; transition: rotate var(--dur-med) var(--ease-out), filter var(--dur-med) var(--ease-out); }
+.photo-viewer-slider-layer img.is-sideways { width: 100cqh; height: 100cqw; }
+.photo-viewer-slider-divider { position: absolute; top: 0; bottom: 0; width: 0; pointer-events: none; }
+.photo-viewer-slider-divider::before { content: ''; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background: #fff; box-shadow: 0 0 14px rgba(0, 0, 0, .55); }
+.photo-viewer-slider-handle { position: absolute; top: 50%; left: 0; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; color: #0d2417; background: #fff; box-shadow: 0 0 0 4px rgba(255, 255, 255, .22), 0 10px 26px -6px rgba(0, 0, 0, .65); translate: -50% -50%; cursor: ew-resize; pointer-events: auto; transition: scale var(--dur-med) var(--ease-spring); }
+.photo-viewer-slider-handle:hover { scale: 1.08; }
+.photo-viewer-slider-handle:focus-visible { outline: 2px solid #9fe0ae; outline-offset: 4px; }
+.photo-viewer-slider-tag { position: absolute; top: 12px; padding: 4px 10px; border-radius: var(--radius-pill); background: rgba(4, 9, 6, .62); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); font-size: var(--fs-xs); font-weight: 700; letter-spacing: .03em; text-transform: uppercase; pointer-events: none; }
+.photo-viewer-slider-tag.is-before { left: 12px; color: #ffe0b3; }
+.photo-viewer-slider-tag.is-after { right: 12px; color: #c9f3d2; }
+.photo-viewer-slider-bar { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; padding: 0 2px; }
+.photo-viewer-slider-bar .photo-viewer-pane-bar { min-width: 0; flex: 0 1 auto; }
+
+/* Keyboard shortcuts: listed over the photo, from the footer button or the ? key. */
+.photo-viewer-shortcuts-button { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 4px; border: 0; border-radius: var(--radius-pill); color: rgba(255, 255, 255, .72); background: rgba(255, 255, 255, .06); font-size: var(--fs-xs); font-weight: 600; cursor: pointer; transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out); }
+.photo-viewer-shortcuts-button:hover { color: #fff; background: rgba(255, 255, 255, .14); }
+.photo-viewer-shortcuts-scrim { position: absolute; z-index: 10; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(4, 9, 6, .55); animation: fade-in var(--dur-fast) var(--ease-out) backwards; }
+.photo-viewer-shortcuts { width: min(100%, 420px); max-height: 100%; overflow-y: auto; padding: 16px 20px 12px; border-radius: var(--radius-lg); background: rgba(20, 30, 24, .94); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12), 0 30px 80px -24px rgba(0, 0, 0, .9); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); animation: pop-in var(--dur-med) var(--ease-spring) backwards; }
+.photo-viewer-shortcuts header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.photo-viewer-shortcuts h3 { margin: 0; color: #fff; font-size: var(--fs-md); font-weight: 680; }
+.photo-viewer-shortcuts header button { width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; color: #fff; background: rgba(255, 255, 255, .1); cursor: pointer; }
+.photo-viewer-shortcuts header button:hover { background: rgba(255, 255, 255, .2); }
+.photo-viewer-shortcuts dl { display: grid; margin: 0; }
+.photo-viewer-shortcuts dl > div { display: grid; grid-template-columns: 132px minmax(0, 1fr); align-items: center; gap: 12px; padding: 7px 0; border-top: 1px solid rgba(255, 255, 255, .07); }
+.photo-viewer-shortcuts dl > div:first-child { border-top: 0; }
+.photo-viewer-shortcuts dt { display: flex; flex-wrap: wrap; gap: 4px; }
+.photo-viewer-shortcuts dd { margin: 0; color: rgba(255, 255, 255, .84); font-size: var(--fs-sm); }
+.photo-viewer-shortcuts kbd { min-width: 22px; padding: 1px 6px; border-color: rgba(255, 255, 255, .22); color: #fff; background: rgba(255, 255, 255, .08); font-size: var(--fs-xs); }
+
 @keyframes photo-viewer-bar-in { from { opacity: 0; translate: 0 -10px; } }
 @keyframes photo-viewer-footer-in { from { opacity: 0; translate: 0 10px; } }
 @keyframes photo-viewer-open { from { opacity: 0; scale: .94; } }
@@ -2877,7 +2966,21 @@ html[data-motion="reduced"] .photo-viewer.is-closing { animation: none; }
 /* Phones: the photo runs edge to edge, zoom is pinch and double tap, and the footer stacks. */
 @media (max-width: 640px) {
   .photo-viewer-bar { gap: 10px; padding: 10px 10px 8px 16px; }
-  .photo-viewer-icon, .photo-viewer-zoom { display: none; }
+  .photo-viewer-icon, .photo-viewer-zoom, .photo-viewer-group .photo-viewer-fullscreen { display: none; }
+  .photo-viewer-tools { gap: 6px; }
+  .photo-viewer-group { padding: 3px; }
+  .photo-viewer-group button { min-width: 34px; height: 34px; padding: 0 6px; }
+  .photo-viewer-compare-toggle { width: 40px; height: 40px; justify-content: center; padding: 0; }
+  .photo-viewer-compare-toggle span { display: none; }
+  .photo-viewer-close { width: 40px; height: 40px; }
+  .photo-viewer-compare { inset: 0 8px; gap: 8px; }
+  .photo-viewer-pane { padding: 6px; }
+  .photo-viewer-navigator { right: 10px; bottom: 10px; }
+  .photo-viewer-segmented button { padding: 0 10px; }
+  .photo-viewer-segmented span { display: none; }
+  .photo-viewer.is-comparing .photo-viewer-actions { display: none; }
+  .photo-viewer-slider { inset: 0 8px; gap: 8px; }
+  .photo-viewer-slider-bar { flex-direction: column; }
   .photo-viewer-title { font-size: var(--fs-md); }
   .photo-viewer-stage { padding: 0; }
   .photo-viewer-stage > img { border-radius: 0; box-shadow: none; }
@@ -2892,6 +2995,8 @@ html[data-motion="reduced"] .photo-viewer.is-closing { animation: none; }
 /* Thumbnails that open the photo viewer. */
 .photo-strip button { display: block; padding: 0; border: 0; border-radius: var(--radius-sm); background: var(--surface-3); cursor: zoom-in; transition: transform var(--dur-med) var(--ease-spring), box-shadow var(--dur-fast) var(--ease-out); }
 .photo-strip button:hover { box-shadow: var(--shadow-sm); transform: translateY(-1px); }
+.photo-strip .photo-strip-compare { align-self: center; display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 14px; border: 1px solid var(--border); border-radius: var(--radius-pill); color: var(--accent-strong); background: var(--surface); font-size: var(--fs-sm); font-weight: 650; cursor: pointer; }
+.photo-strip .photo-strip-compare:hover { border-color: var(--accent-line); background: var(--surface-2); }
 .report-photo { padding: 0; border: 0; color: inherit; font: inherit; text-align: inherit; }
 
 /* ---------- Dropdown lists in dark mode ---------- */
