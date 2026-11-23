@@ -18,8 +18,21 @@ jobs:
         include:
           - runner: windows-latest
             label: Windows
+            arch: x64
             artifact: greenpulse-windows
-          # Add macos-latest / greenpulse-macos here when a Mac build is needed.
+            files: out/make/**
+          # DMGs can only be built on macOS. macos-latest is an Apple silicon runner;
+          # it also builds the Intel app, since the app has no native code to compile.
+          - runner: macos-latest
+            label: macOS (Apple silicon)
+            arch: arm64
+            artifact: greenpulse-macos-apple-silicon
+            files: out/make/dmg/**
+          - runner: macos-latest
+            label: macOS (Intel)
+            arch: x64
+            artifact: greenpulse-macos-intel
+            files: out/make/dmg/**
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out source
@@ -35,12 +48,12 @@ jobs:
         run: npm ci
 
       - name: Build installers
-        run: npm run desktop:make
+        run: npm run desktop:make -- --arch=${{ matrix.arch }}
 
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: out/make/**
+          path: ${{ matrix.files }}
           if-no-files-found: error
           retention-days: 14
