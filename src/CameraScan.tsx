@@ -5,6 +5,7 @@ import type { PhotoIssueGuess } from './lib/photo-issue-classifier'
 import { REPORT_PHOTO_TYPES } from './lib/report-photos'
 import { remainingScanTime, scanFrame, scanNeedsHint, startScan } from './lib/photo-scan'
 import type { PhotoChecker } from './usePhotoChecker'
+import { t } from './lib/i18n'
 
 type CameraScanProps = {
   checker: PhotoChecker
@@ -40,7 +41,7 @@ function frameFile(canvas: HTMLCanvasElement): Promise<File> {
   return new Promise((resolve, reject) => {
     canvas.toBlob((blob) => blob
       ? resolve(new File([blob], `camera-${Date.now()}.jpg`, { type: 'image/jpeg', lastModified: Date.now() }))
-      : reject(new Error('The camera photo could not be saved.')), 'image/jpeg', 0.9)
+      : reject(new Error(t('The camera photo could not be saved.'))), 'image/jpeg', 0.9)
   })
 }
 
@@ -166,15 +167,15 @@ export function CameraScan({ checker, onCapture, onFiles, onError, onBack }: Cam
     return <div className="scan-fallback" role="status">
       {fileInputs}
       <span className="scan-fallback-icon" aria-hidden="true"><CameraOff size={22} /></span>
-      <strong>{camera === 'blocked' ? 'Camera access is blocked' : "The live camera isn't available here"}</strong>
+      <strong>{camera === 'blocked' ? t('Camera access is blocked') : t('The live camera isn\'t available here')}</strong>
       <p>{camera === 'blocked'
-        ? 'Allow camera access in your browser settings to scan, or take the photo with your camera app.'
-        : 'Take the photo with your camera app, or upload one you already have.'}</p>
+        ? t('Allow camera access in your browser settings to scan, or take the photo with your camera app.')
+        : t('Take the photo with your camera app, or upload one you already have.')}</p>
       <div className="scan-fallback-actions">
-        <button className="primary-button" type="button" onClick={() => cameraAppRef.current?.click()}><Camera size={16} />Take a photo</button>
-        <button className="secondary-button" type="button" onClick={() => uploadRef.current?.click()}><ImageUp size={16} />Upload a photo</button>
+        <button className="primary-button" type="button" onClick={() => cameraAppRef.current?.click()}><Camera size={16} />{t('Take a photo')}</button>
+        <button className="secondary-button" type="button" onClick={() => uploadRef.current?.click()}><ImageUp size={16} />{t('Upload a photo')}</button>
       </div>
-      <button className="text-button scan-fallback-back" type="button" onClick={onBack}><ArrowLeft size={14} />Back</button>
+      <button className="text-button scan-fallback-back" type="button" onClick={onBack}><ArrowLeft size={14} />{t('Back')}</button>
     </div>
   }
 
@@ -183,21 +184,21 @@ export function CameraScan({ checker, onCapture, onFiles, onError, onBack }: Cam
   const hint = scan.phase === 'scanning' && scan.hint && !capturing
   // Each message slides in; the key changes only when the message does.
   let status: ReactNode
-  if (camera === 'starting' || !playing) status = <span key="starting" className="scan-status-line"><span className="search-spinner" aria-hidden="true" />Starting the camera<span className="scan-dots" aria-hidden="true"><i /><i /><i /></span></span>
-  else if (found) status = <span key="found" className="scan-status-line"><Check size={15} aria-hidden="true" />Found {found.issueType ? `${found.category} · ${found.issueType}` : found.category}</span>
-  else if (capturing) status = <span key="capturing" className="scan-status-line"><Camera size={15} aria-hidden="true" />Photo taken</span>
+  if (camera === 'starting' || !playing) status = <span key="starting" className="scan-status-line"><span className="search-spinner" aria-hidden="true" />{t('Starting the camera')}<span className="scan-dots" aria-hidden="true"><i /><i /><i /></span></span>
+  else if (found) status = <span key="found" className="scan-status-line"><Check size={15} aria-hidden="true" />{t('Found {issue}', { issue: found.issueType ? `${t(found.category)} · ${t(found.issueType)}` : t(found.category) })}</span>
+  else if (capturing) status = <span key="capturing" className="scan-status-line"><Camera size={15} aria-hidden="true" />{t('Photo taken')}</span>
   else if (downloading !== undefined) status = <span key="download" className="scan-status-download">
-    <span><span className="search-spinner" aria-hidden="true" />Getting the photo checker ready… {Math.round(downloading * 100)}%</span>
+    <span><span className="search-spinner" aria-hidden="true" />{t('Getting the photo checker ready… {percent}%', { percent: Math.round(downloading * 100) })}</span>
     <span className="scan-status-bar" aria-hidden="true"><i style={{ width: `${Math.round(downloading * 100)}%` }} /></span>
   </span>
-  else if (hint) status = <span key="hint" className="scan-status-line">Nothing spotted yet. Move closer, or tap the button to take the photo.</span>
-  else status = <span key="looking" className="scan-status-line"><ScanLine size={15} aria-hidden="true" className="scan-status-icon" />Looking for an issue<span className="scan-dots" aria-hidden="true"><i /><i /><i /></span></span>
+  else if (hint) status = <span key="hint" className="scan-status-line">{t('Nothing spotted yet. Move closer, or tap the button to take the photo.')}</span>
+  else status = <span key="looking" className="scan-status-line"><ScanLine size={15} aria-hidden="true" className="scan-status-icon" />{t('Looking for an issue')}<span className="scan-dots" aria-hidden="true"><i /><i /><i /></span></span>
   const scanning = camera === 'live' && playing && !found && !capturing
 
   return <>
     {fileInputs}
     <div className={`scan-viewport is-camera${found ? ' is-found' : ''}${playing ? ' is-playing' : ''}${scanning ? ' is-scanning' : ''}${capturing ? ' is-capturing' : ''}`}>
-      <video ref={videoRef} playsInline muted autoPlay aria-label="Camera view" onLoadedData={() => setPlaying(true)} onPlaying={() => setPlaying(true)} />
+      <video ref={videoRef} playsInline muted autoPlay aria-label={t('Camera view')} onLoadedData={() => setPlaying(true)} onPlaying={() => setPlaying(true)} />
       {!playing && <span className="scan-placeholder" aria-hidden="true"><Camera size={30} /></span>}
       <div className="scan-frame" aria-hidden="true"><i /><i /><i /><i /></div>
       {scanning && <><div className="scan-sweep" aria-hidden="true" /><ScanPoints /></>}
@@ -205,9 +206,9 @@ export function CameraScan({ checker, onCapture, onFiles, onError, onBack }: Cam
       <p className={`scan-status${found ? ' is-found' : ''}`} role="status">{status}</p>
     </div>
     <div className={`scan-controls${hint ? ' is-hint' : ''}`}>
-      <button className="text-button" type="button" onClick={onBack}><ArrowLeft size={14} />Back</button>
-      <button className="scan-shutter" type="button" onClick={() => void takePhoto()} disabled={camera !== 'live' || !playing || Boolean(found) || capturing} aria-label="Take the photo now"><Camera size={24} /></button>
-      <button className="text-button" type="button" onClick={() => uploadRef.current?.click()}><ImageUp size={14} />Upload instead</button>
+      <button className="text-button" type="button" onClick={onBack}><ArrowLeft size={14} />{t('Back')}</button>
+      <button className="scan-shutter" type="button" onClick={() => void takePhoto()} disabled={camera !== 'live' || !playing || Boolean(found) || capturing} aria-label={t('Take the photo now')}><Camera size={24} /></button>
+      <button className="text-button" type="button" onClick={() => uploadRef.current?.click()}><ImageUp size={14} />{t('Upload instead')}</button>
     </div>
   </>
 }

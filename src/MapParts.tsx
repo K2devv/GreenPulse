@@ -4,6 +4,7 @@ import type { MapInstance } from '@vis.gl/react-maplibre'
 import { motionIsReduced } from './display-prefs'
 import { clusterBubbleSize } from './lib/map-pin-clearance'
 import { districtLockCamera, type Bounds, type FitCamera } from './lib/map-viewport'
+import { t, tn } from './lib/i18n'
 
 /** Closest zoom. The vector tiles stop at zoom 14 and are drawn larger beyond it. */
 export const MAP_MAX_ZOOM = 18.5
@@ -98,14 +99,14 @@ export function MapPin({ color, icon: Icon, label, title, status, urgent, muted,
 export function ClusterBubble({ count, urgent, ring }: { count: number; urgent: number; ring?: string }) {
   const size = clusterBubbleSize(count)
   const style = { '--cluster-ring': ring ?? 'var(--accent-line)', '--cluster-size': `${size}px` } as CSSProperties
-  return <button type="button" className="report-cluster" style={style} aria-label={`${count} reports${urgent ? `, ${urgent} high urgency` : ''}. Zoom in.`}>
+  return <button type="button" className="report-cluster" style={style} aria-label={`${tn('{count} report', '{count} reports', count)}${urgent ? `, ${t('{count} high urgency', { count: urgent })}` : ''}. ${t('Zoom in.')}`}>
     <span className="report-cluster-count" aria-hidden="true">{count}</span>
     {urgent > 0 && <i className="report-cluster-urgent" aria-hidden="true">{urgent}</i>}
   </button>
 }
 
 export function UserDot() {
-  return <span className="user-location-dot"><span className="sr-only">Your location</span></span>
+  return <span className="user-location-dot"><span className="sr-only">{t('Your location')}</span></span>
 }
 
 type MapZoomControlsProps = {
@@ -118,23 +119,23 @@ type MapZoomControlsProps = {
 }
 
 export function MapZoomControls({ onZoomIn, onZoomOut, onFit, canZoomIn = true, canZoomOut = true }: MapZoomControlsProps) {
-  return <div className="map-zoom" role="group" aria-label="Map zoom">
-    <button type="button" onClick={onZoomIn} disabled={!canZoomIn} aria-label="Zoom in" title="Zoom in"><Plus size={16} /></button>
-    <button type="button" onClick={onZoomOut} disabled={!canZoomOut} aria-label="Zoom out" title="Zoom out"><Minus size={16} /></button>
-    {onFit && <button type="button" onClick={onFit} aria-label="Show all of District 5" title="Show all of District 5"><Maximize size={15} /></button>}
+  return <div className="map-zoom" role="group" aria-label={t('Map zoom')}>
+    <button type="button" onClick={onZoomIn} disabled={!canZoomIn} aria-label={t('Zoom in')} title={t('Zoom in')}><Plus size={16} /></button>
+    <button type="button" onClick={onZoomOut} disabled={!canZoomOut} aria-label={t('Zoom out')} title={t('Zoom out')}><Minus size={16} /></button>
+    {onFit && <button type="button" onClick={onFit} aria-label={t('Show all of District 5')} title={t('Show all of District 5')}><Maximize size={15} /></button>}
   </div>
 }
 
 /** Placeholder shown while the map code and outlines load. */
 export function MapSkeleton() {
-  return <div className="map-skeleton skeleton" role="status" aria-busy="true"><span className="sr-only">Loading map…</span></div>
+  return <div className="map-skeleton skeleton" role="status" aria-busy="true"><span className="sr-only">{t('Loading map…')}</span></div>
 }
 
 /** Shown when the map cannot start, for example on a device without WebGL2. */
 export function MapUnavailable({ detail }: { detail: string }) {
   return <div className="map-unavailable" role="status">
     <MapPinOff size={22} aria-hidden="true" />
-    <strong>The map could not be displayed</strong>
+    <strong>{t('The map could not be displayed')}</strong>
     <span>{detail}</span>
   </div>
 }

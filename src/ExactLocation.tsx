@@ -1,4 +1,5 @@
 import { MapPin } from 'lucide-react'
+import { t } from './lib/i18n'
 
 /** Coordinates to at most 6 decimals (about 0.1 m), without trailing zeros. */
 export function formatExactCoordinates([latitude, longitude]: [number, number]) {
@@ -17,11 +18,11 @@ export function openStreetMapUrl([latitude, longitude]: [number, number]) {
  * only be given a report from the private `reports` table.
  */
 export function ExactLocation({ label, coordinates }: { label: string; coordinates: [number, number] }) {
-  return <section className="exact-location" aria-label="Exact location">
-    <span className="field-label">Exact location</span>
-    <p className="workflow-meta"><MapPin size={12} aria-hidden="true" />{label || 'No address recorded'}</p>
+  return <section className="exact-location" aria-label={t('Exact location')}>
+    <span className="field-label">{t('Exact location')}</span>
+    <p className="workflow-meta"><MapPin size={12} aria-hidden="true" />{label || t('No address recorded')}</p>
     <p className="section-caption">{formatExactCoordinates(coordinates)}</p>
-    <a className="text-button" href={openStreetMapUrl(coordinates)} target="_blank" rel="noreferrer">Open in map</a>
-    <p className="workflow-hint">Visible to staff and the reporter only</p>
+    <a className="text-button" href={openStreetMapUrl(coordinates)} target="_blank" rel="noreferrer">{t('Open in map')}</a>
+    <p className="workflow-hint">{t('Visible to staff and the reporter only')}</p>
   </section>
 }

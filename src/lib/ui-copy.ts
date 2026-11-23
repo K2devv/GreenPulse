@@ -1,4 +1,6 @@
-const copy = {
+import { t } from './i18n'
+/** Shared UI text, in English; `translate()` shows it in the current language. */
+export const UI_COPY = {
   reportIssue: 'Report an issue',
   communitySubtitle: 'A shared view of local environmental concerns and response across District 5.',
   reportFormTitle: 'What did you notice?',
@@ -36,6 +38,7 @@ const copy = {
   resetFilters: 'Reset filters',
 } as const
 
-export function translate(key: keyof typeof copy) {
-  return copy[key]
+/** A shared piece of UI text, in the current language. */
+export function translate(key: keyof typeof UI_COPY) {
+  return t(UI_COPY[key])
 }

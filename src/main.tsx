@@ -8,6 +8,7 @@ import '@fontsource/newsreader/latin-500-italic.css'
 import './styles.css'
 import { Capacitor } from '@capacitor/core'
 import App from './App'
+import { prepareLanguage } from './lib/i18n'
 
 const isProductionBuild = Boolean((import.meta as ImportMeta & { env?: { PROD?: boolean } }).env?.PROD)
 
@@ -20,11 +21,14 @@ if (isProductionBuild && !Capacitor.isNativePlatform() && 'serviceWorker' in nav
   })
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-)
+// With Filipino chosen, its text loads first so the app never opens in English and then switches.
+void prepareLanguage().then(() => {
+  ReactDOM.createRoot(document.getElementById('root')!).render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  )
+})
 
 const BOOT_SPLASH_MIN_MS = 800
 const BOOT_SPLASH_MAX_MS = 6000

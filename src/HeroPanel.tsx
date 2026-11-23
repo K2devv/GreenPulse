@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { ArrowRight, type LucideIcon } from 'lucide-react'
 import { StatNumber } from './AnimatedNumber'
+import { t } from './lib/i18n'
 
 export type HeroStat = {
   icon: LucideIcon
@@ -55,7 +56,7 @@ export function HeroPanel({ title, subtitle, action, hint, stats, statsLabel, lo
   return <section className="hero">
     <div className="hero-backdrop" aria-hidden="true"><i /><i /><i /></div>
     <div className="hero-copy">
-      <p className="hero-eyebrow"><span className="hero-eyebrow-dot" /><span className="hero-eyebrow-desk">Community environment desk <i aria-hidden="true">•</i></span> District 5, Quezon City</p>
+      <p className="hero-eyebrow"><span className="hero-eyebrow-dot" /><span className="hero-eyebrow-desk">{t('Community environment desk')} <i aria-hidden="true">•</i></span> District 5, Quezon City</p>
       <h1>{title}</h1>
       <p className="hero-subtitle">{subtitle}</p>
       <div className="hero-actions">{action}{hint && <span className="hero-hint">{hint}</span>}</div>

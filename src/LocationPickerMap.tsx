@@ -7,6 +7,7 @@ import { barangayBounds, barangayCamera } from './lib/barangay-camera'
 import { districtFeatures, type DistrictOutline } from './lib/district-outline'
 import { buildMapStyle, VECTOR_SOURCE_ID, type Basemap, type MapTheme } from './lib/map-style'
 import type { Padding } from './lib/map-viewport'
+import { t } from './lib/i18n'
 
 type LocationPickerMapProps = {
   theme: MapTheme
@@ -94,9 +95,9 @@ export default function LocationPickerMap({ theme, outline, location, color, ico
     if (map) map.easeTo({ zoom: map.getZoom() + delta, duration: cameraDuration(260) })
   }
 
-  if (failed) return <MapUnavailable detail="Search for a place or use your current location instead." />
+  if (failed) return <MapUnavailable detail={t('Search for a place or use your current location instead.')} />
 
-  return <div className={`map-canvas ${ready ? 'is-ready' : ''}`} role="region" aria-label="Map for choosing the report location">
+  return <div className={`map-canvas ${ready ? 'is-ready' : ''}`} role="region" aria-label={t('Map for choosing the report location')}>
     <MapView
       ref={mapRef}
       mapLib={mapLib}
@@ -133,7 +134,7 @@ export default function LocationPickerMap({ theme, outline, location, color, ico
           if (!onSelect([event.lngLat.lat, event.lngLat.lng])) event.target.setLngLat([longitude, latitude])
         }}
       >
-        <MapPin variant="location" color={color} icon={icon} label={placed ? 'Report location. Drag to adjust.' : 'No location chosen yet. Drag the pin or select a spot on the map.'} dragging={dragging} placeholder={!placed && !dragging} />
+        <MapPin variant="location" color={color} icon={icon} label={placed ? t('Report location. Drag to adjust.') : t('No location chosen yet. Drag the pin or select a spot on the map.')} dragging={dragging} placeholder={!placed && !dragging} />
       </Marker>
     </MapView>
     <MapZoomControls onZoomIn={() => zoomBy(1)} onZoomOut={() => zoomBy(-1)} canZoomIn={zoom < MAP_MAX_ZOOM - 0.01} canZoomOut={!lock || zoom > lock.zoom + 0.01} />

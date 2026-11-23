@@ -24,6 +24,9 @@ const STATUS_LABELS: Record<string, string> = {
   Duplicate: 'Report marked as a duplicate',
 }
 
+/** Every timeline label above, for the Filipino dictionary test. */
+export const TIMELINE_LABELS = [...Object.values(STATUS_LABELS), 'Resolution sent back for more work']
+
 export function describeEvent(event: Pick<TimelineEvent, 'event_type' | 'message'>) {
   const change = /^Status changed from (.+) to (.+)$/.exec(event.message)
   if (event.event_type === 'status_changed' && change) {

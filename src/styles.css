@@ -2906,3 +2906,14 @@ html[data-motion="reduced"] .photo-viewer.is-closing { animation: none; }
    field rule that sets a background or padding. */
 .field-label select, .env-controls select, .followup-controls select { -webkit-appearance: none; appearance: none; background-image: var(--select-chevron); background-repeat: no-repeat; background-position: right 10px center; background-size: 14px; }
 .field-label select, .workflow-form .field-label select, .workflow-grid .field-label select, .env-controls select, .followup-controls select { padding-right: 32px; }
+
+/* ======== Language switch (English / Filipino) ======== */
+.language-toggle { position: relative; flex: 0 0 auto; display: inline-grid; grid-template-columns: 1fr 1fr; align-items: center; height: 30px; padding: 2px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-2); box-shadow: inset 0 1px 2px rgba(25, 45, 28, .08); }
+.language-toggle-thumb { position: absolute; top: 2px; bottom: 2px; left: 2px; width: calc(50% - 2px); border-radius: var(--radius-pill); background: var(--accent); box-shadow: 0 1px 3px rgba(20, 36, 25, .22); transition: transform var(--dur-med) var(--ease-spring); }
+.language-toggle[data-active='fil'] .language-toggle-thumb { transform: translateX(100%); }
+/* Outranks the phone rule that gives every button a 44px height; ::after keeps the 44px touch target. */
+.language-toggle button { position: relative; z-index: 1; min-width: 34px; min-height: 0; height: 24px; padding: 0 8px; border: 0; border-radius: var(--radius-pill); color: var(--text-muted); background: transparent; font-size: var(--fs-2xs); font-weight: 700; letter-spacing: .04em; cursor: pointer; transition: color var(--dur-fast) var(--ease-out); }
+.language-toggle button::after { content: ''; position: absolute; inset: -10px -1px; }
+.language-toggle button:hover { color: var(--text); }
+.language-toggle button[aria-pressed='true'] { color: var(--on-accent); }
+.language-toggle[aria-busy='true'] { opacity: .7; }

@@ -1,3 +1,4 @@
+import { t } from './i18n'
 export type LocalReportDraft = {
   submissionId: string
   savedAt: string
@@ -17,7 +18,7 @@ function openDraftDatabase(): Promise<IDBDatabase> {
     const request = indexedDB.open(databaseName, 1)
     request.onupgradeneeded = () => request.result.createObjectStore(storeName)
     request.onsuccess = () => resolve(request.result)
-    request.onerror = () => reject(request.error ?? new Error('Local draft storage is unavailable.'))
+    request.onerror = () => reject(request.error ?? new Error(t('Local draft storage is unavailable.')))
   })
 }
 
@@ -28,8 +29,8 @@ export async function saveLocalReportDraft(draft: LocalReportDraft) {
       const transaction = database.transaction(storeName, 'readwrite')
       transaction.objectStore(storeName).put(draft, draftKey)
       transaction.oncomplete = () => resolve()
-      transaction.onerror = () => reject(transaction.error ?? new Error('The draft could not be saved.'))
-      transaction.onabort = () => reject(transaction.error ?? new Error('The draft could not be saved.'))
+      transaction.onerror = () => reject(transaction.error ?? new Error(t('The draft could not be saved.')))
+      transaction.onabort = () => reject(transaction.error ?? new Error(t('The draft could not be saved.')))
     })
   } finally {
     database.close()
@@ -42,7 +43,7 @@ export async function getLocalReportDraft(): Promise<LocalReportDraft | undefine
     return await new Promise((resolve, reject) => {
       const request = database.transaction(storeName, 'readonly').objectStore(storeName).get(draftKey)
       request.onsuccess = () => resolve(request.result as LocalReportDraft | undefined)
-      request.onerror = () => reject(request.error ?? new Error('The saved draft could not be loaded.'))
+      request.onerror = () => reject(request.error ?? new Error(t('The saved draft could not be loaded.')))
     })
   } finally {
     database.close()
@@ -56,8 +57,8 @@ export async function deleteLocalReportDraft() {
       const transaction = database.transaction(storeName, 'readwrite')
       transaction.objectStore(storeName).delete(draftKey)
       transaction.oncomplete = () => resolve()
-      transaction.onerror = () => reject(transaction.error ?? new Error('The saved draft could not be deleted.'))
-      transaction.onabort = () => reject(transaction.error ?? new Error('The saved draft could not be deleted.'))
+      transaction.onerror = () => reject(transaction.error ?? new Error(t('The saved draft could not be deleted.')))
+      transaction.onabort = () => reject(transaction.error ?? new Error(t('The saved draft could not be deleted.')))
     })
   } finally {
     database.close()

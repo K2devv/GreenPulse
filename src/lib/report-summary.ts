@@ -1,3 +1,4 @@
+import { t, tn, dateLocale } from './i18n'
 export type SummaryReport = {
   id?: string
   title?: string
@@ -40,7 +41,7 @@ const URGENCIES = ['High', 'Medium', 'Low']
 
 const startOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate())
 const endOfDay = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59, 999)
-const shortDate = (date: Date) => date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+const shortDate = (date: Date) => date.toLocaleDateString(dateLocale(), { month: 'short', day: 'numeric', year: 'numeric' })
 
 function parseDateKey(value: string) {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
@@ -55,21 +56,21 @@ function describe(start: Date, end: Date, name: string) {
 
 export function resolveRange(period: SummaryPeriod, now: Date, custom?: { from: string; to: string }): SummaryRange | { error: string } {
   const today = startOfDay(now)
-  if (period === 'daily') return { start: today, end: endOfDay(now), label: describe(today, now, 'Daily report') }
+  if (period === 'daily') return { start: today, end: endOfDay(now), label: describe(today, now, t('Daily report')) }
   if (period === 'weekly') {
     const start = new Date(today)
     start.setDate(start.getDate() - ((start.getDay() + 6) % 7))
-    return { start, end: endOfDay(now), label: describe(start, now, 'Weekly report') }
+    return { start, end: endOfDay(now), label: describe(start, now, t('Weekly report')) }
   }
   if (period === 'monthly') {
     const start = new Date(now.getFullYear(), now.getMonth(), 1)
-    return { start, end: endOfDay(now), label: describe(start, now, 'Monthly report') }
+    return { start, end: endOfDay(now), label: describe(start, now, t('Monthly report')) }
   }
   const from = parseDateKey(custom?.from ?? '')
   const to = parseDateKey(custom?.to ?? '')
-  if (!from || !to) return { error: 'Choose both a start and an end date.' }
-  if (from > to) return { error: 'The start date must be on or before the end date.' }
-  return { start: from, end: endOfDay(to), label: describe(from, to, 'Custom report') }
+  if (!from || !to) return { error: t('Choose both a start and an end date.') }
+  if (from > to) return { error: t('The start date must be on or before the end date.') }
+  return { start: from, end: endOfDay(to), label: describe(from, to, t('Custom report')) }
 }
 
 function count(items: SummaryReport[], labelFor: (report: SummaryReport) => string | undefined, labels?: string[]): Count[] {
@@ -87,7 +88,7 @@ function topLabels(counts: Count[]) {
   return max ? { max, labels: counts.filter((entry) => entry.value === max).map((entry) => entry.label) } : undefined
 }
 
-const joinNames = (names: string[]) => names.length < 3 ? names.join(' and ') : `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`
+const joinNames = (names: string[]) => names.length < 3 ? names.join(` ${t('and')} `) : `${names.slice(0, -1).join(', ')}, ${t('and')} ${names[names.length - 1]}`
 
 function averageMs(values: number[]) {
   return values.length ? values.reduce((total, value) => total + value, 0) / values.length : undefined
@@ -131,22 +132,26 @@ export function buildEnvironmentalSummary(reports: readonly SummaryReport[], ran
 
   const trends: string[] = []
   if (!rows.length) {
-    trends.push('No reports were submitted in this period.')
+    trends.push(t('No reports were submitted in this period.'))
   } else {
     if (changePct !== undefined) {
       const rounded = Math.round(Math.abs(changePct))
-      trends.push(rounded === 0 ? `The number of reports was about the same as the previous ${days} day${days === 1 ? '' : 's'} (${previousTotal}).`
-        : `Reports ${changePct > 0 ? 'increased' : 'decreased'} by ${rounded}% compared with the previous ${days} day${days === 1 ? '' : 's'} (${previousTotal} to ${rows.length}).`)
+      const vars = { days, previous: previousTotal, current: rows.length, percent: rounded }
+      trends.push(rounded === 0
+        ? tn('The number of reports was about the same as the previous {days} day ({previous}).', 'The number of reports was about the same as the previous {days} days ({previous}).', days, vars)
+        : changePct > 0
+          ? tn('Reports increased by {percent}% compared with the previous {days} day ({previous} to {current}).', 'Reports increased by {percent}% compared with the previous {days} days ({previous} to {current}).', days, vars)
+          : tn('Reports decreased by {percent}% compared with the previous {days} day ({previous} to {current}).', 'Reports decreased by {percent}% compared with the previous {days} days ({previous} to {current}).', days, vars))
     } else {
-      trends.push('There were no reports in the previous period to compare with.')
+      trends.push(t('There were no reports in the previous period to compare with.'))
     }
     const topCategory = topLabels(byCategory)
-    if (topCategory) trends.push(`${joinNames(topCategory.labels)} ${topCategory.labels.length > 1 ? 'were' : 'was'} the most reported ${topCategory.labels.length > 1 ? 'categories' : 'category'} (${topCategory.max} of ${rows.length}).`)
+    if (topCategory) trends.push(t(topCategory.labels.length > 1 ? '{names} were the most reported categories ({max} of {total}).' : '{names} was the most reported category ({max} of {total}).', { names: joinNames(topCategory.labels.map((label) => t(label))), max: topCategory.max, total: rows.length }))
     const topBarangay = topLabels(byBarangay.filter((entry) => entry.label !== 'No barangay recorded'))
-    if (topBarangay) trends.push(`Barangay ${joinNames(topBarangay.labels)} had the most reports (${topBarangay.max}).`)
+    if (topBarangay) trends.push(t('Barangay {names} had the most reports ({max}).', { names: joinNames(topBarangay.labels), max: topBarangay.max }))
     const wasteBarangay = topLabels(count(rows.filter((report) => report.category === 'Waste'), (report) => report.barangay?.trim() || undefined))
-    if (wasteBarangay && focus !== 'waste') trends.push(`Barangay ${joinNames(wasteBarangay.labels)} had the most waste reports (${wasteBarangay.max}).`)
-    else if (wasteBarangay) trends.push(`Waste reports were most frequent in Barangay ${joinNames(wasteBarangay.labels)} (${wasteBarangay.max}).`)
+    if (wasteBarangay && focus !== 'waste') trends.push(t('Barangay {names} had the most waste reports ({max}).', { names: joinNames(wasteBarangay.labels), max: wasteBarangay.max }))
+    else if (wasteBarangay) trends.push(t('Waste reports were most frequent in Barangay {names} ({max}).', { names: joinNames(wasteBarangay.labels), max: wasteBarangay.max }))
   }
 
   return {
@@ -174,9 +179,9 @@ export type EnvironmentalSummary = ReturnType<typeof buildEnvironmentalSummary>
 
 export function formatDuration(ms: number | undefined) {
   if (ms === undefined) return '—'
-  if (ms < 3_600_000) return `${Math.max(1, Math.round(ms / 60_000))} min`
-  if (ms < DAY_MS) return `${Math.round(ms / 3_600_000)} hr`
-  return `${(ms / DAY_MS).toFixed(1)} days`
+  if (ms < 3_600_000) return t('{count} min', { count: Math.max(1, Math.round(ms / 60_000)) })
+  if (ms < DAY_MS) return t('{count} hr', { count: Math.round(ms / 3_600_000) })
+  return t('{count} days', { count: (ms / DAY_MS).toFixed(1) })
 }
 
 export function localDateInput(date: Date) {

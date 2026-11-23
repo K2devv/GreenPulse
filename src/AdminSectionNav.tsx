@@ -1,4 +1,5 @@
 import type { KeyboardEvent } from 'react'
+import { t } from './lib/i18n'
 
 export type AdminSection = { id: string; label: string }
 
@@ -17,7 +18,7 @@ export function AdminSectionNav({ sections, active, onChange }: { sections: read
     document.getElementById(adminTabId(sections[next].id))?.focus()
   }
 
-  return <div className="admin-section-nav" role="tablist" aria-label="Dashboard sections">
+  return <div className="admin-section-nav" role="tablist" aria-label={t('Dashboard sections')}>
     {sections.map((section, index) => <button
       key={section.id}
       id={adminTabId(section.id)}
@@ -29,6 +30,6 @@ export function AdminSectionNav({ sections, active, onChange }: { sections: read
       className={active === section.id ? 'is-active' : ''}
       onClick={() => onChange(section.id)}
       onKeyDown={(event) => onKeyDown(event, index)}
-    >{section.label}</button>)}
+    >{t(section.label)}</button>)}
   </div>
 }

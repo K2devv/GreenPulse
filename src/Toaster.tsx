@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { CircleAlert, CircleCheck, Info, X } from 'lucide-react'
 import { motionIsReduced } from './display-prefs'
+import { t } from './lib/i18n'
 
 export type ToastTone = 'success' | 'error' | 'info'
 export type ToastInput = { tone?: ToastTone; message: string; action?: { label: string; run: () => void } }
@@ -43,8 +44,10 @@ export function useToasts() {
   return { toasts, push, dismiss }
 }
 
+// The Filipino patterns match how i18n-fil.ts words failures: "Hindi ma-save…", "Hindi naipadala…",
+// "Nabigo…", "…kailangang asikasuhin".
 export function toneForMessage(message: string): ToastTone {
-  return /could not|couldn't|failed|error|need attention|unable|not saved/i.test(message) ? 'error' : 'success'
+  return /could not|couldn't|failed|error|needs? attention|unable|not saved|\bhindi (ma|mai|nai|na-)|nabigo|kailangang asikasuhin/i.test(message) ? 'error' : 'success'
 }
 
 function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number) => void }) {
@@ -66,7 +69,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number)
       <span className="toast-icon" aria-hidden="true"><Icon size={16} /></span>
       <span className="toast-message">{toast.message}</span>
       {toast.action && <button className="toast-action" type="button" onClick={() => { toast.action?.run(); onDismiss(toast.id) }}>{toast.action.label}</button>}
-      <button className="toast-close" type="button" aria-label="Dismiss notification" onClick={() => onDismiss(toast.id)}><X size={14} /></button>
+      <button className="toast-close" type="button" aria-label={t('Dismiss notification')} onClick={() => onDismiss(toast.id)}><X size={14} /></button>
       <i className={`toast-timer ${paused ? 'is-paused' : ''}`} aria-hidden="true" />
     </div>
   </div></div>
@@ -74,5 +77,5 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number)
 
 export function ToastViewport({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
   if (!toasts.length) return null
-  return <div className="toast-viewport" aria-label="Notifications">{toasts.map((toast) => <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />)}</div>
+  return <div className="toast-viewport" aria-label={t('Notifications')}>{toasts.map((toast) => <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />)}</div>
 }

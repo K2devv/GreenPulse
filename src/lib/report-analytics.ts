@@ -1,3 +1,4 @@
+import { dateLocale } from './i18n'
 export type AnalyticsReport = {
   category: string
   status: string
@@ -67,7 +68,7 @@ export function buildReportAnalytics(reports: AnalyticsReport[], now = new Date(
     date.setDate(date.getDate() - (13 - index) - endOffset)
     const key = localDateKey(date)
     return {
-      label: date.toLocaleDateString(undefined, { weekday: 'short' }),
+      label: date.toLocaleDateString(dateLocale(), { weekday: 'short' }),
       value: datedReports.filter(({ createdAt }) => localDateKey(createdAt) === key).length,
       date: key,
     }
@@ -81,7 +82,7 @@ export function buildReportAnalytics(reports: AnalyticsReport[], now = new Date(
     date.setHours(0, 0, 0, 0)
     date.setDate(date.getDate() - (DAILY_HISTORY_DAYS - 1 - index))
     const key = localDateKey(date)
-    return { label: date.toLocaleDateString(undefined, { weekday: 'short' }), value: counts.get(key) ?? 0, date: key }
+    return { label: date.toLocaleDateString(dateLocale(), { weekday: 'short' }), value: counts.get(key) ?? 0, date: key }
   })
 
   const resolvedDurations = reports.flatMap((report) => {

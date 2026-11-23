@@ -100,6 +100,7 @@ import { canHandleEscalation, type SlaEscalation } from './lib/sla-escalations'
 import { EscalationList } from './EscalationList'
 import { EmailCodeStep, type CodeStatus } from './EmailCodeStep'
 import { NotificationBell, NotificationPanel } from './NotificationPanel'
+import { LanguageToggle } from './LanguageToggle'
 import { useDialogFocusTrap } from './useDialogFocusTrap'
 import { useNotificationInbox } from './useNotificationInbox'
 import { buildDistrictOutline } from './lib/district-outline'
@@ -118,6 +119,8 @@ import { GuestReportTracking } from './GuestReportTracking'
 import { MAX_REPORT_PHOTOS, prepareReportPhoto, reportPhotoProblem, type PreparedReportPhoto } from './lib/report-photos'
 import { translate } from './lib/ui-copy'
 import { deleteLocalReportDraft, getLocalReportDraft, saveLocalReportDraft, type LocalReportDraft } from './lib/report-drafts'
+import { t, tn, dateLocale, useLanguage } from './lib/i18n'
+import { translateServerText } from './lib/server-text'
 
 // The map library is large, so both maps load after the rest of the app.
 const ReportMap = lazy(() => import('./ReportMap'))
@@ -193,7 +196,7 @@ type DeliveryFailure = DeliveryRecord
 type PilotOutcomes = { totalReports: number; reopenedReports: number; byBarangay: Array<{ label: string; reports: number; resolved: number; reopened: number; averageFirstResponseMs: number | null; averageResolutionMs: number | null }> }
 
 function getRoleLabel(role: Profile['role']) {
-  return role === 'resident' ? 'User' : role === 'responder' ? 'Responder' : 'Admin'
+  return role === 'resident' ? t('User') : role === 'responder' ? t('Responder') : t('Admin')
 }
 
 const initialReports: Report[] = [
@@ -256,7 +259,7 @@ const STAFF_PAGE_SIZE = 50
 const FEED_PHONE_PAGE = 8
 const statusOptions: Status[] = ['Submitted', 'Under review', 'Additional information requested', 'Verified', 'In progress', 'Awaiting verification', 'Resolved', 'Rejected', 'Closed', 'Duplicate']
 function placeLabel(report: Pick<Report, 'barangay' | 'location'>) {
-  return report.barangay ? `Barangay ${report.barangay}` : report.location || 'District 5, Quezon City'
+  return report.barangay ? t('Barangay {barangay}', { barangay: report.barangay }) : report.location || 'District 5, Quezon City'
 }
 
 function approximateCoordinates([latitude, longitude]: [number, number]): [number, number] {
@@ -284,7 +287,7 @@ async function searchPlaces(query: string, center: [number, number], signal: Abo
     bbox: `${districtBounds[0][1]},${districtBounds[0][0]},${districtBounds[1][1]},${districtBounds[1][0]}`,
   })
   const response = await fetch(`https://photon.komoot.io/api/?${parameters}`, { signal })
-  if (!response.ok) throw new Error('Place search is temporarily unavailable.')
+  if (!response.ok) throw new Error(t('Place search is temporarily unavailable.'))
   const result = await response.json() as {
     features?: Array<{ geometry?: { coordinates?: [number, number] }; properties?: Record<string, string | undefined> }>
   }
@@ -301,13 +304,13 @@ async function searchPlaces(query: string, center: [number, number], signal: Abo
 async function reverseGeocode(coordinates: [number, number], signal?: AbortSignal): Promise<string> {
   const parameters = new URLSearchParams({ lat: String(coordinates[0]), lon: String(coordinates[1]), lang: 'en' })
   const response = await fetch(`https://photon.komoot.io/reverse?${parameters}`, { signal })
-  if (!response.ok) throw new Error('Address lookup is temporarily unavailable.')
+  if (!response.ok) throw new Error(t('Address lookup is temporarily unavailable.'))
   const result = await response.json() as {
     features?: Array<{ properties?: Record<string, string | undefined> }>
   }
   const properties = result.features?.[0]?.properties
   const label = formatPlaceLabel(properties)
-  if (!label) throw new Error('No nearby address could be found.')
+  if (!label) throw new Error(t('No nearby address could be found.'))
   return label
 }
 
@@ -315,23 +318,23 @@ async function reverseGeocode(coordinates: [number, number], signal?: AbortSigna
 function emailRetryLabel(items: readonly DeliveryRecord[]) {
   const failed = items.some((item) => item.status === 'Failed')
   const pending = items.some((item) => item.status === 'Pending')
-  return failed && pending ? 'Retry failed and send pending emails' : pending ? 'Send pending emails' : 'Retry failed emails'
+  return failed && pending ? t('Retry failed and send pending emails') : pending ? t('Send pending emails') : t('Retry failed emails')
 }
 
 /** Date and time for the email delivery list, e.g. "Nov 17, 2:52 AM". */
 function formatDeliveryTime(value: string) {
   const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString(dateLocale(), { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
 }
 
 function formatCreatedAt(value: string) {
   const created = new Date(value)
   if (Number.isNaN(created.getTime())) return value
   const minutes = Math.max(0, Math.floor((Date.now() - created.getTime()) / 60_000))
-  if (minutes < 1) return 'Just now'
-  if (minutes < 60) return `${minutes} min ago`
-  if (minutes < 1440) return `${Math.floor(minutes / 60)} hr ago`
-  return created.toLocaleDateString()
+  if (minutes < 1) return t('Just now')
+  if (minutes < 60) return t('{minutes} min ago', { minutes })
+  if (minutes < 1440) return t('{hours} hr ago', { hours: Math.floor(minutes / 60) })
+  return created.toLocaleDateString(dateLocale())
 }
 
 function toLocalDateTimeInput(value: Date) {
@@ -381,7 +384,7 @@ const categoryIcon = (category: Category) => {
 }
 
 function ReportListSkeleton({ rows = 4, variant = 'report' }: { rows?: number; variant?: 'report' | 'queue' }) {
-  return <div className={`skeleton-list skeleton-${variant}`} role="status" aria-busy="true"><span className="sr-only">Loading reports…</span>
+  return <div className={`skeleton-list skeleton-${variant}`} role="status" aria-busy="true"><span className="sr-only">{t('Loading reports…')}</span>
     {Array.from({ length: rows }, (_, index) => <div className="skeleton-item" aria-hidden="true" key={index}>
       {variant === 'report' && <span className="skeleton skeleton-icon" />}
       <div className="skeleton-lines"><span className="skeleton skeleton-line skeleton-title" /><span className="skeleton skeleton-line skeleton-meta" /><span className="skeleton-tags"><span className="skeleton skeleton-pill" /><span className="skeleton skeleton-pill skeleton-pill-short" /></span></div>
@@ -411,6 +414,8 @@ function readSavedReports(): Report[] {
 }
 
 function App() {
+  // Switching language re-renders the whole app; memoized text below lists it as a dependency.
+  const language = useLanguage()
   const [reports, setReports] = useState<Report[]>(isSupabaseConfigured ? [] : readSavedReports)
   const [session, setSession] = useState<Session | null>(null)
   const [profile, setProfile] = useState<Profile | null>(null)
@@ -703,7 +708,6 @@ function App() {
   const [systemPrefersDark, setSystemPrefersDark] = useState(() => typeof window.matchMedia === 'function' && window.matchMedia('(prefers-color-scheme: dark)').matches)
   const theme = resolveTheme(themeChoice, systemPrefersDark)
   const toggleTheme = () => setThemeChoice(oppositeTheme(theme))
-  const t = (key: Parameters<typeof translate>[0]) => translate(key)
   const { toasts, push: pushToast, dismiss: dismissToast } = useToasts()
   const reportInboxError = useCallback((message: string) => pushToast({ tone: 'error', message }), [pushToast])
   const inbox = useNotificationInbox({ userId: session?.user.id, refreshToken: reportRefreshToken, onError: reportInboxError })
@@ -782,7 +786,7 @@ function App() {
           select.scrollIntoView({ block: 'center' })
           select.focus()
         } else {
-          pushToast({ tone: 'info', message: staffReportId ? 'Only admins can assign responders on this report.' : 'Select a report first to assign it.' })
+          pushToast({ tone: 'info', message: staffReportId ? t('Only admins can assign responders on this report.') : t('Select a report first to assign it.') })
         }
       } else if (key === '/') {
         const search = document.querySelector<HTMLInputElement>('.staff-search input')
@@ -807,7 +811,7 @@ function App() {
       setSession(data.session)
       setAuthReady(true)
     }).catch(() => {
-      setBackendError('Could not connect to Supabase authentication.')
+      setBackendError(t('Could not connect to Supabase authentication.'))
       setAuthReady(true)
     })
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
@@ -867,7 +871,7 @@ function App() {
       } catch (error) {
         if (!controller.signal.aborted) {
           setLocationSuggestions([])
-          setLocationSearchMessage(error instanceof Error ? error.message : 'Place search is temporarily unavailable.')
+          setLocationSearchMessage(error instanceof Error ? error.message : t('Place search is temporarily unavailable.'))
         }
       } finally {
         if (!controller.signal.aborted) setLocationSearchBusy(false)
@@ -896,7 +900,7 @@ function App() {
       } catch (error) {
         if (!controller.signal.aborted) {
           setMapSearchSuggestions([])
-          setMapSearchMessage(error instanceof Error ? error.message : 'Place search is temporarily unavailable.')
+          setMapSearchMessage(error instanceof Error ? error.message : t('Place search is temporarily unavailable.'))
         }
       } finally {
         if (!controller.signal.aborted) setMapSearchBusy(false)
@@ -916,7 +920,7 @@ function App() {
     let active = true
     supabase.from('profiles').select('id, display_name, avatar_path, email_notifications, role').eq('id', session.user.id).single().then(async ({ data, error }) => {
       if (!active) return
-      if (error) setBackendError(`Could not load your account profile: ${error.message}`)
+      if (error) setBackendError(t('Could not load your account profile: {message}', { message: error.message }))
       else {
         const nextProfile = data as Profile
         setProfile(nextProfile)
@@ -986,7 +990,7 @@ function App() {
       setReports([...combined.values()].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()))
     }
     const failCommunityLoad = (message: string) => {
-      setBackendError(`Could not load community reports: ${message}`)
+      setBackendError(t('Could not load community reports: {message}', { message }))
       setLoadingReports(false)
       setReportsSyncing(false)
       setReportsFailed(true)
@@ -1012,7 +1016,7 @@ function App() {
         if (userId) {
           const mine = await loadInPages<ReportRow>(privatePage, { isCancelled: () => !active })
           if (!active) return
-          if (mine.error) privateError = `Could not load your reports: ${mine.error}`
+          if (mine.error) privateError = t('Could not load your reports: {message}', { message: mine.error })
           else {
             const named = await withReporterNames(mine.rows)
             if (!active) return
@@ -1040,7 +1044,7 @@ function App() {
           ])
           if (!active) return
           const mineError = minePage.error ?? mineChanged?.error
-          if (mineError) privateError = `Could not load your reports: ${mineError.message}`
+          if (mineError) privateError = t('Could not load your reports: {message}', { message: mineError.message })
           else {
             const [namedPage, namedChanged] = await Promise.all([withReporterNames((minePage.data ?? []) as ReportRow[]), withReporterNames((mineChanged?.data ?? []) as ReportRow[])])
             if (!active) return
@@ -1185,7 +1189,7 @@ function App() {
     supabase.from('response_settings').select('response_sla_hours, high_urgency_sla_hours, second_escalation_multiplier').eq('singleton', true).maybeSingle().then(({ data, error }) => {
       if (!active) return
       if (error) {
-        setResponseSettingsMessage('Apply the response-settings migration to manage deadlines here.')
+        setResponseSettingsMessage(t('Apply the response-settings migration to manage deadlines here.'))
         return
       }
       if (data) setResponseSettings(data as ResponseSettings)
@@ -1206,7 +1210,7 @@ function App() {
       .then(({ data, error }) => {
         if (!active) return
         if (error) {
-          setSlaEscalationMessage('Apply the escalation migration to enable shared escalation tracking.')
+          setSlaEscalationMessage(t('Apply the escalation migration to enable shared escalation tracking.'))
           return
         }
         setSlaEscalations((data ?? []) as unknown as SlaEscalation[])
@@ -1224,7 +1228,7 @@ function App() {
     supabase.rpc('admin_notification_delivery_history').then(({ data, error }) => {
         if (!active) return
         if (error) {
-          setEmailRetryMessage('Apply the notification-delivery migration to view failed email attempts.')
+          setEmailRetryMessage(t('Apply the notification-delivery migration to view failed email attempts.'))
           return
         }
         setFailedEmailNotifications((data ?? []) as DeliveryFailure[])
@@ -1242,7 +1246,7 @@ function App() {
     supabase.rpc('admin_pilot_outcomes').then(({ data, error }) => {
       if (!active) return
       if (error) {
-        setPilotOutcomesMessage('Apply the pilot-outcomes migration to view reopened-report and barangay results.')
+        setPilotOutcomesMessage(t('Apply the pilot-outcomes migration to view reopened-report and barangay results.'))
         return
       }
       const outcomes = data as PilotOutcomes
@@ -1297,7 +1301,7 @@ function App() {
         })
         if (!active) return
         if (error) {
-          setBackendError(`Could not load the staff queue: ${error.message}`)
+          setBackendError(t('Could not load the staff queue: {message}', { message: error.message }))
           // A failed refresh keeps the rows on screen; rows for other filters would be wrong.
           if (staffQueueLoaded.current.key !== key) {
             setStaffQueue([])
@@ -1331,7 +1335,7 @@ function App() {
     try {
       if (!isSupabaseConfigured) localStorage.setItem('greenpulse-reports', JSON.stringify(reports.filter((report) => report.id.startsWith('GP-NEW'))))
     } catch {
-      setFormError('Your browser storage is full. The new report will remain available until you close this page.')
+      setFormError(t('Your browser storage is full. The new report will remain available until you close this page.'))
     }
   }, [reports])
 
@@ -1342,7 +1346,7 @@ function App() {
       setSavedDraftAvailable(true)
       if (draft.queued) setQueuedUploadId(draft.submissionId)
     }).catch(() => {
-      if (active) setDraftMessage('This browser could not read the saved report draft.')
+      if (active) setDraftMessage(t('This browser could not read the saved report draft.'))
     })
     return () => { active = false }
   }, [])
@@ -1368,7 +1372,7 @@ function App() {
     setPendingDraftRestore(undefined)
     if (autoSubmitAfterRestore.current) {
       autoSubmitAfterRestore.current = false
-      setDraftMessage('Connection restored. Your queued report will be sent shortly.')
+      setDraftMessage(t('Connection restored. Your queued report will be sent shortly.'))
       window.setTimeout(() => {
         setFormStartedAt(Date.now() - 3_000)
         form.requestSubmit()
@@ -1422,10 +1426,11 @@ function App() {
       color: categoryColors[report.category],
       icon: categoryIcon(report.category),
     }
-  }), [mapReports, pinPositions])
+  }), [mapReports, pinPositions, language])
   const activeFilterCount = countActiveFilters(staffFilters)
-  const staffFilterChips = describeActiveFilters(staffFilters, { people: new Map(staffUsers.map((user) => [user.id, user.display_name || 'Unnamed staff member'])), teams: new Map(teams.map((team) => [team.id, team.name])) })
-  const adminAnalytics = useMemo(() => buildReportAnalytics(reports), [reports])
+  const staffFilterChips = describeActiveFilters(staffFilters, { people: new Map(staffUsers.map((user) => [user.id, user.display_name || t('Unnamed staff member')])), teams: new Map(teams.map((team) => [team.id, team.name])) })
+  // `language` is listed because the analytics include translated weekday and fallback labels.
+  const adminAnalytics = useMemo(() => buildReportAnalytics(reports), [reports, language])
   const responseMetrics = useMemo(() => buildResponseTimeMetrics(reports), [reports])
   const escalatedOpen = useMemo(() => reports.filter(needsImmediateAttention).length, [reports])
   const reportListRef = useRef<HTMLDivElement>(null)
@@ -1686,7 +1691,7 @@ function App() {
   const openReports = reports.filter((report) => isOpenStatus(report.status)).length
   const overdueNotifications: InboxNotification[] = profile?.role === 'admin'
     ? reports.filter((report) => isOpenStatus(report.status) && Date.now() - new Date(report.createdAt).getTime() >= (report.urgency === 'High' ? responseSettings.high_urgency_sla_hours : responseSettings.response_sla_hours) * 60 * 60 * 1000)
-      .map((report) => ({ id: `overdue:${report.id}`, report_id: report.id, event_type: 'overdue_task', title: 'Overdue task', message: `Open report needs attention: ${report.title}.`, created_at: report.createdAt, read_at: readOverdueIds.includes(report.id) ? report.createdAt : null }))
+      .map((report) => ({ id: `overdue:${report.id}`, report_id: report.id, event_type: 'overdue_task', title: t('Overdue task'), message: t('Open report needs attention: {title}.', { title: report.title }), created_at: report.createdAt, read_at: readOverdueIds.includes(report.id) ? report.createdAt : null }))
     : []
   const inboxNotifications: InboxNotification[] = [...inbox.notifications, ...overdueNotifications]
     .sort((first, second) => new Date(second.created_at).getTime() - new Date(first.created_at).getTime())
@@ -1754,7 +1759,7 @@ function App() {
       setPendingConfirmation((pending) => pending && { ...pending, sentAt: now, cooldownSeconds: CONFIRMATION_RESEND_COOLDOWN_SECONDS })
       setCodeStatus('waiting')
       setCodeError('')
-      setCodeNotice(`A new code is on its way to ${email}.`)
+      setCodeNotice(t('A new code is on its way to {email}.', { email }))
     } catch (error) {
       setCodeError(describeAuthError(error, { step: 'resend' }).message)
       setCodeStatus('error')
@@ -1788,7 +1793,7 @@ function App() {
           return
         }
         closeAuthModal()
-        pushToast({ message: 'Email confirmed. Welcome to GreenPulse.' })
+        pushToast({ message: t('Email confirmed. Welcome to GreenPulse.') })
       }, motionIsReduced() ? 0 : 1100)
     } catch (error) {
       setCodeError(describeAuthError(error, { step: 'verify' }).message)
@@ -1827,11 +1832,11 @@ function App() {
       if (mode === 'new-password') {
         const confirmation = String(formData.get('confirm_password') ?? '')
         if (password.length < 8) {
-          setAuthMessage('Use at least 8 characters.')
+          setAuthMessage(t('Use at least 8 characters.'))
           return
         }
         if (password !== confirmation) {
-          setAuthMessage('The passwords do not match.')
+          setAuthMessage(t('The passwords do not match.'))
           return
         }
         const { error } = await supabase.auth.updateUser({ password })
@@ -1840,7 +1845,7 @@ function App() {
           return
         }
         closeAuthModal()
-        pushToast({ message: 'Password changed. You’re signed in.' })
+        pushToast({ message: t('Password changed. You’re signed in.') })
         return
       }
 
@@ -1870,13 +1875,13 @@ function App() {
         return
       }
       if (isExistingAccountSignUp(data.user)) {
-        setAuthMessage('An account already uses this email address. Sign in instead.')
+        setAuthMessage(t('An account already uses this email address. Sign in instead.'))
         setAuthSuggestion('sign-in')
         return
       }
       if (data.session) {
         closeAuthModal()
-        pushToast({ message: 'Your account is ready. Welcome to GreenPulse.' })
+        pushToast({ message: t('Your account is ready. Welcome to GreenPulse.') })
         return
       }
       awaitConfirmation(email, Date.now())
@@ -1894,14 +1899,14 @@ function App() {
   }
 
   const confirmationResendSeconds = pendingConfirmation ? secondsUntilResend(pendingConfirmation.sentAt, resendClock, pendingConfirmation.cooldownSeconds) : 0
-  const authTitle = authModal === 'sign-up' ? 'Create your account'
-    : authModal === 'reset' ? 'Reset your password'
-      : authModal === 'new-password' ? 'Choose a new password'
-        : 'Welcome back'
-  const authSubtitle = authModal === 'sign-up' ? 'Create an account with your email address and a password.'
-    : authModal === 'reset' ? 'Enter the email address you sign in with. We’ll send you a 6-digit code.'
-      : authModal === 'new-password' ? 'You’re signed in. Set the password you’ll use next time.'
-        : 'Sign in with your email and password. You can also submit a guest report with a tracking code.'
+  const authTitle = authModal === 'sign-up' ? t('Create your account')
+    : authModal === 'reset' ? t('Reset your password')
+      : authModal === 'new-password' ? t('Choose a new password')
+        : t('Welcome back')
+  const authSubtitle = authModal === 'sign-up' ? t('Create an account with your email address and a password.')
+    : authModal === 'reset' ? t('Enter the email address you sign in with. We’ll send you a 6-digit code.')
+      : authModal === 'new-password' ? t('You’re signed in. Set the password you’ll use next time.')
+        : t('Sign in with your email and password. You can also submit a guest report with a tracking code.')
 
   async function savePassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1912,11 +1917,11 @@ function App() {
     const confirmation = String(formData.get('confirm_password') ?? '')
     setPasswordMessageSuccess(false)
     if (password.length < 8) {
-      setPasswordMessage('Use at least 8 characters.')
+      setPasswordMessage(t('Use at least 8 characters.'))
       return
     }
     if (password !== confirmation) {
-      setPasswordMessage('The passwords do not match.')
+      setPasswordMessage(t('The passwords do not match.'))
       return
     }
     setPasswordSaving(true)
@@ -1928,7 +1933,7 @@ function App() {
         return
       }
       form.reset()
-      setPasswordMessage('Password changed. Use it the next time you sign in.')
+      setPasswordMessage(t('Password changed. Use it the next time you sign in.'))
       setPasswordMessageSuccess(true)
     } catch (error) {
       setPasswordMessage(describeAuthError(error, { step: 'set-password' }).message)
@@ -1940,11 +1945,11 @@ function App() {
   function handleProfileAvatar(file?: File) {
     if (!file) return
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-      setBackendError('Choose a JPEG, PNG, or WebP profile image.')
+      setBackendError(t('Choose a JPEG, PNG, or WebP profile image.'))
       return
     }
     if (file.size > 3 * 1024 * 1024) {
-      setBackendError('Choose a profile image under 3 MB.')
+      setBackendError(t('Choose a profile image under 3 MB.'))
       return
     }
     const reader = new FileReader()
@@ -1959,7 +1964,7 @@ function App() {
     const formData = new FormData(event.currentTarget)
     const displayName = String(formData.get('display_name') ?? '').trim()
     if (displayName.length < 2) {
-      setBackendError('Add a display name with at least 2 characters.')
+      setBackendError(t('Add a display name with at least 2 characters.'))
       return
     }
     setProfileSaving(true)
@@ -1971,7 +1976,7 @@ function App() {
       const { error: uploadError } = await supabase.storage.from('profile-avatars').upload(avatarPath, profileAvatarFile, { contentType: profileAvatarFile.type, upsert: true })
       if (uploadError) {
         setProfileSaving(false)
-        setBackendError(`Profile photo upload failed: ${uploadError.message}`)
+        setBackendError(t('Profile photo upload failed: {message}', { message: uploadError.message }))
         return
       }
     }
@@ -1979,7 +1984,7 @@ function App() {
     const { data, error } = await supabase.from('profiles').update({ display_name: displayName, avatar_path: avatarPath, email_notifications: emailNotifications }).eq('id', session.user.id).select('id, display_name, avatar_path, email_notifications, role').single()
     setProfileSaving(false)
     if (error || !data) {
-      setBackendError(error?.message ?? 'Your profile could not be updated.')
+      setBackendError(error?.message ?? t('Your profile could not be updated.'))
       return
     }
     const nextProfile = data as Profile
@@ -2002,18 +2007,18 @@ function App() {
       const { error } = await supabase.from('report_followers').delete().eq('report_id', report.id).eq('profile_id', session.user.id)
       if (error) {
         setFollowedReportIds((current) => current.includes(report.id) ? current : [...current, report.id])
-        return setFormError('Could not unfollow this report. Please try again.')
+        return setFormError(t('Could not unfollow this report. Please try again.'))
       }
-      setFormNotice('You will no longer receive updates for that report.')
+      setFormNotice(t('You will no longer receive updates for that report.'))
       return
     }
     setFollowedReportIds((current) => [...current, report.id])
     const { error } = await supabase.from('report_followers').insert({ report_id: report.id, profile_id: session.user.id })
     if (error) {
       if (error.code !== '23505') setFollowedReportIds((current) => current.filter((id) => id !== report.id))
-      return setFormError(error.code === '23505' ? 'You are already following this report.' : 'Could not follow this report. Please try again.')
+      return setFormError(error.code === '23505' ? t('You are already following this report.') : t('Could not follow this report. Please try again.'))
     }
-    setFormNotice('You are following this report. Status and assignment changes will appear in your notifications.')
+    setFormNotice(t('You are following this report. Status and assignment changes will appear in your notifications.'))
   }
 
   async function sendReportConfirmation(reportId: string) {
@@ -2031,10 +2036,10 @@ function App() {
     setFormNotice('')
     try {
       const result = await sendReportConfirmation(report.id)
-      if (!result.ok) throw new Error(result.error || 'Your confirmation could not be saved.')
-      setFormNotice('Thanks. The response team has been told that this issue is still present.')
+      if (!result.ok) throw new Error(result.error ? t(result.error) : t('Your confirmation could not be saved.'))
+      setFormNotice(t('Thanks. The response team has been told that this issue is still present.'))
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : 'Your confirmation could not be saved.')
+      setFormError(error instanceof Error ? error.message : t('Your confirmation could not be saved.'))
     }
   }
 
@@ -2043,10 +2048,10 @@ function App() {
     try {
       const result = await sendReportConfirmation(report.id)
       const alreadyConfirmed = result.status === 409 && /already confirmed/i.test(result.error ?? '')
-      if (!result.ok && !alreadyConfirmed) throw new Error(result.error || 'Your confirmation could not be saved.')
+      if (!result.ok && !alreadyConfirmed) throw new Error(result.error ? t(result.error) : t('Your confirmation could not be saved.'))
       setConfirmedReportIds((current) => new Set(current).add(report.id))
       if (alreadyConfirmed) {
-        pushToast({ tone: 'info', message: 'You already confirmed this report.' })
+        pushToast({ tone: 'info', message: t('You already confirmed this report.') })
         return
       }
       setReportEngagement((current) => {
@@ -2054,9 +2059,9 @@ function App() {
         if (!counts) return current
         return new Map(current).set(report.id, { ...counts, stillThere: counts.stillThere + 1 })
       })
-      pushToast({ message: 'Thanks. The response team now knows this issue is still there.' })
+      pushToast({ message: t('Thanks. The response team now knows this issue is still there.') })
     } catch (error) {
-      pushToast({ tone: 'error', message: error instanceof Error ? error.message : 'Your confirmation could not be saved.' })
+      pushToast({ tone: 'error', message: error instanceof Error ? error.message : t('Your confirmation could not be saved.') })
     } finally {
       setConfirmingReportId(undefined)
     }
@@ -2072,7 +2077,7 @@ function App() {
     }, { onConflict: 'report_id' })
     setFeedbackBusy(false)
     if (error) {
-      setBackendError('Your resolution feedback could not be saved. Please try again.')
+      setBackendError(t('Your resolution feedback could not be saved. Please try again.'))
       return
     }
     const saved = { report_id: selectedOwnReport.id, feedback, message: feedbackNote.trim() || null, updated_at: new Date().toISOString() } as ResidentFeedback
@@ -2085,7 +2090,7 @@ function App() {
     if (!supabase || !session || profile?.role !== 'admin') return
     setFollowupBusy(true)
     setFollowupMessage('')
-    const area = hotspot.barangay ? `Barangay ${hotspot.barangay}` : 'District 5'
+    const area = hotspot.barangay ? t('Barangay {barangay}', { barangay: hotspot.barangay }) : 'District 5'
     const { data, error } = await supabase.from('environmental_followups').insert({
       title: `${hotspot.category} inspection · ${area}`,
       category: hotspot.category,
@@ -2100,11 +2105,11 @@ function App() {
     }).select('*').single()
     setFollowupBusy(false)
     if (error || !data) {
-      setFollowupMessage('The inspection task could not be created. Please try again.')
+      setFollowupMessage(t('The inspection task could not be created. Please try again.'))
       return
     }
     setEnvironmentalFollowups((current) => [...current, data as EnvironmentalFollowUp])
-    setFollowupMessage('Inspection task created. Assign a team and due date below.')
+    setFollowupMessage(t('Inspection task created. Assign a team and due date below.'))
   }
 
   async function updateEnvironmentalFollowup(id: string, changes: Partial<EnvironmentalFollowUp>) {
@@ -2114,7 +2119,7 @@ function App() {
     const { data, error } = await supabase.from('environmental_followups').update(changes).eq('id', id).select('*').single()
     setFollowupBusy(false)
     if (error || !data) {
-      setFollowupMessage('The inspection task could not be updated. Please try again.')
+      setFollowupMessage(t('The inspection task could not be updated. Please try again.'))
       return
     }
     setEnvironmentalFollowups((current) => current.map((item) => item.id === id ? data as EnvironmentalFollowUp : item))
@@ -2220,7 +2225,7 @@ function App() {
     if (!form) return
     if (queued && !form.reportValidity()) return
     if (queued && (!locationConfirmed || !String(new FormData(form).get('location') ?? '').trim())) {
-      setFormError('Choose a map location before queueing this report for upload.')
+      setFormError(t('Choose a map location before queueing this report for upload.'))
       return
     }
     const data = new FormData(form)
@@ -2237,14 +2242,14 @@ function App() {
       })
       setSavedDraftAvailable(true)
       setDraftMessage(queued
-        ? 'Saved on this device. GreenPulse will submit it when the connection returns; keep this browser open.'
-        : 'Draft saved on this device. You can resume or delete it from this browser.')
+        ? t('Saved on this device. GreenPulse will submit it when the connection returns; keep this browser open.')
+        : t('Draft saved on this device. You can resume or delete it from this browser.'))
       if (queued) {
         setQueuedUploadId(reportSubmissionId)
         setReporting(false)
       }
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : 'The draft could not be saved in this browser.')
+      setFormError(error instanceof Error ? error.message : t('The draft could not be saved in this browser.'))
     }
   }
 
@@ -2254,7 +2259,7 @@ function App() {
       if (!draft) {
         setSavedDraftAvailable(false)
         setQueuedUploadId(undefined)
-        setDraftMessage('No saved draft was found in this browser.')
+        setDraftMessage(t('No saved draft was found in this browser.'))
         return
       }
       setFormError('')
@@ -2282,7 +2287,7 @@ function App() {
       setPendingDraftRestore(draft)
       setReporting(true)
     } catch (error) {
-      setDraftMessage(error instanceof Error ? error.message : 'The saved draft could not be opened.')
+      setDraftMessage(error instanceof Error ? error.message : t('The saved draft could not be opened.'))
     }
   }
 
@@ -2291,15 +2296,15 @@ function App() {
       await deleteLocalReportDraft()
       setSavedDraftAvailable(false)
       setQueuedUploadId(undefined)
-      setDraftMessage('Saved report draft deleted from this browser.')
+      setDraftMessage(t('Saved report draft deleted from this browser.'))
     } catch {
-      setDraftMessage('The saved report draft could not be deleted.')
+      setDraftMessage(t('The saved report draft could not be deleted.'))
     }
   }
 
   function requestLocation(showNearby = false) {
     const handleLocationError = () => {
-      const message = 'Location was not shared. You can still select a point on the map.'
+      const message = t('Location was not shared. You can still select a point on the map.')
       setMapLocationError(message)
       if (reporting) setFormError(message)
     }
@@ -2307,8 +2312,8 @@ function App() {
     const handlePosition = (coords: { latitude: number; longitude: number }) => {
       const currentLocation: [number, number] = [coords.latitude, coords.longitude]
       if (!isReportableLocation(currentLocation)) {
-        setMapLocationError(outsideDistrictMessage)
-        if (reporting) setFormError(outsideDistrictMessage)
+        setMapLocationError(t(outsideDistrictMessage))
+        if (reporting) setFormError(t(outsideDistrictMessage))
         return
       }
       setGpsLocation(currentLocation)
@@ -2330,8 +2335,8 @@ function App() {
         }
       }).catch((error: unknown) => {
         if (request === geocodeRequest.current) {
-          const message = error instanceof Error ? error.message : 'Address lookup is temporarily unavailable.'
-          setLocationSearchMessage(`${message} Coordinates are still selected.`)
+          const message = error instanceof Error ? error.message : t('Address lookup is temporarily unavailable.')
+          setLocationSearchMessage(t('{message} Coordinates are still selected.', { message }))
         }
       })
     }
@@ -2344,7 +2349,7 @@ function App() {
     }
 
     if (!navigator.geolocation) {
-      const message = 'Location access is not available in this browser.'
+      const message = t('Location access is not available in this browser.')
       setMapLocationError(message)
       if (reporting) setFormError(message)
       return
@@ -2376,7 +2381,7 @@ function App() {
     const preciseCoordinates: [number, number] = [Number(coordinates[0].toFixed(6)), Number(coordinates[1].toFixed(6))]
     // The map is blank outside the district, so a click or drag there is refused.
     if (!isReportableLocation(preciseCoordinates)) {
-      setFormError(outsideDistrictMessage)
+      setFormError(t(outsideDistrictMessage))
       return false
     }
     setLocation(preciseCoordinates)
@@ -2384,7 +2389,7 @@ function App() {
     setLocationConfirmed(true)
     setLocationSuggestions([])
     setFormError('')
-    setLocationSearchMessage('Finding a nearby address…')
+    setLocationSearchMessage(t('Finding a nearby address…'))
     const request = ++geocodeRequest.current
     void reverseGeocode(preciseCoordinates).then((label) => {
       if (request === geocodeRequest.current) {
@@ -2395,7 +2400,7 @@ function App() {
     }).catch((error: unknown) => {
       if (request === geocodeRequest.current) {
         setLocationQuery('Selected map location')
-        setLocationSearchMessage(`${error instanceof Error ? error.message : 'Address lookup is temporarily unavailable.'} Coordinates are still selected.`)
+        setLocationSearchMessage(t('{message} Coordinates are still selected.', { message: error instanceof Error ? error.message : t('Address lookup is temporarily unavailable.') }))
       }
     })
     return true
@@ -2418,7 +2423,7 @@ function App() {
       // Suggest the issue from the photos, newest first, unless a suggestion was already made.
       if (photoSuggestion.state.status !== 'suggested') void photoSuggestion.analyze([...prepared.map((photo) => photo.file), ...photoFiles])
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : 'A photo could not be prepared.')
+      setFormError(error instanceof Error ? error.message : t('A photo could not be prepared.'))
     }
   }
 
@@ -2427,7 +2432,7 @@ function App() {
     const form = event.currentTarget
     const formData = new FormData(form)
     if (isSupabaseConfigured && !isOnline) {
-      setFormError('You are offline. Reconnect before submitting this report.')
+      setFormError(t('You are offline. Reconnect before submitting this report.'))
       return
     }
     const title = String(formData.get('title') ?? '').trim()
@@ -2441,40 +2446,40 @@ function App() {
     const locationLabel = String(formData.get('location') ?? '').trim()
     const barangay = String(formData.get('barangay') ?? '').trim()
     if (!consentGiven) {
-      setFormError('Please review and accept the report visibility notice before submitting.')
+      setFormError(t('Please review and accept the report visibility notice before submitting.'))
       return
     }
     if (!observedValue || Number.isNaN(observedDate.getTime()) || observedDate.getTime() > Date.now() + 5 * 60_000) {
-      setFormError('Choose a valid observation date and time. It cannot be in the future.')
+      setFormError(t('Choose a valid observation date and time. It cannot be in the future.'))
       return
     }
     if (additionalInfo.length > 2000) {
-      setFormError('Additional information must be 2,000 characters or fewer.')
+      setFormError(t('Additional information must be 2,000 characters or fewer.'))
       return
     }
     if (!locationConfirmed || !locationLabel) {
-      setFormError('Choose a suggested place or use your current location before submitting.')
+      setFormError(t('Choose a suggested place or use your current location before submitting.'))
       return
     }
     // Reports are accepted for District 5 only, however the location was chosen (search, GPS,
     // map, or a restored draft). The guest API and the database check this again.
     if (!isReportableLocation(location)) {
-      setFormError(outsideDistrictSubmitMessage)
+      setFormError(t(outsideDistrictSubmitMessage))
       return
     }
     if (title.length < 3 || description.length < 8) {
-      setFormError('Add a title of at least 3 characters and a description of at least 8 characters.')
+      setFormError(t('Add a title of at least 3 characters and a description of at least 8 characters.'))
       return
     }
     const guestEmail = String(formData.get('contact_email') ?? '').trim()
     const guestPhone = String(formData.get('contact_phone') ?? '').trim()
     if (supabase && !session) {
       if (!guestEmail && !guestPhone) {
-        setFormError('Enter an email address or phone number so staff can follow up.')
+        setFormError(t('Enter an email address or phone number so staff can follow up.'))
         return
       }
       if (guestPhone && !normalizePhoneNumber(guestPhone)) {
-        setFormError('Enter a valid mobile number, such as 09XXXXXXXXX or +639XXXXXXXXX.')
+        setFormError(t('Enter a valid mobile number, such as 09XXXXXXXXX or +639XXXXXXXXX.'))
         return
       }
     }
@@ -2490,7 +2495,7 @@ function App() {
         const { error: uploadError } = await supabase.storage.from('report-photos').upload(photoPath, photoFile, { contentType: 'image/jpeg', upsert: false })
         if (uploadError) {
           if (photoPaths.length) await supabase.storage.from('report-photos').remove(photoPaths)
-          setFormError(`Photo upload failed: ${uploadError.message}`)
+          setFormError(t('Photo upload failed: {message}', { message: uploadError.message }))
           return
         }
         photoPaths.push(photoPath)
@@ -2526,7 +2531,7 @@ function App() {
       }
       if (error || !data) {
         if (photoPaths.length) await supabase.storage.from('report-photos').remove(photoPaths)
-        setFormError(error?.code === '22023' ? outsideDistrictSubmitMessage : error?.message ?? 'The report could not be saved. Please try again.')
+        setFormError(error?.code === '22023' ? t(outsideDistrictSubmitMessage) : error?.message ?? t('The report could not be saved. Please try again.'))
         return
       }
       report = toReport(data as ReportRow)
@@ -2562,16 +2567,16 @@ function App() {
       }).catch(() => undefined)
       setGuestSubmitting(false)
       if (!response) {
-        setFormError('Guest reporting is temporarily unavailable. Please try again.')
+        setFormError(t('Guest reporting is temporarily unavailable. Please try again.'))
         return
       }
       let result: { error?: string; reportId?: string; trackingCode?: string; emailSent?: boolean }
       try { result = await response.json() as typeof result } catch {
-        setFormError('Guest reporting is temporarily unavailable. Please try again.')
+        setFormError(t('Guest reporting is temporarily unavailable. Please try again.'))
         return
       }
       if (!response.ok || !result.reportId || !result.trackingCode) {
-        setFormError(result.error ?? 'The report could not be submitted. Please try again.')
+        setFormError(result.error ? t(result.error) : t('The report could not be submitted. Please try again.'))
         return
       }
       guestTrackingCode = result.trackingCode
@@ -2622,7 +2627,7 @@ function App() {
           setQueuedUploadId(undefined)
         })
       }
-      if (savedDraft) setDraftMessage('A different saved draft is still available in this browser.')
+      if (savedDraft) setDraftMessage(t('A different saved draft is still available in this browser.'))
     }).catch(() => undefined)
     setDraftMessage('')
     setReports((current) => [report, ...current])
@@ -2649,14 +2654,14 @@ function App() {
     const form = event.currentTarget
     const name = String(new FormData(form).get('team_name') ?? '').trim()
     if (name.length < 2) {
-      setTeamMessage('Enter a team name of at least 2 characters.')
+      setTeamMessage(t('Enter a team name of at least 2 characters.'))
       return
     }
     setTeamBusy(true)
     const { error } = await supabase.from('teams').insert({ name })
     setTeamBusy(false)
     if (error) {
-      setTeamMessage(error.code === '23505' ? 'A team with that name already exists.' : error.message)
+      setTeamMessage(error.code === '23505' ? t('A team with that name already exists.') : error.message)
       return
     }
     form.reset()
@@ -2680,13 +2685,13 @@ function App() {
         body: JSON.stringify({ displayName, email }),
       })
       const result = await response.json() as { displayName?: string; error?: string }
-      if (!response.ok) throw new Error(result.error ?? 'The responder invitation could not be sent.')
+      if (!response.ok) throw new Error(result.error ? t(result.error) : t('The responder invitation could not be sent.'))
       form.reset()
       setResponderModalOpen(false)
       setStaffUsersRefreshToken((current) => current + 1)
-      pushToast({ tone: 'success', message: `${result.displayName ?? displayName} was invited as a responder.` })
+      pushToast({ tone: 'success', message: t('{name} was invited as a responder.', { name: result.displayName ?? displayName }) })
     } catch (error) {
-      setResponderMessage(error instanceof Error ? error.message : 'The responder invitation could not be sent.')
+      setResponderMessage(error instanceof Error ? error.message : t('The responder invitation could not be sent.'))
     } finally {
       setResponderBusy(false)
     }
@@ -2726,7 +2731,7 @@ function App() {
     }
     if (![next.response_sla_hours, next.high_urgency_sla_hours].every((value) => Number.isInteger(value) && value >= 1 && value <= 720)
       || !Number.isInteger(next.second_escalation_multiplier) || next.second_escalation_multiplier < 2 || next.second_escalation_multiplier > 10) {
-      setResponseSettingsMessage('Choose deadlines from 1 to 720 hours and a second-escalation multiplier from 2 to 10.')
+      setResponseSettingsMessage(t('Choose deadlines from 1 to 720 hours and a second-escalation multiplier from 2 to 10.'))
       return
     }
     setResponseSettingsBusy(true)
@@ -2734,11 +2739,11 @@ function App() {
     const { error } = await supabase.from('response_settings').update(next).eq('singleton', true)
     setResponseSettingsBusy(false)
     if (error) {
-      setResponseSettingsMessage(`Deadlines could not be saved: ${error.message}`)
+      setResponseSettingsMessage(t('Deadlines could not be saved: {message}', { message: error.message }))
       return
     }
     setResponseSettings(next)
-    setResponseSettingsMessage('Response deadlines and escalation windows saved.')
+    setResponseSettingsMessage(t('Response deadlines and escalation windows saved.'))
   }
 
   async function acknowledgeSlaEscalation(item: SlaEscalation) {
@@ -2748,28 +2753,28 @@ function App() {
       .update({ acknowledged_at: acknowledgedAt, acknowledged_by: session.user.id })
       .eq('report_id', item.report_id).eq('stage', item.stage).is('acknowledged_at', null)
     if (error) {
-      setSlaEscalationMessage(`The escalation could not be acknowledged: ${error.message}`)
+      setSlaEscalationMessage(t('The escalation could not be acknowledged: {message}', { message: error.message }))
       return
     }
     setSlaEscalations((current) => current.map((entry) => entry.report_id === item.report_id && entry.stage === item.stage
       ? { ...entry, acknowledged_at: acknowledgedAt }
       : entry))
-    setSlaEscalationMessage('Escalation acknowledged. The acknowledgement is recorded in the staff database.')
+    setSlaEscalationMessage(t('Escalation acknowledged. The acknowledgement is recorded in the staff database.'))
   }
 
   async function runEscalationCheck() {
     if (!session || profile?.role !== 'admin') return
     setEscalationRunBusy(true)
-    setSlaEscalationMessage('Checking open reports against configured deadlines…')
+    setSlaEscalationMessage(t('Checking open reports against configured deadlines…'))
     try {
       const response = await callApi('/api/process-escalations', { method: 'POST' })
       const result = await response.json().catch(() => null) as { error?: string; stagesCreated?: number; emailFailures?: number } | null
-      if (!result) throw new Error('The escalation service is unavailable. Restart the app server and try again.')
-      if (!response.ok) throw new Error(result.error || 'Escalation check failed.')
-      setSlaEscalationMessage(`Escalation check complete. ${result.stagesCreated ?? 0} new escalation${result.stagesCreated === 1 ? '' : 's'} recorded.${result.emailFailures ? ` ${result.emailFailures} email batch${result.emailFailures === 1 ? '' : 'es'} need attention.` : ''}`)
+      if (!result) throw new Error(t('The escalation service is unavailable. Restart the app server and try again.'))
+      if (!response.ok) throw new Error(result.error ? t(result.error) : t('Escalation check failed.'))
+      setSlaEscalationMessage(`${tn('Escalation check complete. {count} new escalation recorded.', 'Escalation check complete. {count} new escalations recorded.', result.stagesCreated ?? 0)}${result.emailFailures ? ` ${tn('{count} email batch needs attention.', '{count} email batches need attention.', result.emailFailures)}` : ''}`)
       setReportRefreshToken((current) => current + 1)
     } catch (error) {
-      setSlaEscalationMessage(error instanceof Error ? error.message : 'Escalation check failed.')
+      setSlaEscalationMessage(error instanceof Error ? error.message : t('Escalation check failed.'))
     } finally {
       setEscalationRunBusy(false)
     }
@@ -2779,7 +2784,7 @@ function App() {
     const failedRows = failedEmailNotifications.filter((item) => item.status === 'Failed' || item.status === 'Pending')
     if (!supabase || !session || profile?.role !== 'admin' || !failedRows.length) return
     setEmailRetryBusy(true)
-    setEmailRetryMessage('Sending the waiting email deliveries…')
+    setEmailRetryMessage(t('Sending the waiting email deliveries…'))
     const reportIds = [...new Set(failedRows.map((item) => item.report_id))]
     let failures = 0
     let firstError = ''
@@ -2800,7 +2805,7 @@ function App() {
     }
     setEmailRetryBusy(false)
     setReportRefreshToken((current) => current + 1)
-    setEmailRetryMessage(failures ? `${failures} report email batch${failures === 1 ? '' : 'es'} still need attention.${firstError ? ` ${firstError}` : ''}` : 'Pending and failed email deliveries were retried.')
+    setEmailRetryMessage(failures ? `${tn('{count} report email batch still needs attention.', '{count} report email batches still need attention.', failures)}${firstError ? ` ${firstError}` : ''}` : t('Pending and failed email deliveries were retried.'))
   }
 
   function updateStaffFilters(changes: Partial<ReportFilters>) {
@@ -2823,13 +2828,13 @@ function App() {
   }
 
   async function applyReportUpdate(payload: Record<string, unknown>, options?: { resolutionFiles?: File[] }) {
-    if (!supabase || !session || !staffReport) return 'You are not signed in.'
+    if (!supabase || !session || !staffReport) return t('You are not signed in.')
     const uploadedPaths: string[] = []
     const update = { ...payload }
     for (const [index, file] of (options?.resolutionFiles ?? []).entries()) {
       if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) {
         if (uploadedPaths.length) await supabase.storage.from('report-photos').remove(uploadedPaths)
-        return 'After-photos must be JPEG, PNG, or WebP images of 5 MB or less.'
+        return t('After-photos must be JPEG, PNG, or WebP images of 5 MB or less.')
       }
       const path = `${session.user.id}/resolution-${staffReport.id}-${Date.now()}-${index}.${file.type === 'image/png' ? 'png' : file.type === 'image/webp' ? 'webp' : 'jpg'}`
       const { error: uploadError } = await supabase.storage.from('report-photos').upload(path, file, { contentType: file.type, upsert: false })
@@ -2848,7 +2853,7 @@ function App() {
     const { data, error } = await supabase.from('reports').update(update).eq('id', staffReport.id).select('*').single()
     if (error || !data) {
       if (uploadedPaths.length) await supabase.storage.from('report-photos').remove(uploadedPaths)
-      return error?.message ?? 'The update could not be saved.'
+      return error?.message ?? t('The update could not be saved.')
     }
     const updatedReport = toReport(data as ReportRow) as Report
     void deliverNotificationEmails(updatedReport.id)
@@ -2859,8 +2864,8 @@ function App() {
     setReportEvents((events ?? []) as ReportEvent[])
     const restore = previous
     pushToast({
-      message: typeof update.status === 'string' ? `${formatReportId(updatedReport.id)} marked ${update.status}.` : 'assigned_to' in update || 'assigned_team_id' in update ? `Assignment updated for ${formatReportId(updatedReport.id)}.` : `${formatReportId(updatedReport.id)} updated.`,
-      action: restore ? { label: 'Undo', run: () => void undoReportUpdate(updatedReport.id, restore) } : undefined,
+      message: typeof update.status === 'string' ? t('{reportId} marked {status}.', { reportId: formatReportId(updatedReport.id), status: t(update.status) }) : 'assigned_to' in update || 'assigned_team_id' in update ? t('Assignment updated for {reportId}.', { reportId: formatReportId(updatedReport.id) }) : t('{reportId} updated.', { reportId: formatReportId(updatedReport.id) }),
+      action: restore ? { label: t('Undo'), run: () => void undoReportUpdate(updatedReport.id, restore) } : undefined,
     })
     return undefined
   }
@@ -2869,7 +2874,7 @@ function App() {
     if (!supabase || !session) return
     const { data, error } = await supabase.from('reports').update(previous).eq('id', reportId).select('*').single()
     if (error || !data) {
-      pushToast({ tone: 'error', message: `The change could not be undone${error ? `: ${error.message}` : '.'}` })
+      pushToast({ tone: 'error', message: error ? t('The change could not be undone: {message}', { message: error.message }) : t('The change could not be undone.') })
       return
     }
     const restored = toReport(data as ReportRow) as Report
@@ -2877,7 +2882,7 @@ function App() {
     setReports((current) => current.map((report) => report.id === restored.id ? { ...report, ...restored } : report))
     setStaffQueue((current) => current.map((report) => report.id === restored.id ? { ...report, ...restored } : report))
     void refreshStaffEvents(restored.id)
-    pushToast({ tone: 'info', message: `Change to ${formatReportId(restored.id)} undone.` })
+    pushToast({ tone: 'info', message: t('Change to {reportId} undone.', { reportId: formatReportId(restored.id) }) })
   }
 
   const staffPhotoPathsKey = JSON.stringify({
@@ -2913,7 +2918,7 @@ function App() {
     try {
       localStorage.setItem('greenpulse-read-overdue', JSON.stringify(nextIds))
     } catch {
-      setBackendError('Overdue alert read state could not be saved in this browser.')
+      setBackendError(t('Overdue alert read state could not be saved in this browser.'))
     }
   }
 
@@ -2934,11 +2939,11 @@ function App() {
   }
 
   const activeViewKey = !staffMode ? 'community' : profile?.role === 'admin' && staffDashboardOpen ? 'dashboard' : 'desk'
-  const activeViewLabel = activeViewKey === 'community' ? 'Opening community view…' : activeViewKey === 'dashboard' ? 'Opening admin dashboard…' : 'Opening staff desk…'
+  const activeViewLabel = activeViewKey === 'community' ? t('Opening community view…') : activeViewKey === 'dashboard' ? t('Opening admin dashboard…') : t('Opening staff desk…')
   const viewTransition = useViewTransition(activeViewKey, reportsSyncing || staffQueueLoading)
   const syncState = resolveSyncState({ configured: isSupabaseConfigured, online: isOnline, syncing: reportsSyncing || staffQueueLoading, queued: Boolean(queuedUploadId), failed: reportsFailed })
   const urgentOpenCount = reports.filter((report) => report.urgency === 'High' && isOpenStatus(report.status)).length
-  const contextTitle = activeViewKey === 'community' ? 'Community map' : activeViewKey === 'dashboard' ? 'Admin dashboard' : 'Staff desk'
+  const contextTitle = activeViewKey === 'community' ? t('Community map') : activeViewKey === 'dashboard' ? t('Admin dashboard') : t('Staff desk')
   // Phones only (see .report-fab): shown once the hero's button is out of view, and never over the form or the map's report sheet.
   const fabVisible = scrolledPastHero && !reporting && !(mobileMap && selectedId)
   // The hero tiles open a dialog listing the reports they count. From there a report can be opened, or the
@@ -2978,14 +2983,14 @@ function App() {
   }
   type HeroTileInfo = Omit<HeroStat, 'value' | 'onSelect'> & { tile: HeroTile; description: string }
   const heroTiles: HeroTileInfo[] = staffMode ? [
-    { tile: 'open', icon: ClipboardCheck, tone: 'leaf', label: 'Open queue', hint: 'See the open queue', description: 'Reports still waiting on review or a response.' },
-    { tile: 'urgent', icon: AlertTriangle, tone: 'coral', label: 'Urgent', hint: 'See open high-urgency reports', description: 'Open reports marked high urgency.' },
-    { tile: 'in-progress', icon: Clock3, tone: 'sky', label: 'In progress', hint: 'See reports in progress', description: 'Reports a responder is working on now.' },
-    { tile: 'resolved', icon: Check, tone: 'amber', label: 'Resolved', hint: 'See resolved reports', description: 'Reports that have been marked resolved.' },
+    { tile: 'open', icon: ClipboardCheck, tone: 'leaf', label: t('Open queue'), hint: t('See the open queue'), description: t('Reports still waiting on review or a response.') },
+    { tile: 'urgent', icon: AlertTriangle, tone: 'coral', label: t('Urgent'), hint: t('See open high-urgency reports'), description: t('Open reports marked high urgency.') },
+    { tile: 'in-progress', icon: Clock3, tone: 'sky', label: t('In progress'), hint: t('See reports in progress'), description: t('Reports a responder is working on now.') },
+    { tile: 'resolved', icon: Check, tone: 'amber', label: t('Resolved'), hint: t('See resolved reports'), description: t('Reports that have been marked resolved.') },
   ] : [
-    { tile: 'open', icon: Leaf, tone: 'leaf', label: 'Open reports', note: 'needs attention', hint: 'See open reports', description: 'Reports that have not been resolved or closed yet.' },
-    { tile: 'followed-up', icon: ShieldCheck, tone: 'sky', label: 'Verified or assigned', note: 'being followed up', hint: 'See verified and in-progress reports', description: 'Reports the District 5 desk has verified or is working on.' },
-    { tile: 'all', icon: Clock3, tone: 'amber', label: 'Community reports', note: 'all time', hint: 'See every report', description: 'Every report shared with the community so far.' },
+    { tile: 'open', icon: Leaf, tone: 'leaf', label: t('Open reports'), note: t('needs attention'), hint: t('See open reports'), description: t('Reports that have not been resolved or closed yet.') },
+    { tile: 'followed-up', icon: ShieldCheck, tone: 'sky', label: t('Verified or assigned'), note: t('being followed up'), hint: t('See verified and in-progress reports'), description: t('Reports the District 5 desk has verified or is working on.') },
+    { tile: 'all', icon: Clock3, tone: 'amber', label: t('Community reports'), note: t('all time'), hint: t('See every report'), description: t('Every report shared with the community so far.') },
   ]
   const heroStats: HeroStat[] = heroTiles.map(({ tile, description: _description, ...stat }) => ({ ...stat, value: reports.filter((report) => matchesHeroTile(report, tile)).length, onSelect: () => setStatTile(tile) }))
   const openTile = heroTiles.find((info) => info.tile === statTile)
@@ -3002,24 +3007,24 @@ function App() {
   })) : []
   const isStaffRole = profile?.role === 'admin' || profile?.role === 'responder'
   const paletteCommands: PaletteCommand[] = [
-    { id: 'go-community', group: 'Go to', label: 'Community map', keywords: 'home public view', run: () => { setStaffMode(false); setStaffDashboardOpen(true) } },
-    ...(isStaffRole ? [{ id: 'go-desk', group: 'Go to', label: 'Staff desk', keywords: 'queue responder', run: () => { setStaffMode(true); setStaffDashboardOpen(false) } }] : []),
-    ...(profile?.role === 'admin' ? [{ id: 'go-dashboard', group: 'Go to', label: 'Admin dashboard', keywords: 'analytics overview charts', run: () => { setStaffMode(true); setStaffDashboardOpen(true) } }] : []),
-    { id: 'act-report', group: 'Actions', label: 'Report an issue', keywords: 'new submit add', run: startReport },
-    { id: 'act-location', group: 'Actions', label: 'Use my location', keywords: 'gps nearby locate', run: () => { setStaffMode(false); requestLocation(false) } },
-    ...(isSupabaseConfigured ? [{ id: 'act-refresh', group: 'Actions', label: 'Refresh reports', keywords: 'sync reload', run: () => setReportRefreshToken((current) => current + 1) }] : []),
-    { id: 'act-tour', group: 'Actions', label: 'Show the introduction again', keywords: 'help how works tour', run: () => { setStaffMode(false); setTourOpen(true); window.scrollTo({ top: 0 }) } },
-    { id: 'disp-theme', group: 'Display', label: `Turn dark mode ${theme === 'dark' ? 'off' : 'on'}`, keywords: 'theme light', run: () => toggleTheme() },
+    { id: 'go-community', group: t('Go to'), label: t('Community map'), keywords: 'home public view', run: () => { setStaffMode(false); setStaffDashboardOpen(true) } },
+    ...(isStaffRole ? [{ id: 'go-desk', group: t('Go to'), label: t('Staff desk'), keywords: 'queue responder', run: () => { setStaffMode(true); setStaffDashboardOpen(false) } }] : []),
+    ...(profile?.role === 'admin' ? [{ id: 'go-dashboard', group: t('Go to'), label: t('Admin dashboard'), keywords: 'analytics overview charts', run: () => { setStaffMode(true); setStaffDashboardOpen(true) } }] : []),
+    { id: 'act-report', group: t('Actions'), label: t('Report an issue'), keywords: 'new submit add', run: startReport },
+    { id: 'act-location', group: t('Actions'), label: t('Use my location'), keywords: 'gps nearby locate', run: () => { setStaffMode(false); requestLocation(false) } },
+    ...(isSupabaseConfigured ? [{ id: 'act-refresh', group: t('Actions'), label: t('Refresh reports'), keywords: 'sync reload', run: () => setReportRefreshToken((current) => current + 1) }] : []),
+    { id: 'act-tour', group: t('Actions'), label: t('Show the introduction again'), keywords: 'help how works tour', run: () => { setStaffMode(false); setTourOpen(true); window.scrollTo({ top: 0 }) } },
+    { id: 'disp-theme', group: t('Display'), label: theme === 'dark' ? t('Turn dark mode off') : t('Turn dark mode on'), keywords: 'theme light', run: () => toggleTheme() },
     // Every display command reads "Turn … on/off", matching the switches in Display settings.
-    { id: 'disp-motion', group: 'Display', label: `Turn reduced motion ${displayPrefs.reduceMotion ? 'off' : 'on'}`, keywords: 'reduce animation', run: () => updateDisplayPrefs({ reduceMotion: !displayPrefs.reduceMotion }) },
-    { id: 'disp-contrast', group: 'Display', label: `Turn high contrast ${displayPrefs.highContrast ? 'off' : 'on'}`, keywords: 'accessibility', run: () => updateDisplayPrefs({ highContrast: !displayPrefs.highContrast }) },
-    ...(isStaffRole ? [{ id: 'disp-compact', group: 'Display', label: `Turn compact lists ${displayPrefs.compact ? 'off' : 'on'}`, keywords: 'density rows comfortable staff queue', run: () => updateDisplayPrefs({ compact: !displayPrefs.compact }) }] : []),
+    { id: 'disp-motion', group: t('Display'), label: displayPrefs.reduceMotion ? t('Turn reduced motion off') : t('Turn reduced motion on'), keywords: 'reduce animation', run: () => updateDisplayPrefs({ reduceMotion: !displayPrefs.reduceMotion }) },
+    { id: 'disp-contrast', group: t('Display'), label: displayPrefs.highContrast ? t('Turn high contrast off') : t('Turn high contrast on'), keywords: 'accessibility', run: () => updateDisplayPrefs({ highContrast: !displayPrefs.highContrast }) },
+    ...(isStaffRole ? [{ id: 'disp-compact', group: t('Display'), label: displayPrefs.compact ? t('Turn compact lists off') : t('Turn compact lists on'), keywords: 'density rows comfortable staff queue', run: () => updateDisplayPrefs({ compact: !displayPrefs.compact }) }] : []),
     ...allKnownReports.slice(0, 40).map((report) => ({
       id: `report-${report.id}`,
-      group: 'Reports',
+      group: t('Reports'),
       label: report.title,
-      hint: `${formatReportId(report.id)} · ${report.status}`,
-      keywords: `${report.category} ${report.location} ${report.barangay ?? ''} ${report.id}`,
+      hint: `${formatReportId(report.id)} · ${t(report.status)}`,
+      keywords: `${report.category} ${t(report.category)} ${report.location} ${report.barangay ?? ''} ${report.id}`,
       run: () => {
         if (isStaffRole && staffMode) { setStaffDashboardOpen(false); setStaffReportId(report.id) }
         else { setStaffMode(false); setSelectedId(report.id) }
@@ -3028,27 +3033,28 @@ function App() {
   ]
 
   return (
-    <div className={`app-shell theme-${theme}`} lang="en">
+    <div className={`app-shell theme-${theme}`} lang={language}>
       <header className="topbar">
-        <a className="brand" href="#home" aria-label="GreenPulse home">
+        <a className="brand" href="#home" aria-label={t('GreenPulse home')}>
           <span className="brand-mark"><Leaf size={19} strokeWidth={2.2} /></span>
           <span className="brand-name">green<span>pulse</span></span>
         </a>
-        <div className="topbar-context">{isSupabaseConfigured && <span className={`live-dot ${isOnline ? '' : 'is-offline'}`} />} Community watch <span className="context-divider">/</span> Environmental reports</div>
-        <div className={`topbar-chip ${scrolledPastHeading ? 'is-visible' : ''}`} aria-hidden={!scrolledPastHeading}><strong>{contextTitle}</strong><span>{openReports} open</span>{urgentOpenCount > 0 && <span className="is-urgent">{urgentOpenCount} urgent</span>}</div>
+        <div className="topbar-context">{isSupabaseConfigured && <span className={`live-dot ${isOnline ? '' : 'is-offline'}`} />} {t('Community watch')} <span className="context-divider">/</span> {t('Environmental reports')}</div>
+        <div className={`topbar-chip ${scrolledPastHeading ? 'is-visible' : ''}`} aria-hidden={!scrolledPastHeading}><strong>{contextTitle}</strong><span>{t('{count} open', { count: openReports })}</span>{urgentOpenCount > 0 && <span className="is-urgent">{t('{count} urgent', { count: urgentOpenCount })}</span>}</div>
         <div className="topbar-actions">
-          <SyncStatus state={syncState} detail={!isSupabaseConfigured ? 'Reports stay in this browser. Add Supabase settings to enable shared reports and accounts.' : lastSyncedAt ? `Last synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : undefined} onRetry={() => setReportRefreshToken((current) => current + 1)} />
+          <SyncStatus state={syncState} detail={!isSupabaseConfigured ? t('Reports stay in this browser. Add Supabase settings to enable shared reports and accounts.') : lastSyncedAt ? t('Last synced {time}', { time: lastSyncedAt.toLocaleTimeString(dateLocale(), { hour: 'numeric', minute: '2-digit' }) }) : undefined} onRetry={() => setReportRefreshToken((current) => current + 1)} />
+          <LanguageToggle onError={(message) => pushToast({ tone: 'error', message })} />
           <DisplaySettings prefs={displayPrefs} onChange={updateDisplayPrefs} showStaffOptions={isStaffRole} />
-          {savedDraftAvailable && <button className="text-button resume-draft-button" type="button" onClick={() => void restoreReportDraft(false)}>Resume draft</button>}
-          <button className="icon-button theme-toggle" type="button" role="switch" onClick={() => toggleTheme()} aria-label="Dark mode" aria-checked={theme === 'dark'} title={`Turn dark mode ${theme === 'dark' ? 'off' : 'on'}`}><span className="theme-toggle-thumb" aria-hidden="true">{theme === 'dark' ? <Moon size={12} /> : <Sun size={12} />}</span></button>
+          {savedDraftAvailable && <button className="text-button resume-draft-button" type="button" onClick={() => void restoreReportDraft(false)}>{t('Resume draft')}</button>}
+          <button className="icon-button theme-toggle" type="button" role="switch" onClick={() => toggleTheme()} aria-label={t('Dark mode')} aria-checked={theme === 'dark'} title={theme === 'dark' ? t('Turn dark mode off') : t('Turn dark mode on')}><span className="theme-toggle-thumb" aria-hidden="true">{theme === 'dark' ? <Moon size={12} /> : <Sun size={12} />}</span></button>
           {/* Tracking codes are for guest reporters; staff see every report already. */}
-          {isSupabaseConfigured && !isStaffRole && <button className="secondary-button track-report-button" type="button" aria-label="Track a report" title="Track a report" onClick={() => { setGuestTrackingToken(undefined); setGuestTrackingEmailSent(false); setGuestTrackingOpen(true) }}><FileSearch size={15} /><span className="track-report-label">Track report</span></button>}
+          {isSupabaseConfigured && !isStaffRole && <button className="secondary-button track-report-button" type="button" aria-label={t('Track a report')} title={t('Track a report')} onClick={() => { setGuestTrackingToken(undefined); setGuestTrackingEmailSent(false); setGuestTrackingOpen(true) }}><FileSearch size={15} /><span className="track-report-label">{t('Track report')}</span></button>}
           {session && <NotificationBell unread={unreadNotificationCount} open={notificationPanelOpen} onToggle={() => setNotificationPanelOpen((open) => !open)} />}
           {session ? <>
-            {(profile?.role === 'responder' || profile?.role === 'admin') && <button className={`text-button staff-toggle ${staffMode ? 'active' : ''}`} type="button" title={staffMode ? 'Return to community view' : 'Open staff desk'} aria-label={staffMode ? 'Return to community view' : 'Open staff desk'} onClick={() => { setStaffMode((current) => !current); setStaffDashboardOpen(true) }}>{staffMode ? <MapIcon size={15} /> : <ClipboardCheck size={15} />}<span>{staffMode ? 'Community view' : 'Staff desk'}</span></button>}
-            <button className="profile-button" type="button" onClick={() => { setProfileAvatarPreview(profileAvatarUrl); setProfileModal(true) }} aria-label="Open profile settings"><span className="avatar">{profileAvatarUrl ? <img src={profileAvatarUrl} alt="" /> : (profile?.display_name || session.user.email || session.user.phone || 'R').slice(0, 1).toUpperCase()}</span><span className="profile-label">{profile?.display_name || session.user.email || session.user.phone}</span>{profile && <span className={`profile-role-badge role-${profile.role}`}>{getRoleLabel(profile.role)}</span>}</button>
-            <button className="icon-button topbar-signout" type="button" onClick={() => void supabase?.auth.signOut()} aria-label="Sign out" title="Sign out"><LogOut size={16} /></button>
-          </> : isSupabaseConfigured ? <button className="sign-in-button" type="button" onClick={() => openAuthModal('sign-in')} disabled={!authReady}><LogIn size={15} />Sign in</button> : <span className="profile-button"><span className="avatar">G</span><span className="profile-label">Guest</span></span>}
+            {(profile?.role === 'responder' || profile?.role === 'admin') && <button className={`text-button staff-toggle ${staffMode ? 'active' : ''}`} type="button" title={staffMode ? t('Return to community view') : t('Open staff desk')} aria-label={staffMode ? t('Return to community view') : t('Open staff desk')} onClick={() => { setStaffMode((current) => !current); setStaffDashboardOpen(true) }}>{staffMode ? <MapIcon size={15} /> : <ClipboardCheck size={15} />}<span>{staffMode ? t('Community view') : t('Staff desk')}</span></button>}
+            <button className="profile-button" type="button" onClick={() => { setProfileAvatarPreview(profileAvatarUrl); setProfileModal(true) }} aria-label={t('Open profile settings')}><span className="avatar">{profileAvatarUrl ? <img src={profileAvatarUrl} alt="" /> : (profile?.display_name || session.user.email || session.user.phone || 'R').slice(0, 1).toUpperCase()}</span><span className="profile-label">{profile?.display_name || session.user.email || session.user.phone}</span>{profile && <span className={`profile-role-badge role-${profile.role}`}>{getRoleLabel(profile.role)}</span>}</button>
+            <button className="icon-button topbar-signout" type="button" onClick={() => void supabase?.auth.signOut()} aria-label={t('Sign out')} title={t('Sign out')}><LogOut size={16} /></button>
+          </> : isSupabaseConfigured ? <button className="sign-in-button" type="button" onClick={() => openAuthModal('sign-in')} disabled={!authReady}><LogIn size={15} />{t('Sign in')}</button> : <span className="profile-button"><span className="avatar">G</span><span className="profile-label">{t('Guest')}</span></span>}
         </div>
       </header>
 
@@ -3065,178 +3071,178 @@ function App() {
 
       <main id="home" className={`workspace ${viewTransition.entering ? 'view-entering' : ''}`} tabIndex={-1}>
         <HeroPanel
-          title={staffMode ? <>Coordinate the response. <em>Close the loop.</em></> : <>See it. <span className="keep-together">Report it.</span> <em className="keep-together">Restore it.</em></>}
-          subtitle={staffMode ? 'A focused queue for reviewing reports and coordinating community response.' : t('communitySubtitle')}
-          action={<button className="primary-button report-cta" type="button" onClick={startReport}><span className="report-cta-icon" aria-hidden="true"><Plus size={17} strokeWidth={2.6} /></span><span className="report-cta-label">{t('reportIssue')}</span><span className="report-cta-arrow" aria-hidden="true"><ArrowRight size={15} strokeWidth={2.4} /></span></button>}
-          hint={staffMode ? undefined : session ? 'Takes about a minute.' : 'No account needed. Takes about a minute.'}
+          title={staffMode ? <>{t('Coordinate the response.')} <em>{t('Close the loop.')}</em></> : <>{t('See it.')} <span className="keep-together">{t('Report it.')}</span> <em className="keep-together">{t('Restore it.')}</em></>}
+          subtitle={staffMode ? t('A focused queue for reviewing reports and coordinating community response.') : translate('communitySubtitle')}
+          action={<button className="primary-button report-cta" type="button" onClick={startReport}><span className="report-cta-icon" aria-hidden="true"><Plus size={17} strokeWidth={2.6} /></span><span className="report-cta-label">{translate('reportIssue')}</span><span className="report-cta-arrow" aria-hidden="true"><ArrowRight size={15} strokeWidth={2.4} /></span></button>}
+          hint={staffMode ? undefined : session ? t('Takes about a minute.') : t('No account needed. Takes about a minute.')}
           stats={heroStats}
-          statsLabel={staffMode ? 'Staff response summary' : 'Community report summary'}
+          statsLabel={staffMode ? t('Staff response summary') : t('Community report summary')}
           loading={loadingReports}
-          footer={!staffMode && isSupabaseConfigured ? <div className="hero-sync" aria-live="polite"><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} />{lastSyncedAt ? `Synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : 'Syncing reports…'}<button className="text-button" type="button" disabled={!isOnline || loadingReports} onClick={() => setReportRefreshToken((current) => current + 1)}>Refresh</button></div> : undefined}
+          footer={!staffMode && isSupabaseConfigured ? <div className="hero-sync" aria-live="polite"><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} />{lastSyncedAt ? t('Synced {time}', { time: lastSyncedAt.toLocaleTimeString(dateLocale(), { hour: 'numeric', minute: '2-digit' }) }) : t('Syncing reports…')}<button className="text-button" type="button" disabled={!isOnline || loadingReports} onClick={() => setReportRefreshToken((current) => current + 1)}>{t('Refresh')}</button></div> : undefined}
         />
 
-        {isSupabaseConfigured && !isOnline && <div className="connection-banner error-banner" role="status"><span><strong>You’re offline.</strong> Showing the last synced reports; you can save a report on this device and queue it for upload when you reconnect.{lastSyncedAt ? ` Last synced ${lastSyncedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}.` : ''}</span></div>}
-        {draftMessage && <div className="connection-banner" role="status"><span>{draftMessage}</span>{savedDraftAvailable && <button className="text-button" type="button" onClick={() => void deleteSavedDraft()}>Delete saved draft</button>}</div>}
-        {backendError && <div className="connection-banner error-banner" role="alert"><AlertTriangle size={16} /><span>{backendError}</span><button type="button" onClick={() => setBackendError('')} aria-label="Dismiss message"><X size={14} /></button></div>}
+        {isSupabaseConfigured && !isOnline && <div className="connection-banner error-banner" role="status"><span><strong>{t('You’re offline.')}</strong> {t('Showing the last synced reports; you can save a report on this device and queue it for upload when you reconnect.')}{lastSyncedAt ? ` ${t('Last synced {time}.', { time: lastSyncedAt.toLocaleTimeString(dateLocale(), { hour: 'numeric', minute: '2-digit' }) })}` : ''}</span></div>}
+        {draftMessage && <div className="connection-banner" role="status"><span>{draftMessage}</span>{savedDraftAvailable && <button className="text-button" type="button" onClick={() => void deleteSavedDraft()}>{t('Delete saved draft')}</button>}</div>}
+        {backendError && <div className="connection-banner error-banner" role="alert"><AlertTriangle size={16} /><span>{backendError}</span><button type="button" onClick={() => setBackendError('')} aria-label={t('Dismiss message')}><X size={14} /></button></div>}
 
         {!staffMode && tourOpen && <WelcomeTour onDismiss={dismissTour} onSeen={markTourSeen} />}
 
-        {staffMode && profile?.role === 'admin' && staffDashboardOpen && <section className="admin-overview" aria-label="Admin dashboard" aria-busy={loadingReports}>
+        {staffMode && profile?.role === 'admin' && staffDashboardOpen && <section className="admin-overview" aria-label={t('Admin dashboard')} aria-busy={loadingReports}>
           <div className="analytics-heading">
-            <div><p className="eyebrow">ADMIN DASHBOARD</p><h2>Environmental report overview</h2></div>
-            <div className="analytics-heading-actions"><span className="analytics-period" title={reportsTruncated ? `There are more reports than the dashboard loads. These figures cover the newest ${REPORT_LOAD_LIMIT.toLocaleString()}.` : undefined}>{loadingReports ? 'Loading reports…' : reportsTruncated ? `Newest ${REPORT_LOAD_LIMIT.toLocaleString()} reports` : 'All reports'}<i />Current data</span><button className="secondary-button add-responder-button" type="button" onClick={() => { setResponderMessage(''); setResponderModalOpen(true) }}><Plus size={14} /> Add responder</button><button className="secondary-button admin-dashboard-action" type="button" onClick={() => setStaffDashboardOpen(false)}><ClipboardCheck size={14} /> Staff desk</button></div>
+            <div><p className="eyebrow">{t('ADMIN DASHBOARD')}</p><h2>{t('Environmental report overview')}</h2></div>
+            <div className="analytics-heading-actions"><span className="analytics-period" title={reportsTruncated ? t('There are more reports than the dashboard loads. These figures cover the newest {count}.', { count: REPORT_LOAD_LIMIT.toLocaleString(dateLocale()) }) : undefined}>{loadingReports ? t('Loading reports…') : reportsTruncated ? t('Newest {count} reports', { count: REPORT_LOAD_LIMIT.toLocaleString(dateLocale()) }) : t('All reports')}<i />{t('Current data')}</span><button className="secondary-button add-responder-button" type="button" onClick={() => { setResponderMessage(''); setResponderModalOpen(true) }}><Plus size={14} /> {t('Add responder')}</button><button className="secondary-button admin-dashboard-action" type="button" onClick={() => setStaffDashboardOpen(false)}><ClipboardCheck size={14} /> {t('Staff desk')}</button></div>
           </div>
           <AdminSectionNav sections={ADMIN_SECTIONS} active={adminSection} onChange={setAdminSection} />
           {adminSection === 'admin-overview-metrics' && <div className="admin-metrics-grid" id="admin-overview-metrics" role="tabpanel" aria-labelledby={adminTabId('admin-overview-metrics')}>
             {[
-              { label: 'Total reports', value: adminAnalytics.total, note: 'All recorded reports', icon: <Leaf size={15} /> },
-              { label: 'Pending reports', value: adminAnalytics.pending, note: 'Awaiting review or follow-up', icon: <Clock3 size={15} /> },
-              { label: 'Verified reports', value: adminAnalytics.verified, note: 'Verified by staff', icon: <ShieldCheck size={15} /> },
-              { label: 'Assigned reports', value: adminAnalytics.assigned, note: 'With a responder assigned', icon: <UserRound size={15} /> },
-              { label: 'In-progress reports', value: adminAnalytics.inProgress, note: 'Response underway', icon: <ArrowDownUp size={15} /> },
-              { label: 'Resolved reports', value: adminAnalytics.resolved, note: 'Marked resolved', icon: <Check size={15} /> },
-              { label: 'Closed reports', value: adminAnalytics.closed, note: 'Closed without resolution', icon: <X size={15} /> },
-              { label: 'Rejected reports', value: adminAnalytics.rejected, note: 'Rejected by staff', icon: <Ban size={15} /> },
-              { label: 'Critical reports', value: adminAnalytics.critical, note: 'High urgency', icon: <AlertTriangle size={15} /> },
-              { label: 'Escalated reports', value: escalatedOpen, note: 'Open critical flooding', icon: <Siren size={15} /> },
-              { label: 'Avg. verification time', value: formatDuration(responseMetrics.averageVerificationMs), note: 'Submitted to verified', icon: <Check size={15} /> },
-              { label: 'Avg. response time', value: formatDuration(responseMetrics.averageResponseMs), note: 'Submitted to response started', icon: <ArrowDownUp size={15} /> },
-              { label: 'Avg. resolution time', value: formatDuration(responseMetrics.averageResolutionMs), note: 'Submitted to resolved', icon: <ShieldCheck size={15} /> },
-              { label: 'Reports this week', value: adminAnalytics.thisWeek, note: 'Since Monday', icon: <CalendarDays size={15} /> },
-              { label: 'Reports this month', value: adminAnalytics.thisMonth, note: 'Since the first of the month', icon: <CalendarDays size={15} /> },
+              { label: t('Total reports'), value: adminAnalytics.total, note: t('All recorded reports'), icon: <Leaf size={15} /> },
+              { label: t('Pending reports'), value: adminAnalytics.pending, note: t('Awaiting review or follow-up'), icon: <Clock3 size={15} /> },
+              { label: t('Verified reports'), value: adminAnalytics.verified, note: t('Verified by staff'), icon: <ShieldCheck size={15} /> },
+              { label: t('Assigned reports'), value: adminAnalytics.assigned, note: t('With a responder assigned'), icon: <UserRound size={15} /> },
+              { label: t('In-progress reports'), value: adminAnalytics.inProgress, note: t('Response underway'), icon: <ArrowDownUp size={15} /> },
+              { label: t('Resolved reports'), value: adminAnalytics.resolved, note: t('Marked resolved'), icon: <Check size={15} /> },
+              { label: t('Closed reports'), value: adminAnalytics.closed, note: t('Closed without resolution'), icon: <X size={15} /> },
+              { label: t('Rejected reports'), value: adminAnalytics.rejected, note: t('Rejected by staff'), icon: <Ban size={15} /> },
+              { label: t('Critical reports'), value: adminAnalytics.critical, note: t('High urgency'), icon: <AlertTriangle size={15} /> },
+              { label: t('Escalated reports'), value: escalatedOpen, note: t('Open critical flooding'), icon: <Siren size={15} /> },
+              { label: t('Avg. verification time'), value: formatDuration(responseMetrics.averageVerificationMs), note: t('Submitted to verified'), icon: <Check size={15} /> },
+              { label: t('Avg. response time'), value: formatDuration(responseMetrics.averageResponseMs), note: t('Submitted to response started'), icon: <ArrowDownUp size={15} /> },
+              { label: t('Avg. resolution time'), value: formatDuration(responseMetrics.averageResolutionMs), note: t('Submitted to resolved'), icon: <ShieldCheck size={15} /> },
+              { label: t('Reports this week'), value: adminAnalytics.thisWeek, note: t('Since Monday'), icon: <CalendarDays size={15} /> },
+              { label: t('Reports this month'), value: adminAnalytics.thisMonth, note: t('Since the first of the month'), icon: <CalendarDays size={15} /> },
             ].map((metric, index) => <article className="admin-metric" key={metric.label} style={{ '--i': index } as CSSProperties}>
-              <span className="admin-metric-icon">{metric.icon}</span><strong>{loadingReports ? <><span className="skeleton skeleton-stat" aria-hidden="true" /><span className="sr-only">Loading</span></> : typeof metric.value === 'number' ? <AnimatedNumber value={metric.value} /> : metric.value}</strong><span>{metric.label}</span><small>{metric.note}</small>
+              <span className="admin-metric-icon">{metric.icon}</span><strong>{loadingReports ? <><span className="skeleton skeleton-stat" aria-hidden="true" /><span className="sr-only">{t('Loading')}</span></> : typeof metric.value === 'number' ? <AnimatedNumber value={metric.value} /> : metric.value}</strong><span>{metric.label}</span><small>{metric.note}</small>
             </article>)}
           </div>}
           {adminSection === 'admin-charts' && <div className="admin-chart-grid" id="admin-charts" role="tabpanel" aria-labelledby={adminTabId('admin-charts')}>
-            <AdminBarChart title="Reports by category" description="Environmental concern type" data={adminAnalytics.byCategory} loading={loadingReports} />
-            <AdminBarChart title="Reports by status" description="Current response stage" data={adminAnalytics.byStatus} loading={loadingReports} />
-            <AdminBarChart title="Reports by urgency" description="Reported urgency level" data={adminAnalytics.byUrgency} loading={loadingReports} />
-            <AdminBarChart title="Reports by barangay" description="Where reports were made" data={adminAnalytics.byBarangay} loading={loadingReports} />
+            <AdminBarChart title={t('Reports by category')} description={t('Environmental concern type')} data={adminAnalytics.byCategory} loading={loadingReports} />
+            <AdminBarChart title={t('Reports by status')} description={t('Current response stage')} data={adminAnalytics.byStatus} loading={loadingReports} />
+            <AdminBarChart title={t('Reports by urgency')} description={t('Reported urgency level')} data={adminAnalytics.byUrgency} loading={loadingReports} />
+            <AdminBarChart title={t('Reports by barangay')} description={t('Where reports were made')} data={adminAnalytics.byBarangay} loading={loadingReports} />
             <AdminTrendChart daily={adminAnalytics.daily} loading={loadingReports} />
             <article className="analytics-chart admin-outcome-chart">
-              <div className="analytics-chart-heading"><div><strong>Resolution performance</strong><span>Resolved reports as a share of all reports</span></div><ShieldCheck size={17} /></div>
+              <div className="analytics-chart-heading"><div><strong>{t('Resolution performance')}</strong><span>{t('Resolved reports as a share of all reports')}</span></div><ShieldCheck size={17} /></div>
               <div className="resolution-content">
-                <div className="resolution-ring" role="img" aria-label={`Resolution rate ${Math.round(adminAnalytics.resolutionRate)} percent`} style={{ '--ring': `${adminAnalytics.resolutionRate}%` } as CSSProperties}><span><AnimatedNumber value={Math.round(adminAnalytics.resolutionRate)} /><small>%</small></span></div>
-                <p><strong>{adminAnalytics.resolved} of {adminAnalytics.total}</strong><small>reports resolved</small></p>
+                <div className="resolution-ring" role="img" aria-label={t('Resolution rate {percent} percent', { percent: Math.round(adminAnalytics.resolutionRate) })} style={{ '--ring': `${adminAnalytics.resolutionRate}%` } as CSSProperties}><span><AnimatedNumber value={Math.round(adminAnalytics.resolutionRate)} /><small>%</small></span></div>
+                <p><strong>{t('{count} of {total}', { count: adminAnalytics.resolved, total: adminAnalytics.total })}</strong><small>{t('reports resolved')}</small></p>
               </div>
               <div className="average-resolution">
-                <span>Average resolution time</span>
+                <span>{t('Average resolution time')}</span>
                 <strong>{adminAnalytics.averageResolutionMs === undefined ? '—' : adminAnalytics.averageResolutionMs < 86_400_000
-                  ? `${Math.max(1, Math.round(adminAnalytics.averageResolutionMs / 3_600_000))} hr`
-                  : `${(adminAnalytics.averageResolutionMs / 86_400_000).toFixed(1)} days`}</strong>
-                <small>Resolved reports with recorded resolution timestamps</small>
+                  ? t('{count} hr', { count: Math.max(1, Math.round(adminAnalytics.averageResolutionMs / 3_600_000)) })
+                  : t('{count} days', { count: (adminAnalytics.averageResolutionMs / 86_400_000).toFixed(1) })}</strong>
+                <small>{t('Resolved reports with recorded resolution timestamps')}</small>
               </div>
             </article>
           </div>}
           {adminSection === 'admin-summary' && <EnvironmentalReports reports={reports} />}
           {adminSection === 'admin-pilot' && <section className="pilot-outcomes analytics-chart" id="admin-pilot" role="tabpanel" aria-labelledby={adminTabId('admin-pilot')}>
-            <div className="analytics-chart-heading"><div><strong>Pilot outcomes</strong><span>All-time response and recurrence measures for participating teams</span></div><BarChart3 size={17} /></div>
+            <div className="analytics-chart-heading"><div><strong>{t('Pilot outcomes')}</strong><span>{t('All-time response and recurrence measures for participating teams')}</span></div><BarChart3 size={17} /></div>
             {pilotOutcomesMessage && <p className="workflow-hint" role="status">{pilotOutcomesMessage}</p>}
-            {!pilotOutcomes && !pilotOutcomesMessage && (loadingReports ? <ChartSkeleton rows={3} /> : <ChartEmpty title="No pilot outcomes yet" hint="Response and recurrence measures appear after reports have been handled." />)}
+            {!pilotOutcomes && !pilotOutcomesMessage && (loadingReports ? <ChartSkeleton rows={3} /> : <ChartEmpty title={t('No pilot outcomes yet')} hint={t('Response and recurrence measures appear after reports have been handled.')} />)}
             {pilotOutcomes && <>
-              <div className="pilot-outcome-metrics"><p><strong>{pilotOutcomes.totalReports}</strong><span>recorded reports</span></p><p><strong>{pilotOutcomes.reopenedReports}</strong><span>reopened reports</span></p></div>
-              <div className="pilot-outcome-table-wrap"><table className="pilot-outcome-table"><caption className="sr-only">Report outcomes by barangay</caption><thead><tr><th scope="col">Barangay</th><th scope="col">Reports</th><th scope="col">Resolved or closed</th><th scope="col">Reopened</th><th scope="col">Avg. first response</th><th scope="col">Avg. resolution</th></tr></thead><tbody>{pilotOutcomes.byBarangay.map((row) => <tr key={row.label}><th scope="row">{row.label}</th><td>{row.reports}</td><td>{row.resolved}</td><td>{row.reopened}</td><td>{formatDuration(row.averageFirstResponseMs ?? undefined)}</td><td>{formatDuration(row.averageResolutionMs ?? undefined)}</td></tr>)}</tbody></table></div>
+              <div className="pilot-outcome-metrics"><p><strong>{pilotOutcomes.totalReports}</strong><span>{t('recorded reports')}</span></p><p><strong>{pilotOutcomes.reopenedReports}</strong><span>{t('reopened reports')}</span></p></div>
+              <div className="pilot-outcome-table-wrap"><table className="pilot-outcome-table"><caption className="sr-only">{t('Report outcomes by barangay')}</caption><thead><tr><th scope="col">{t('Barangay')}</th><th scope="col">{t('Reports')}</th><th scope="col">{t('Resolved or closed')}</th><th scope="col">{t('Reopened')}</th><th scope="col">{t('Avg. first response')}</th><th scope="col">{t('Avg. resolution')}</th></tr></thead><tbody>{pilotOutcomes.byBarangay.map((row) => <tr key={row.label}><th scope="row">{row.label}</th><td>{row.reports}</td><td>{row.resolved}</td><td>{row.reopened}</td><td>{formatDuration(row.averageFirstResponseMs ?? undefined)}</td><td>{formatDuration(row.averageResolutionMs ?? undefined)}</td></tr>)}</tbody></table></div>
             </>}
           </section>}
           {adminSection === 'admin-operations' && <div className="admin-operations-grid" id="admin-operations" role="tabpanel" aria-labelledby={adminTabId('admin-operations')}>
             <form className="admin-operation-card" onSubmit={(event) => void saveResponseSettings(event)}>
-              <div><p className="eyebrow">OPERATIONS</p><h3>Response deadlines</h3><p>These targets drive overdue alerts in the staff inbox.</p></div>
-              <label className="field-label">Standard urgency deadline (hours)<input name="response_sla_hours" type="number" min={1} max={720} step={1} value={responseSettings.response_sla_hours} onChange={(event) => setResponseSettings((current) => ({ ...current, response_sla_hours: Number(event.target.value) }))} required /></label>
-              <label className="field-label">High urgency deadline (hours)<input name="high_urgency_sla_hours" type="number" min={1} max={720} step={1} value={responseSettings.high_urgency_sla_hours} onChange={(event) => setResponseSettings((current) => ({ ...current, high_urgency_sla_hours: Number(event.target.value) }))} required /></label>
-              <label className="field-label">Second escalation window (multiple of first deadline)<input name="second_escalation_multiplier" type="number" min={2} max={10} step={1} value={responseSettings.second_escalation_multiplier} onChange={(event) => setResponseSettings((current) => ({ ...current, second_escalation_multiplier: Number(event.target.value) }))} required /><small>At the first deadline, notify admins and the assigned responder. At this multiple, notify admins again for supervisor review.</small></label>
+              <div><p className="eyebrow">{t('OPERATIONS')}</p><h3>{t('Response deadlines')}</h3><p>{t('These targets drive overdue alerts in the staff inbox.')}</p></div>
+              <label className="field-label">{t('Standard urgency deadline (hours)')}<input name="response_sla_hours" type="number" min={1} max={720} step={1} value={responseSettings.response_sla_hours} onChange={(event) => setResponseSettings((current) => ({ ...current, response_sla_hours: Number(event.target.value) }))} required /></label>
+              <label className="field-label">{t('High urgency deadline (hours)')}<input name="high_urgency_sla_hours" type="number" min={1} max={720} step={1} value={responseSettings.high_urgency_sla_hours} onChange={(event) => setResponseSettings((current) => ({ ...current, high_urgency_sla_hours: Number(event.target.value) }))} required /></label>
+              <label className="field-label">{t('Second escalation window (multiple of first deadline)')}<input name="second_escalation_multiplier" type="number" min={2} max={10} step={1} value={responseSettings.second_escalation_multiplier} onChange={(event) => setResponseSettings((current) => ({ ...current, second_escalation_multiplier: Number(event.target.value) }))} required /><small>{t('At the first deadline, notify admins and the assigned responder. At this multiple, notify admins again for supervisor review.')}</small></label>
               {responseSettingsMessage && <p className="workflow-hint" role="status">{responseSettingsMessage}</p>}
-              <button className="primary-button" type="submit" disabled={responseSettingsBusy}>{responseSettingsBusy ? 'Saving…' : 'Save deadlines'}</button>
+              <button className="primary-button" type="submit" disabled={responseSettingsBusy}>{responseSettingsBusy ? t('Saving…') : t('Save deadlines')}</button>
             </form>
-            <section className="admin-operation-card" aria-label="Escalation queue">
-              <div><p className="eyebrow">FOLLOW-UP CONTROL</p><h3>Escalations</h3><p>Stage 1 goes to admins and the assigned responder. Stage 2 asks admins to review the task plan. Staff can acknowledge the escalation.</p></div>
-              <button className="secondary-button" type="button" onClick={() => void runEscalationCheck()} disabled={escalationRunBusy}>{escalationRunBusy ? 'Checking…' : 'Check deadlines now'}</button>
+            <section className="admin-operation-card" aria-label={t('Escalation queue')}>
+              <div><p className="eyebrow">{t('FOLLOW-UP CONTROL')}</p><h3>{t('Escalations')}</h3><p>{t('Stage 1 goes to admins and the assigned responder. Stage 2 asks admins to review the task plan. Staff can acknowledge the escalation.')}</p></div>
+              <button className="secondary-button" type="button" onClick={() => void runEscalationCheck()} disabled={escalationRunBusy}>{escalationRunBusy ? t('Checking…') : t('Check deadlines now')}</button>
               {slaEscalationMessage && <p className="workflow-hint" role="status">{slaEscalationMessage}</p>}
-              <EscalationList items={slaEscalations} limit={8} emptyText="No SLA escalations recorded." canAcknowledge={(item) => canHandleEscalation(item, { role: profile.role, userId: session?.user.id, teams })} onAcknowledge={(item) => void acknowledgeSlaEscalation(item)} />
+              <EscalationList items={slaEscalations} limit={8} emptyText={t('No SLA escalations recorded.')} canAcknowledge={(item) => canHandleEscalation(item, { role: profile.role, userId: session?.user.id, teams })} onAcknowledge={(item) => void acknowledgeSlaEscalation(item)} />
             </section>
-            <section className="admin-operation-card" aria-label="Email notification delivery">
-              <div><p className="eyebrow">NOTIFICATION DELIVERY</p><h3>Email delivery history</h3><p>Recent sent and failed deliveries are recorded. Retries use stable idempotency keys.</p></div>
+            <section className="admin-operation-card" aria-label={t('Email notification delivery')}>
+              <div><p className="eyebrow">{t('NOTIFICATION DELIVERY')}</p><h3>{t('Email delivery history')}</h3><p>{t('Recent sent and failed deliveries are recorded. Retries use stable idempotency keys.')}</p></div>
               {emailRetryMessage && <p className="workflow-hint" role="status">{emailRetryMessage}</p>}
-              {deliveryNeverAttempted(failedEmailNotifications) && <p className="workflow-hint delivery-setup-hint">None of these emails has been tried yet. That usually means email sending is not set up on the server (RESEND_API_KEY and NOTIFICATION_FROM_EMAIL).</p>}
-              <div className="workload-list">{failedEmailNotifications.length ? groupDeliveryHistory(failedEmailNotifications).slice(0, 8).map((group) => <div className="workload-row delivery-row" key={group.key}><span><strong>{group.title} <span className="delivery-report-id">{formatReportId(group.reportId)}</span></strong><small>{group.channel} · {group.count > 1 ? `${group.count} ${group.status.toLowerCase()}` : group.status} · {group.attempts} attempt{group.attempts === 1 ? '' : 's'}{group.latestAt ? ` · latest ${formatDeliveryTime(group.latestAt)}` : ''}</small>{group.lastError && <small className="delivery-error">{group.lastError}</small>}</span></div>) : <span className="workflow-hint">No email delivery attempts are recorded.</span>}</div>
-              <button className="secondary-button" type="button" disabled={emailRetryBusy || !failedEmailNotifications.some((item) => item.status === 'Failed' || item.status === 'Pending')} onClick={() => void retryFailedEmails()}>{emailRetryBusy ? 'Sending…' : emailRetryLabel(failedEmailNotifications)}</button>
+              {deliveryNeverAttempted(failedEmailNotifications) && <p className="workflow-hint delivery-setup-hint">{t('None of these emails has been tried yet. That usually means email sending is not set up on the server (RESEND_API_KEY and NOTIFICATION_FROM_EMAIL).')}</p>}
+              <div className="workload-list">{failedEmailNotifications.length ? groupDeliveryHistory(failedEmailNotifications).slice(0, 8).map((group) => <div className="workload-row delivery-row" key={group.key}><span><strong>{group.title} <span className="delivery-report-id">{formatReportId(group.reportId)}</span></strong><small>{group.channel} · {group.count > 1 ? `${group.count} ${t(group.status).toLowerCase()}` : t(group.status)} · {tn('{count} attempt', '{count} attempts', group.attempts)}{group.latestAt ? ` · ${t('latest {time}', { time: formatDeliveryTime(group.latestAt) })}` : ''}</small>{group.lastError && <small className="delivery-error">{group.lastError}</small>}</span></div>) : <span className="workflow-hint">{t('No email delivery attempts are recorded.')}</span>}</div>
+              <button className="secondary-button" type="button" disabled={emailRetryBusy || !failedEmailNotifications.some((item) => item.status === 'Failed' || item.status === 'Pending')} onClick={() => void retryFailedEmails()}>{emailRetryBusy ? t('Sending…') : emailRetryLabel(failedEmailNotifications)}</button>
             </section>
-            <section className="admin-operation-card" aria-label="Responder workload">
-              <div><p className="eyebrow">TEAM CAPACITY</p><h3>Open task workload</h3><p>Counts include reports assigned directly or to a team.</p></div>
-              <div className="workload-list"><strong>Responders</strong>{staffUsers.filter((user) => user.role === 'responder').map((user) => <div className="workload-row" key={user.id}><span>{user.display_name || 'Unnamed responder'}</span><b>{reports.filter((report) => report.assignedTo === user.id && isOpenStatus(report.status)).length}</b></div>)}{staffUsers.filter((user) => user.role === 'responder').length === 0 && <span className="workflow-hint">No responders are configured.</span>}</div>
-              <div className="workload-list"><strong>Teams</strong>{teams.map((team) => <div className="workload-row" key={team.id}><span>{team.name}</span><b>{reports.filter((report) => report.assignedTeamId === team.id && isOpenStatus(report.status)).length}</b></div>)}{teams.length === 0 && <span className="workflow-hint">No teams are configured.</span>}</div>
+            <section className="admin-operation-card" aria-label={t('Responder workload')}>
+              <div><p className="eyebrow">{t('TEAM CAPACITY')}</p><h3>{t('Open task workload')}</h3><p>{t('Counts include reports assigned directly or to a team.')}</p></div>
+              <div className="workload-list"><strong>{t('Responders')}</strong>{staffUsers.filter((user) => user.role === 'responder').map((user) => <div className="workload-row" key={user.id}><span>{user.display_name || t('Unnamed responder')}</span><b>{reports.filter((report) => report.assignedTo === user.id && isOpenStatus(report.status)).length}</b></div>)}{staffUsers.filter((user) => user.role === 'responder').length === 0 && <span className="workflow-hint">{t('No responders are configured.')}</span>}</div>
+              <div className="workload-list"><strong>{t('Teams')}</strong>{teams.map((team) => <div className="workload-row" key={team.id}><span>{team.name}</span><b>{reports.filter((report) => report.assignedTeamId === team.id && isOpenStatus(report.status)).length}</b></div>)}{teams.length === 0 && <span className="workflow-hint">{t('No teams are configured.')}</span>}</div>
             </section>
           </div>}
         </section>}
 
-        {staffMode && (profile?.role === 'responder' || profile?.role === 'admin') && (!staffDashboardOpen || profile.role !== 'admin') && <section className="staff-workbench" aria-label="Staff report management">
-          <div className="staff-workbench-heading"><div><p className="eyebrow">RESPONSE MANAGEMENT</p><h2>Staff desk</h2><p>Review incoming reports, assign responders, and record outcomes.</p></div><div className="staff-workbench-actions">{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => { setResponderMessage(''); setResponderModalOpen(true) }}><Plus size={14} /> Add responder</button>}{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => { setTeamMessage(''); setTeamModalOpen(true) }}><Users size={14} /> Manage teams</button>}{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => setStaffDashboardOpen(true)}><BarChart3 size={14} /> Dashboard</button>}<span className="role-chip"><ShieldCheck size={14} />{profile.role}</span></div></div>
+        {staffMode && (profile?.role === 'responder' || profile?.role === 'admin') && (!staffDashboardOpen || profile.role !== 'admin') && <section className="staff-workbench" aria-label={t('Staff report management')}>
+          <div className="staff-workbench-heading"><div><p className="eyebrow">{t('RESPONSE MANAGEMENT')}</p><h2>{t('Staff desk')}</h2><p>{t('Review incoming reports, assign responders, and record outcomes.')}</p></div><div className="staff-workbench-actions">{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => { setResponderMessage(''); setResponderModalOpen(true) }}><Plus size={14} /> {t('Add responder')}</button>}{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => { setTeamMessage(''); setTeamModalOpen(true) }}><Users size={14} /> {t('Manage teams')}</button>}{profile.role === 'admin' && <button className="secondary-button" type="button" onClick={() => setStaffDashboardOpen(true)}><BarChart3 size={14} /> {t('Dashboard')}</button>}<span className="role-chip"><ShieldCheck size={14} />{profile.role}</span></div></div>
           <div className="staff-followups">
-          <section className="admin-operation-card staff-escalation-panel" aria-label="My deadline escalations">
-            <div><p className="eyebrow">FOLLOW-UP CONTROL</p><h3>Deadline escalations</h3><p>{profile.role === 'admin' ? 'Overdue reports across every team. Acknowledge one once someone is following up.' : 'Review reports assigned to you or your team and acknowledge the follow-up.'}</p></div>
-            <EscalationList items={slaEscalations.filter((item) => canHandleEscalation(item, { role: profile.role, userId: session?.user.id, teams }))} limit={10} emptyText={profile.role === 'admin' ? 'No reports have passed their deadline.' : 'No escalations are assigned to you or your team.'} canAcknowledge={() => true} onAcknowledge={(item) => void acknowledgeSlaEscalation(item)} onOpen={(reportId) => setStaffReportId(reportId)} collapseAcknowledged />
+          <section className="admin-operation-card staff-escalation-panel" aria-label={t('My deadline escalations')}>
+            <div><p className="eyebrow">{t('FOLLOW-UP CONTROL')}</p><h3>{t('Deadline escalations')}</h3><p>{profile.role === 'admin' ? t('Overdue reports across every team. Acknowledge one once someone is following up.') : t('Review reports assigned to you or your team and acknowledge the follow-up.')}</p></div>
+            <EscalationList items={slaEscalations.filter((item) => canHandleEscalation(item, { role: profile.role, userId: session?.user.id, teams }))} limit={10} emptyText={profile.role === 'admin' ? t('No reports have passed their deadline.') : t('No escalations are assigned to you or your team.')} canAcknowledge={() => true} onAcknowledge={(item) => void acknowledgeSlaEscalation(item)} onOpen={(reportId) => setStaffReportId(reportId)} collapseAcknowledged />
             {slaEscalationMessage && <p className="workflow-hint" role="status">{slaEscalationMessage}</p>}
           </section>
-          <section className="recurrence-panel" aria-label="Recurring issue inspections">
-            <div className="recurrence-heading"><div><p className="eyebrow">RECURRING ISSUES</p><h3>Inspections and maintenance follow-ups</h3><p>Patterns are based on reports from the last 90 days within 350 metres.</p></div><span className="count-badge">{profile.role === 'admin' ? unplannedHotspots.length : environmentalFollowups.filter((item) => item.status === 'Scheduled' && item.assigned_team_id && teams.find((team) => team.id === item.assigned_team_id)?.memberIds.includes(session?.user.id ?? '')).length}</span></div>
-            {profile.role === 'admin' && unplannedHotspots.length > 0 && <div className="recurrence-suggestions">{unplannedHotspots.map((hotspot) => <article className="recurrence-suggestion" key={hotspot.key}><div><strong>{hotspot.category} · {hotspot.barangay ? `Barangay ${hotspot.barangay}` : 'District 5'}</strong><span>{hotspot.count} reports near {hotspot.location}</span></div><button className="secondary-button" type="button" disabled={followupBusy} onClick={() => void createEnvironmentalFollowup(hotspot)}>Schedule inspection</button></article>)}</div>}
-            {profile.role === 'admin' && unplannedHotspots.length === 0 && <p className="workflow-hint">No new hotspot has reached three reports in the same area during the last 90 days.</p>}
+          <section className="recurrence-panel" aria-label={t('Recurring issue inspections')}>
+            <div className="recurrence-heading"><div><p className="eyebrow">{t('RECURRING ISSUES')}</p><h3>{t('Inspections and maintenance follow-ups')}</h3><p>{t('Patterns are based on reports from the last 90 days within 350 metres.')}</p></div><span className="count-badge">{profile.role === 'admin' ? unplannedHotspots.length : environmentalFollowups.filter((item) => item.status === 'Scheduled' && item.assigned_team_id && teams.find((team) => team.id === item.assigned_team_id)?.memberIds.includes(session?.user.id ?? '')).length}</span></div>
+            {profile.role === 'admin' && unplannedHotspots.length > 0 && <div className="recurrence-suggestions">{unplannedHotspots.map((hotspot) => <article className="recurrence-suggestion" key={hotspot.key}><div><strong>{t(hotspot.category)} · {hotspot.barangay ? t('Barangay {barangay}', { barangay: hotspot.barangay }) : t('District 5')}</strong><span>{t('{count} reports near {location}', { count: hotspot.count, location: hotspot.location })}</span></div><button className="secondary-button" type="button" disabled={followupBusy} onClick={() => void createEnvironmentalFollowup(hotspot)}>{t('Schedule inspection')}</button></article>)}</div>}
+            {profile.role === 'admin' && unplannedHotspots.length === 0 && <p className="workflow-hint">{t('No new hotspot has reached three reports in the same area during the last 90 days.')}</p>}
             {followupMessage && <p className="workflow-hint" role="status">{followupMessage}</p>}
             <div className="environmental-followup-list">{environmentalFollowups.filter((item) => profile.role === 'admin' || (item.status === 'Scheduled' && Boolean(item.assigned_team_id && teams.find((team) => team.id === item.assigned_team_id)?.memberIds.includes(session?.user.id ?? '')))).map((item) => {
               const isAssignedResponder = Boolean(item.status === 'Scheduled' && item.assigned_team_id && teams.find((team) => team.id === item.assigned_team_id)?.memberIds.includes(session?.user.id ?? ''))
-              return <article className="environmental-followup-item" key={item.id}><div className="followup-item-title"><strong>{item.title}</strong><span>{item.source_report_ids.length} source reports · {item.location_label}{item.barangay ? ` · ${item.barangay}` : ''}</span></div><span className={`followup-status followup-${item.status.toLowerCase()}`}>{item.status}</span>{profile.role === 'admin' && <div className="followup-controls"><label className="filter-field"><span>Team</span><select value={item.assigned_team_id ?? ''} disabled={followupBusy} onChange={(event) => void updateEnvironmentalFollowup(item.id, { assigned_team_id: event.target.value || null })}><option value="">Unassigned</option>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label><label className="filter-field"><span>Due date</span><input type="date" value={item.due_date ?? ''} disabled={followupBusy} onChange={(event) => void updateEnvironmentalFollowup(item.id, { due_date: event.target.value || null })} /></label>{item.status === 'Scheduled' && <><button className="text-button" type="button" disabled={followupBusy} onClick={() => void updateEnvironmentalFollowup(item.id, { status: 'Completed' })}>Mark complete</button><button className="text-button" type="button" disabled={followupBusy} onClick={() => void updateEnvironmentalFollowup(item.id, { status: 'Dismissed' })}>Dismiss</button></>}</div>}{profile.role === 'responder' && isAssignedResponder && <button className="secondary-button" type="button" disabled={followupBusy} onClick={() => void updateEnvironmentalFollowup(item.id, { status: 'Completed' })}>Mark inspection complete</button>}</article>
+              return <article className="environmental-followup-item" key={item.id}><div className="followup-item-title"><strong>{item.title}</strong><span>{t('{count} source reports', { count: item.source_report_ids.length })} · {item.location_label}{item.barangay ? ` · ${item.barangay}` : ''}</span></div><span className={`followup-status followup-${item.status.toLowerCase()}`}>{t(item.status)}</span>{profile.role === 'admin' && <div className="followup-controls"><label className="filter-field"><span>{t('Team')}</span><select value={item.assigned_team_id ?? ''} disabled={followupBusy} onChange={(event) => void updateEnvironmentalFollowup(item.id, { assigned_team_id: event.target.value || null })}><option value="">{t('Unassigned')}</option>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</select></label><label className="filter-field"><span>{t('Due date')}</span><input type="date" value={item.due_date ?? ''} disabled={followupBusy} onChange={(event) => void updateEnvironmentalFollowup(item.id, { due_date: event.target.value || null })} /></label>{item.status === 'Scheduled' && <><button className="text-button" type="button" disabled={followupBusy} onClick={() => void updateEnvironmentalFollowup(item.id, { status: 'Completed' })}>{t('Mark complete')}</button><button className="text-button" type="button" disabled={followupBusy} onClick={() => void updateEnvironmentalFollowup(item.id, { status: 'Dismissed' })}>{t('Dismiss')}</button></>}</div>}{profile.role === 'responder' && isAssignedResponder && <button className="secondary-button" type="button" disabled={followupBusy} onClick={() => void updateEnvironmentalFollowup(item.id, { status: 'Completed' })}>{t('Mark inspection complete')}</button>}</article>
             })}</div>
           </section>
           </div>
           <div className="staff-filters">
             <div className="staff-filters-bar">
-              <label className="search-box staff-search"><Search size={15} /><input value={staffFilters.query} onChange={(event) => updateStaffFilters({ query: event.target.value })} placeholder="Search by ID, title, place or person" title="Searches the report ID, title, description, reporter, location, category and assignee" aria-label="Search reports" />{staffFilters.query && <button type="button" onClick={() => updateStaffFilters({ query: '' })} aria-label="Clear search"><X size={14} /></button>}</label>
-              <button className={`secondary-button filter-toggle ${staffFiltersOpen ? 'active' : ''}`} type="button" aria-expanded={staffFiltersOpen} aria-controls="staff-filter-panel" onClick={() => setStaffFiltersOpen((open) => !open)}><SlidersHorizontal size={14} /> Filters{activeFilterCount > 0 && <span className="count-badge">{activeFilterCount}</span>}</button>
-              {activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => setStaffFilters(defaultReportFilters)}>Clear all</button>}
+              <label className="search-box staff-search"><Search size={15} /><input value={staffFilters.query} onChange={(event) => updateStaffFilters({ query: event.target.value })} placeholder={t('Search by ID, title, place or person')} title={t('Searches the report ID, title, description, reporter, location, category and assignee')} aria-label={t('Search reports')} />{staffFilters.query && <button type="button" onClick={() => updateStaffFilters({ query: '' })} aria-label={t('Clear search')}><X size={14} /></button>}</label>
+              <button className={`secondary-button filter-toggle ${staffFiltersOpen ? 'active' : ''}`} type="button" aria-expanded={staffFiltersOpen} aria-controls="staff-filter-panel" onClick={() => setStaffFiltersOpen((open) => !open)}><SlidersHorizontal size={14} /> {t('Filters')}{activeFilterCount > 0 && <span className="count-badge">{activeFilterCount}</span>}</button>
+              {activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => setStaffFilters(defaultReportFilters)}>{t('Clear all')}</button>}
             </div>
             {staffFiltersOpen && <div className="staff-filter-panel" id="staff-filter-panel">
-              <FilterSelect label="Status" value={staffFilters.status} onChange={(status) => updateStaffFilters({ status })}><option value="open">Open reports</option><option value="all">All reports</option>{statusOptions.map((status) => <option key={status}>{status}</option>)}</FilterSelect>
-              <FilterSelect label="Resolution" value={staffFilters.resolution} onChange={(resolution) => updateStaffFilters({ resolution, ...(resolution && resolution !== 'unresolved' && staffFilters.status === 'open' ? { status: 'all' } : {}) })}><option value="">Any resolution</option><option value="unresolved">Unresolved</option><option value="awaiting">Awaiting verification</option><option value="resolved">Resolved</option><option value="closed">Closed</option></FilterSelect>
-              <FilterSelect label="Category" value={staffFilters.category} onChange={(category) => updateStaffFilters({ category })}><option value="">All categories</option>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</FilterSelect>
-              <FilterSelect label="Urgency" value={staffFilters.urgency} onChange={(urgency) => updateStaffFilters({ urgency })}><option value="">Any urgency</option><option>High</option><option>Medium</option><option>Low</option></FilterSelect>
-              <FilterSelect label="Barangay" value={staffFilters.barangay} onChange={(barangay) => updateStaffFilters({ barangay })}><option value="">All barangays</option><option value={NO_BARANGAY}>No barangay recorded</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay}>{barangay}</option>)}</FilterSelect>
-              <FilterSelect label="Assigned to" value={staffFilters.assignee} onChange={(assignee) => updateStaffFilters({ assignee })}><option value="">Anyone</option><option value={UNASSIGNED}>Unassigned</option>{staffUsers.map((user) => <option key={user.id} value={user.id}>{user.display_name || 'Unnamed staff member'}</option>)}</FilterSelect>
-              <FilterSelect label="Assigned team" value={staffFilters.team} onChange={(team) => updateStaffFilters({ team })}><option value="">Any team</option><option value={UNASSIGNED}>No team</option>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</FilterSelect>
-              <label className="filter-field"><span>Submitted from</span><input type="date" value={staffFilters.dateFrom} max={staffFilters.dateTo || undefined} onChange={(event) => updateStaffFilters({ dateFrom: event.target.value })} /></label>
-              <label className="filter-field"><span>Submitted to</span><input type="date" value={staffFilters.dateTo} min={staffFilters.dateFrom || undefined} onChange={(event) => updateStaffFilters({ dateTo: event.target.value })} /></label>
+              <FilterSelect label={t('Status')} value={staffFilters.status} onChange={(status) => updateStaffFilters({ status })}><option value="open">{t('Open reports')}</option><option value="all">{t('All reports')}</option>{statusOptions.map((status) => <option key={status} value={status}>{t(status)}</option>)}</FilterSelect>
+              <FilterSelect label={t('Resolution')} value={staffFilters.resolution} onChange={(resolution) => updateStaffFilters({ resolution, ...(resolution && resolution !== 'unresolved' && staffFilters.status === 'open' ? { status: 'all' } : {}) })}><option value="">{t('Any resolution')}</option><option value="unresolved">{t('Unresolved')}</option><option value="awaiting">{t('Awaiting verification')}</option><option value="resolved">{t('Resolved')}</option><option value="closed">{t('Closed')}</option></FilterSelect>
+              <FilterSelect label={t('Category')} value={staffFilters.category} onChange={(category) => updateStaffFilters({ category })}><option value="">{t('All categories')}</option>{categoryOptions.map((category) => <option key={category} value={category}>{t(category)}</option>)}</FilterSelect>
+              <FilterSelect label={t('Urgency')} value={staffFilters.urgency} onChange={(urgency) => updateStaffFilters({ urgency })}><option value="">{t('Any urgency')}</option><option value="High">{t('High')}</option><option value="Medium">{t('Medium')}</option><option value="Low">{t('Low')}</option></FilterSelect>
+              <FilterSelect label={t('Barangay')} value={staffFilters.barangay} onChange={(barangay) => updateStaffFilters({ barangay })}><option value="">{t('All barangays')}</option><option value={NO_BARANGAY}>{t('No barangay recorded')}</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay} value={barangay}>{barangay}</option>)}</FilterSelect>
+              <FilterSelect label={t('Assigned to')} value={staffFilters.assignee} onChange={(assignee) => updateStaffFilters({ assignee })}><option value="">{t('Anyone')}</option><option value={UNASSIGNED}>{t('Unassigned')}</option>{staffUsers.map((user) => <option key={user.id} value={user.id}>{user.display_name || t('Unnamed staff member')}</option>)}</FilterSelect>
+              <FilterSelect label={t('Assigned team')} value={staffFilters.team} onChange={(team) => updateStaffFilters({ team })}><option value="">{t('Any team')}</option><option value={UNASSIGNED}>{t('No team')}</option>{teams.map((team) => <option key={team.id} value={team.id}>{team.name}</option>)}</FilterSelect>
+              <label className="filter-field"><span>{t('Submitted from')}</span><input type="date" value={staffFilters.dateFrom} max={staffFilters.dateTo || undefined} onChange={(event) => updateStaffFilters({ dateFrom: event.target.value })} /></label>
+              <label className="filter-field"><span>{t('Submitted to')}</span><input type="date" value={staffFilters.dateTo} min={staffFilters.dateFrom || undefined} onChange={(event) => updateStaffFilters({ dateTo: event.target.value })} /></label>
             </div>}
             <FilterChips chips={staffFilterChips} onRemove={(key) => { setStaffFilters((current) => clearFilter(current, key)); setStaffQueueOffset(0) }} />
           </div>
           <div className={`staff-workbench-grid ${staffReportId ? 'has-selection' : ''}`} ref={staffGridRef}>
-            <div className="staff-queue" ref={staffQueueRef}><div className="queue-heading"><div><h3>Response queue</h3><span aria-live="polite">{staffQueueCount} matching reports · sorted by escalation and newest</span></div><span className="queue-shortcuts" aria-label="Keyboard shortcuts"><kbd>J</kbd><kbd>K</kbd> move <kbd>A</kbd> assign <kbd>/</kbd> search</span></div>
-              {loadingReports || (staffQueueLoading && staffQueue.length === 0) ? <ReportListSkeleton rows={5} variant="queue" /> : staffQueueCount === 0 ? <div className="staff-empty"><EmptyIllustration variant={activeFilterCount > 0 ? 'search' : 'queue'} /><span>No reports match {activeFilterCount > 0 ? 'these filters' : 'this queue'}.</span>{activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => { setStaffFilters(defaultReportFilters); setStaffQueueOffset(0) }}>Clear all filters</button>}</div> : <>
+            <div className="staff-queue" ref={staffQueueRef}><div className="queue-heading"><div><h3>{t('Response queue')}</h3><span aria-live="polite">{t('{count} matching reports · sorted by escalation and newest', { count: staffQueueCount })}</span></div><span className="queue-shortcuts" aria-label={t('Keyboard shortcuts')}><kbd>J</kbd><kbd>K</kbd> {t('move')} <kbd>A</kbd> {t('assign')} <kbd>/</kbd> {t('search')}</span></div>
+              {loadingReports || (staffQueueLoading && staffQueue.length === 0) ? <ReportListSkeleton rows={5} variant="queue" /> : staffQueueCount === 0 ? <div className="staff-empty"><EmptyIllustration variant={activeFilterCount > 0 ? 'search' : 'queue'} /><span>{activeFilterCount > 0 ? t('No reports match these filters.') : t('No reports match this queue.')}</span>{activeFilterCount > 0 && <button className="text-button" type="button" onClick={() => { setStaffFilters(defaultReportFilters); setStaffQueueOffset(0) }}>{t('Clear all filters')}</button>}</div> : <>
                 {staffQueue.map((report) => {
                   const deadline = reportDeadline(report, responseSettings, clock)
-                  return <button key={report.id} data-flip-id={report.id} type="button" className={`queue-item queue-urgency-${report.urgency.toLowerCase()} ${staffReportId === report.id ? 'selected' : ''}`} onClick={() => setStaffReportId(report.id)}><span className="queue-item-title">{report.title}</span><span className="queue-item-meta">{formatReportId(report.id)} · {report.category}{report.barangay ? ` · ${report.barangay}` : ''} · {formatCreatedAt(report.createdAt)}</span><span className="queue-item-tags"><span key={report.status} className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')} ${changedStatuses.has(report.id) ? 'pill-changed' : ''}`}><i />{report.status}</span>{needsImmediateAttention(report) && <span className="urgency-pill escalated-pill"><AlertTriangle size={11} />Escalated</span>}{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />Urgent</span>}{deadline && <span className={`deadline-chip ${deadline.overdue ? 'is-overdue' : deadline.soon ? 'is-soon' : ''}`}><Clock3 size={11} />{deadline.label}</span>}</span></button>
+                  return <button key={report.id} data-flip-id={report.id} type="button" className={`queue-item queue-urgency-${report.urgency.toLowerCase()} ${staffReportId === report.id ? 'selected' : ''}`} onClick={() => setStaffReportId(report.id)}><span className="queue-item-title">{report.title}</span><span className="queue-item-meta">{formatReportId(report.id)} · {t(report.category)}{report.barangay ? ` · ${report.barangay}` : ''} · {formatCreatedAt(report.createdAt)}</span><span className="queue-item-tags"><span key={report.status} className={`status-pill status-${report.status.toLowerCase().replace(/ /g, '-')} ${changedStatuses.has(report.id) ? 'pill-changed' : ''}`}><i />{t(report.status)}</span>{needsImmediateAttention(report) && <span className="urgency-pill escalated-pill"><AlertTriangle size={11} />{t('Escalated')}</span>}{report.urgency === 'High' && <span className="urgency-pill"><AlertTriangle size={11} />{t('Urgent')}</span>}{deadline && <span className={`deadline-chip ${deadline.overdue ? 'is-overdue' : deadline.soon ? 'is-soon' : ''}`}><Clock3 size={11} />{deadline.label}</span>}</span></button>
                 })}
-                {staffQueueCount > staffQueue.length && <button className="show-more-button" type="button" disabled={staffQueueLoading} onClick={() => setStaffQueueOffset(staffQueue.length)}>{staffQueueLoading ? 'Loading more…' : `Show next ${Math.min(STAFF_PAGE_SIZE, staffQueueCount - staffQueue.length)} (${staffQueueCount - staffQueue.length} remaining)`}</button>}
+                {staffQueueCount > staffQueue.length && <button className="show-more-button" type="button" disabled={staffQueueLoading} onClick={() => setStaffQueueOffset(staffQueue.length)}>{staffQueueLoading ? t('Loading more…') : t('Show next {count} ({remaining} remaining)', { count: Math.min(STAFF_PAGE_SIZE, staffQueueCount - staffQueue.length), remaining: staffQueueCount - staffQueue.length })}</button>}
               </>}
             </div>
             <div className="staff-detail" key={staffReport?.id ?? 'none'}>{staffReport ? <>
-              <button className="staff-back-button" type="button" onClick={() => setStaffReportId(undefined)}><ArrowLeft size={14} /> Back to queue</button>
-              <div className="staff-report-heading"><div><span className="report-id">{staffReport.id.slice(0, 8).toUpperCase()}</span><h3>{staffReport.title}</h3><span className="section-caption">{staffReport.category} · {staffReport.urgency} urgency · {formatCreatedAt(staffReport.createdAt)}</span><span className="reporter-line"><UserRound size={12} /> Reported by {staffReport.reporterName || 'Community resident'}</span></div><MapPin size={18} /></div>
+              <button className="staff-back-button" type="button" onClick={() => setStaffReportId(undefined)}><ArrowLeft size={14} /> {t('Back to queue')}</button>
+              <div className="staff-report-heading"><div><span className="report-id">{staffReport.id.slice(0, 8).toUpperCase()}</span><h3>{staffReport.title}</h3><span className="section-caption">{t(staffReport.category)} · {t('{urgency} urgency', { urgency: t(staffReport.urgency) })} · {formatCreatedAt(staffReport.createdAt)}</span><span className="reporter-line"><UserRound size={12} /> {t('Reported by {name}', { name: staffReport.reporterName ? translateServerText(staffReport.reporterName) : t('Community resident') })}</span></div><MapPin size={18} /></div>
               <p className="staff-description">{staffReport.description}</p>
-              <p className="section-caption">Observed {staffReport.observedAt ? new Date(staffReport.observedAt).toLocaleString() : 'at submission'}</p>
-              {staffReport.additionalInfo && <p className="workflow-note-text"><strong>Additional information</strong>{staffReport.additionalInfo}</p>}
-              <div className="meta-chips"><span className="meta-chip"><MapPin size={12} />{staffReport.barangay ? `Barangay ${staffReport.barangay}` : 'No barangay recorded'}</span></div>
+              <p className="section-caption">{staffReport.observedAt ? t('Observed {time}', { time: new Date(staffReport.observedAt).toLocaleString(dateLocale()) }) : t('Observed at submission')}</p>
+              {staffReport.additionalInfo && <p className="workflow-note-text"><strong>{t('Additional information')}</strong>{staffReport.additionalInfo}</p>}
+              <div className="meta-chips"><span className="meta-chip"><MapPin size={12} />{staffReport.barangay ? t('Barangay {barangay}', { barangay: staffReport.barangay }) : t('No barangay recorded')}</span></div>
               <ExactLocation label={staffReport.location} coordinates={staffReport.coordinates} />
               {session && (profile?.role === 'admin' || profile?.role === 'responder') && <StaffWorkflowPanel report={staffReport} role={profile.role} userId={session.user.id} staffUsers={staffUsers} teams={teams} allReports={allKnownReports} originalPhotoUrls={staffPhotoUrls.original} resolutionPhotoUrls={staffPhotoUrls.resolution} events={reportEvents} residentFeedback={staffResolutionFeedback} onSubmit={applyReportUpdate} />}
               {session && profile && (profile.role === 'admin' || profile.role === 'responder') && <ReportConversation key={staffReport.id} reportId={staffReport.id} status={staffReport.status} viewerRole={profile.role} userId={session.user.id} isReporter={false} isOnTask={staffOnTask} onPosted={() => void refreshStaffEvents(staffReport.id)} onActivity={() => void reloadStaffEvents(staffReport.id)} />}
               <ReportTimeline events={reportEvents} />
-            </> : staffReportId ? <div className="staff-detail-empty" role="status"><button className="staff-back-button" type="button" onClick={() => setStaffReportId(undefined)}><ArrowLeft size={14} /> Back to queue</button><ClipboardCheck size={25} />{staffReportDetailFailedId === staffReportId ? <><strong>This report could not be loaded</strong><span>It may have been removed, or the connection dropped. Try again from the queue.</span></> : <><strong>Loading report…</strong><span>Getting the latest assignment and task details.</span></>}</div> : <div className="staff-detail-empty"><ClipboardCheck size={25} /><strong>Select a report</strong><span>Choose an open report to review and update its response.</span></div>}</div>
+            </> : staffReportId ? <div className="staff-detail-empty" role="status"><button className="staff-back-button" type="button" onClick={() => setStaffReportId(undefined)}><ArrowLeft size={14} /> {t('Back to queue')}</button><ClipboardCheck size={25} />{staffReportDetailFailedId === staffReportId ? <><strong>{t('This report could not be loaded')}</strong><span>{t('It may have been removed, or the connection dropped. Try again from the queue.')}</span></> : <><strong>{t('Loading report…')}</strong><span>{t('Getting the latest assignment and task details.')}</span></>}</div> : <div className="staff-detail-empty"><ClipboardCheck size={25} /><strong>{t('Select a report')}</strong><span>{t('Choose an open report to review and update its response.')}</span></div>}</div>
           </div>
         </section>}
 
         {!staffMode && <section className="monitoring-layout">
           <div className="map-column">
             <div className="section-toolbar">
-              <div><h2>{t('incidentMap')}</h2><span className="section-caption">{nearbyOnly ? `${nearbyReports.length} reports within 1 km` : `${visibleReports.length} reports · filters apply to map markers`}</span></div>
-              <button className={`map-location-button ${nearbyOnly ? 'active' : ''}`} type="button" onClick={() => nearbyOnly ? setNearbyOnly(false) : requestLocation(true)} title={nearbyOnly ? 'Show all filtered reports' : 'Show reports near my current location'}><Crosshair size={15} /><span>{nearbyOnly ? 'All reports' : 'Nearby'}</span></button>
+              <div><h2>{translate('incidentMap')}</h2><span className="section-caption">{nearbyOnly ? t('{count} reports within 1 km', { count: nearbyReports.length }) : t('{count} reports · filters apply to map markers', { count: visibleReports.length })}</span></div>
+              <button className={`map-location-button ${nearbyOnly ? 'active' : ''}`} type="button" onClick={() => nearbyOnly ? setNearbyOnly(false) : requestLocation(true)} title={nearbyOnly ? t('Show all filtered reports') : t('Show reports near my current location')}><Crosshair size={15} /><span>{nearbyOnly ? t('All reports') : t('Nearby')}</span></button>
             </div>
             <div className="map-frame">
               <Suspense fallback={<MapSkeleton />}>
@@ -3257,51 +3263,51 @@ function App() {
                   loadPhotos={loadReportPhotos}
                 /> : <MapSkeleton />}
               </Suspense>
-              {mobileMap && selectedReport && <div className="map-sheet" role="dialog" aria-label="Selected report" key={selectedReport.id}>
-                <button className="icon-button map-sheet-close" type="button" onClick={() => setSelectedId(undefined)} aria-label="Close report preview"><X size={15} /></button>
-                <span className="map-sheet-meta">{selectedReport.category} · {selectedReport.status}</span>
+              {mobileMap && selectedReport && <div className="map-sheet" role="dialog" aria-label={t('Selected report')} key={selectedReport.id}>
+                <button className="icon-button map-sheet-close" type="button" onClick={() => setSelectedId(undefined)} aria-label={t('Close report preview')}><X size={15} /></button>
+                <span className="map-sheet-meta">{t(selectedReport.category)} · {t(selectedReport.status)}</span>
                 <strong>{selectedReport.title}</strong>
                 <small><MapPin size={12} />{placeLabel(selectedReport)} · {formatCreatedAt(selectedReport.createdAt)}</small>
                 <ReportPhotoStrip reportId={selectedReport.id} load={loadReportPhotos} variant="inline" caption={selectedReport.title} />
                 <p>{selectedReport.description}</p>
-                <button className="secondary-button map-sheet-discussion" type="button" onClick={() => setCommunityDiscussionId(selectedReport.id)}><MessageSquare size={14} /> Comments and discussion</button>
+                <button className="secondary-button map-sheet-discussion" type="button" onClick={() => setCommunityDiscussionId(selectedReport.id)}><MessageSquare size={14} /> {t('Comments and discussion')}</button>
               </div>}
               <div className="map-search-wrap">
-                <label className="map-search-box"><Search size={15} /><input value={mapSearchQuery} onChange={(event) => { setMapSearchQuery(event.target.value); setMapSearchMessage('') }} placeholder="Search places" aria-label="Search the map by place or address" autoComplete="off" />{mapSearchBusy && <span className="search-spinner" aria-label="Searching places" />}{mapSearchQuery && <button type="button" onClick={() => { setMapSearchQuery(''); setMapSearchSuggestions([]); setMapSearchMessage('') }} aria-label="Clear map search"><X size={13} /></button>}</label>
-                {mapSearchSuggestions.length > 0 && <ul className="map-search-suggestions" role="listbox" aria-label="Map place suggestions">{mapSearchSuggestions.map((suggestion) => <li key={`${suggestion.label}-${suggestion.coordinates.join(',')}`}><button type="button" role="option" onClick={() => { setMapCenter(suggestion.coordinates); setMapSearchQuery(''); setMapSearchSuggestions([]); setMapSearchMessage(''); setNearbyOnly(false); setSelectedId(undefined) }}><MapPin size={14} /><span>{suggestion.label}<small>{suggestion.coordinates[0].toFixed(5)}, {suggestion.coordinates[1].toFixed(5)}</small></span></button></li>)}</ul>}
+                <label className="map-search-box"><Search size={15} /><input value={mapSearchQuery} onChange={(event) => { setMapSearchQuery(event.target.value); setMapSearchMessage('') }} placeholder={t('Search places')} aria-label={t('Search the map by place or address')} autoComplete="off" />{mapSearchBusy && <span className="search-spinner" aria-label={t('Searching places')} />}{mapSearchQuery && <button type="button" onClick={() => { setMapSearchQuery(''); setMapSearchSuggestions([]); setMapSearchMessage('') }} aria-label={t('Clear map search')}><X size={13} /></button>}</label>
+                {mapSearchSuggestions.length > 0 && <ul className="map-search-suggestions" role="listbox" aria-label={t('Map place suggestions')}>{mapSearchSuggestions.map((suggestion) => <li key={`${suggestion.label}-${suggestion.coordinates.join(',')}`}><button type="button" role="option" onClick={() => { setMapCenter(suggestion.coordinates); setMapSearchQuery(''); setMapSearchSuggestions([]); setMapSearchMessage(''); setNearbyOnly(false); setSelectedId(undefined) }}><MapPin size={14} /><span>{suggestion.label}<small>{suggestion.coordinates[0].toFixed(5)}, {suggestion.coordinates[1].toFixed(5)}</small></span></button></li>)}</ul>}
                 {!mapSearchBusy && mapSearchMessage && <p className="map-search-feedback map-search-error" role="status">{mapSearchMessage}</p>}
-                {!mapSearchBusy && mapSearchQuery.trim().length >= 3 && !mapSearchMessage && mapSearchSuggestions.length === 0 && <p className="map-search-feedback" role="status">No matching places found.</p>}
+                {!mapSearchBusy && mapSearchQuery.trim().length >= 3 && !mapSearchMessage && mapSearchSuggestions.length === 0 && <p className="map-search-feedback" role="status">{t('No matching places found.')}</p>}
               </div>
               <div className="map-actions">
-                <button className={`map-action-button ${heatmapEnabled ? 'active' : ''}`} type="button" aria-pressed={heatmapEnabled} onClick={() => setHeatmapEnabled((enabled) => !enabled)}><Flame size={14} />{heatmapEnabled ? 'Hide density' : 'Heatmap'}</button>
-                                <button className="map-action-button" type="button" onClick={() => requestLocation(false)} title="Center the map on my current location"><LocateFixed size={14} />My location</button>
+                <button className={`map-action-button ${heatmapEnabled ? 'active' : ''}`} type="button" aria-pressed={heatmapEnabled} onClick={() => setHeatmapEnabled((enabled) => !enabled)}><Flame size={14} />{heatmapEnabled ? t('Hide density') : t('Heatmap')}</button>
+                                <button className="map-action-button" type="button" onClick={() => requestLocation(false)} title={t('Center the map on my current location')}><LocateFixed size={14} />{t('My location')}</button>
                               </div>
-              <div className="map-label"><MapPin size={13} /> District 5, Quezon City</div>
-              <div className={`map-legend ${legendOpen ? 'is-open' : 'is-collapsed'}`}><button className="legend-toggle" type="button" aria-expanded={legendOpen} onClick={() => setLegendOpen((open) => !open)}><Layers size={13} />Legend<ChevronDown size={12} className="legend-chevron" /></button>{legendOpen && <div className="legend-body"><span className="legend-title">CATEGORY</span>{categoryOptions.map((category) => <button type="button" className={`legend-item legend-filter ${categoryFilter === category ? 'is-active' : ''}`} key={category} aria-pressed={categoryFilter === category} title={categoryFilter === category ? 'Show all categories' : `Show only ${category}`} onClick={() => setCategoryFilter(categoryFilter === category ? 'All categories' : category)}><i style={{ backgroundColor: categoryColors[category] }} />{category}</button>)}<span className="legend-divider" /><span className="legend-title">STATUS DOT</span><span className="legend-item"><i className="status-dot" data-status="submitted" />Submitted</span><span className="legend-item"><i className="status-dot" data-status="under-review" />Under review</span><span className="legend-item"><i className="status-dot" data-status="in-progress" />In progress</span><span className="legend-item"><i className="status-dot" data-status="resolved" />Resolved</span><span className="legend-divider" /><span className="legend-title">PINS</span><span className="legend-item"><i className="legend-urgent-ring" />High urgency</span><span className="legend-item"><i className="legend-muted-pin" />Resolved, smaller</span><span className="legend-item" title="The ring shows the mix of categories in the group"><i className="legend-cluster-ring" />Grouped reports</span><span className="legend-divider" /><span className="legend-title">REPORT DENSITY</span><span className="legend-item"><i className="density-low" />Low · 1–2</span><span className="legend-item"><i className="density-moderate" />Moderate · 3–5</span><span className="legend-item"><i className="density-high" />High · 6+</span></div>}</div>
+              <div className="map-label"><MapPin size={13} /> {t('District 5, Quezon City')}</div>
+              <div className={`map-legend ${legendOpen ? 'is-open' : 'is-collapsed'}`}><button className="legend-toggle" type="button" aria-expanded={legendOpen} onClick={() => setLegendOpen((open) => !open)}><Layers size={13} />{t('Legend')}<ChevronDown size={12} className="legend-chevron" /></button>{legendOpen && <div className="legend-body"><span className="legend-title">{t('CATEGORY')}</span>{categoryOptions.map((category) => <button type="button" className={`legend-item legend-filter ${categoryFilter === category ? 'is-active' : ''}`} key={category} aria-pressed={categoryFilter === category} title={categoryFilter === category ? t('Show all categories') : t('Show only {category}', { category: t(category) })} onClick={() => setCategoryFilter(categoryFilter === category ? 'All categories' : category)}><i style={{ backgroundColor: categoryColors[category] }} />{t(category)}</button>)}<span className="legend-divider" /><span className="legend-title">{t('STATUS DOT')}</span><span className="legend-item"><i className="status-dot" data-status="submitted" />{t('Submitted')}</span><span className="legend-item"><i className="status-dot" data-status="under-review" />{t('Under review')}</span><span className="legend-item"><i className="status-dot" data-status="in-progress" />{t('In progress')}</span><span className="legend-item"><i className="status-dot" data-status="resolved" />{t('Resolved')}</span><span className="legend-divider" /><span className="legend-title">{t('PINS')}</span><span className="legend-item"><i className="legend-urgent-ring" />{t('High urgency')}</span><span className="legend-item"><i className="legend-muted-pin" />{t('Resolved, smaller')}</span><span className="legend-item" title={t('The ring shows the mix of categories in the group')}><i className="legend-cluster-ring" />{t('Grouped reports')}</span><span className="legend-divider" /><span className="legend-title">{t('REPORT DENSITY')}</span><span className="legend-item"><i className="density-low" />{t('Low · 1–2')}</span><span className="legend-item"><i className="density-moderate" />{t('Moderate · 3–5')}</span><span className="legend-item"><i className="density-high" />{t('High · 6+')}</span></div>}</div>
               {mapLocationError && <p className="map-search-feedback map-search-error map-location-error" role="status">{mapLocationError}</p>}
             </div>
-            <div className="map-footnote"><MapPin size={13} /><p>Pins are approximate locations <i>·</i> Status dots match report progress <i>·</i> Select a pin for details <i>·</i> Boundaries are indicative</p></div>
+            <div className="map-footnote"><MapPin size={13} /><p>{t('Pins are approximate locations')} <i>·</i> {t('Status dots match report progress')} <i>·</i> {t('Select a pin for details')} <i>·</i> {t('Boundaries are indicative')}</p></div>
           </div>
 
-          <aside className="reports-panel" aria-label="Recent environmental reports">
+          <aside className="reports-panel" aria-label={t('Recent environmental reports')}>
             <div className="reports-heading">
-              <div><div className="reports-title-line"><h2>{nearbyOnly ? t('nearbyReports') : t('recentReports')}</h2><span className="count-badge">{mapReports.length}</span></div><span className="section-caption">{[nearbyOnly ? 'Within 1 km' : null, categoryFilter, statusFilter, barangayFilter ? `Barangay ${barangayFilter}` : null, reportsTruncated ? `Newest ${REPORT_LOAD_LIMIT.toLocaleString()} only` : null].filter(Boolean).join(' · ')}</span></div>
-              <label className="feed-sort"><span>Sort</span><span className="select-wrap"><select value={newestFirst ? 'newest' : 'oldest'} onChange={(event) => setNewestFirst(event.target.value === 'newest')} aria-label="Sort reports"><option value="newest">Newest</option><option value="oldest">Oldest</option></select><ChevronDown size={13} /></span></label>
+              <div><div className="reports-title-line"><h2>{nearbyOnly ? translate('nearbyReports') : translate('recentReports')}</h2><span className="count-badge">{mapReports.length}</span></div><span className="section-caption">{[nearbyOnly ? t('Within 1 km') : null, t(categoryFilter), t(statusFilter), barangayFilter ? t('Barangay {barangayFilter}', { barangayFilter }) : null, reportsTruncated ? t('Newest {count} only', { count: REPORT_LOAD_LIMIT.toLocaleString(dateLocale()) }) : null].filter(Boolean).join(' · ')}</span></div>
+              <label className="feed-sort"><span>{t('Sort')}</span><span className="select-wrap"><select value={newestFirst ? 'newest' : 'oldest'} onChange={(event) => setNewestFirst(event.target.value === 'newest')} aria-label={t('Sort reports')}><option value="newest">{t('Newest')}</option><option value="oldest">{t('Oldest')}</option></select><ChevronDown size={13} /></span></label>
             </div>
             <div className="report-controls">
-              <label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t('searchReports')} aria-label={t('searchReports')} />{search && <button type="button" onClick={() => setSearch('')} aria-label="Clear search"><X size={13} /></button>}</label>
+              <label className="search-box"><Search size={15} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={translate('searchReports')} aria-label={translate('searchReports')} />{search && <button type="button" onClick={() => setSearch('')} aria-label={t('Clear search')}><X size={13} /></button>}</label>
               <div className="filter-row">
-                <label className="select-wrap"><span className="sr-only">Filter by category</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option>All categories</option>{categoryOptions.map((category) => <option key={category}>{category}</option>)}</select><ChevronDown size={13} /></label>
-                <label className="select-wrap"><span className="sr-only">Filter by status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option>{ALL_STATUSES}</option>{STATUS_GROUP_FILTERS.map((group) => <option key={group}>{group}</option>)}{statusOptions.filter((status) => status !== 'Duplicate').map((status) => <option key={status}>{status}</option>)}</select><ChevronDown size={13} /></label>
+                <label className="select-wrap"><span className="sr-only">{t('Filter by category')}</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="All categories">{t('All categories')}</option>{categoryOptions.map((category) => <option key={category} value={category}>{t(category)}</option>)}</select><ChevronDown size={13} /></label>
+                <label className="select-wrap"><span className="sr-only">{t('Filter by status')}</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value={ALL_STATUSES}>{t(ALL_STATUSES)}</option>{STATUS_GROUP_FILTERS.map((group) => <option key={group} value={group}>{t(group)}</option>)}{statusOptions.filter((status) => status !== 'Duplicate').map((status) => <option key={status} value={status}>{t(status)}</option>)}</select><ChevronDown size={13} /></label>
               </div>
               <div className="filter-row filter-row-single">
-                <label className="select-wrap"><span className="sr-only">Filter by barangay</span><select value={barangayFilter} onChange={(event) => chooseBarangayFilter(event.target.value)}><option value="">All barangays</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay} value={barangay}>{barangay}</option>)}</select><ChevronDown size={13} /></label>
+                <label className="select-wrap"><span className="sr-only">{t('Filter by barangay')}</span><select value={barangayFilter} onChange={(event) => chooseBarangayFilter(event.target.value)}><option value="">{t('All barangays')}</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay} value={barangay}>{barangay}</option>)}</select><ChevronDown size={13} /></label>
               </div>
             </div>
-            {selectedOwnReport && <div className="own-report-card"><span><strong>{selectedOwnReport.title}</strong><small>Your report · {selectedOwnReport.status}</small></span><button className="secondary-button" type="button" onClick={() => setFollowUpId(selectedOwnReport.id)}><MessageSquare size={14} /> Updates and replies</button><ExactLocation label={selectedOwnReport.location} coordinates={selectedOwnReport.coordinates} /></div>}
-            {selectedOwnReport && session && ['Resolved', 'Closed'].includes(selectedOwnReport.status) && <section className="own-report-feedback"><div><strong>Was this issue fixed?</strong><small>Let the response team know if it is still happening.</small></div>{selectedOwnFeedback && <p className="workflow-hint">Your last response: {selectedOwnFeedback.feedback === 'fixed' ? 'You confirmed it was fixed.' : 'You said it still needs attention.'}</p>}<label className="field-label">Optional note<textarea rows={2} maxLength={500} value={feedbackNote} onChange={(event) => setFeedbackNote(event.target.value)} placeholder="Add a short update for the response team" /></label><div className="workflow-actions"><button className="primary-button" type="button" disabled={feedbackBusy} onClick={() => void submitResidentFeedback('fixed')}>{feedbackBusy ? 'Saving…' : 'It was fixed'}</button><button className="secondary-button" type="button" disabled={feedbackBusy} onClick={() => void submitResidentFeedback('still_there')}>Still needs attention</button></div></section>}
+            {selectedOwnReport && <div className="own-report-card"><span><strong>{selectedOwnReport.title}</strong><small>{t('Your report')} · {t(selectedOwnReport.status)}</small></span><button className="secondary-button" type="button" onClick={() => setFollowUpId(selectedOwnReport.id)}><MessageSquare size={14} /> {t('Updates and replies')}</button><ExactLocation label={selectedOwnReport.location} coordinates={selectedOwnReport.coordinates} /></div>}
+            {selectedOwnReport && session && ['Resolved', 'Closed'].includes(selectedOwnReport.status) && <section className="own-report-feedback"><div><strong>{t('Was this issue fixed?')}</strong><small>{t('Let the response team know if it is still happening.')}</small></div>{selectedOwnFeedback && <p className="workflow-hint">{t('Your last response:')} {selectedOwnFeedback.feedback === 'fixed' ? t('You confirmed it was fixed.') : t('You said it still needs attention.')}</p>}<label className="field-label">{t('Optional note')}<textarea rows={2} maxLength={500} value={feedbackNote} onChange={(event) => setFeedbackNote(event.target.value)} placeholder={t('Add a short update for the response team')} /></label><div className="workflow-actions"><button className="primary-button" type="button" disabled={feedbackBusy} onClick={() => void submitResidentFeedback('fixed')}>{feedbackBusy ? t('Saving…') : t('It was fixed')}</button><button className="secondary-button" type="button" disabled={feedbackBusy} onClick={() => void submitResidentFeedback('still_there')}>{t('Still needs attention')}</button></div></section>}
             <div className="report-list feed-card-list" ref={reportListRef}>
-              {loadingReports ? <ReportListSkeleton /> : orderedReports.length === 0 ? <div className="empty-state"><EmptyIllustration variant={isSupabaseConfigured && !isOnline ? 'offline' : 'search'} /><strong>{isSupabaseConfigured && !isOnline ? 'You are offline' : 'No matching reports'}</strong><span>{isSupabaseConfigured && !isOnline ? 'Reconnect to load the latest reports.' : 'Try changing a filter or search term.'}</span></div> : feedReports.map((report) => <ReportFeedCard
+              {loadingReports ? <ReportListSkeleton /> : orderedReports.length === 0 ? <div className="empty-state"><EmptyIllustration variant={isSupabaseConfigured && !isOnline ? 'offline' : 'search'} /><strong>{isSupabaseConfigured && !isOnline ? t('You are offline') : t('No matching reports')}</strong><span>{isSupabaseConfigured && !isOnline ? t('Reconnect to load the latest reports.') : t('Try changing a filter or search term.')}</span></div> : feedReports.map((report) => <ReportFeedCard
                 key={report.id}
                 report={report}
                 icon={categoryIcon(report.category)}
@@ -3325,37 +3331,37 @@ function App() {
                 })}
               />)}
             </div>
-            {!loadingReports && feedReports.length < orderedReports.length && <button className="show-more-button" type="button" onClick={() => setFeedPhoneLimit((current) => current + FEED_PHONE_PAGE)}>{orderedReports.length - feedReports.length <= FEED_PHONE_PAGE ? `Show ${orderedReports.length - feedReports.length} more report${orderedReports.length - feedReports.length === 1 ? '' : 's'}` : `Show ${FEED_PHONE_PAGE} more (${orderedReports.length - feedReports.length} not shown)`}</button>}
-            <div className="panel-footer">{isSupabaseConfigured ? <span><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} /> Live community feed</span> : <span>Sample reports on this device</span>}{(categoryFilter !== 'All categories' || statusFilter !== ALL_STATUSES || search.trim() !== '' || barangayFilter !== '') && <button className="panel-footer-reset" type="button" onClick={() => { setCategoryFilter('All categories'); setStatusFilter(ALL_STATUSES); setSearch(''); if (barangayFilter) chooseBarangayFilter('') }}>{t('resetFilters')}</button>}</div>
+            {!loadingReports && feedReports.length < orderedReports.length && <button className="show-more-button" type="button" onClick={() => setFeedPhoneLimit((current) => current + FEED_PHONE_PAGE)}>{orderedReports.length - feedReports.length <= FEED_PHONE_PAGE ? tn('Show {count} more report', 'Show {count} more reports', orderedReports.length - feedReports.length) : t('Show {count} more ({hidden} not shown)', { count: FEED_PHONE_PAGE, hidden: orderedReports.length - feedReports.length })}</button>}
+            <div className="panel-footer">{isSupabaseConfigured ? <span><span className={`live-dot ${isOnline ? '' : 'is-offline'}`} /> {t('Live community feed')}</span> : <span>{t('Sample reports on this device')}</span>}{(categoryFilter !== 'All categories' || statusFilter !== ALL_STATUSES || search.trim() !== '' || barangayFilter !== '') && <button className="panel-footer-reset" type="button" onClick={() => { setCategoryFilter('All categories'); setStatusFilter(ALL_STATUSES); setSearch(''); if (barangayFilter) chooseBarangayFilter('') }}>{translate('resetFilters')}</button>}</div>
           </aside>
         </section>}
 
-        <footer className="page-footer"><span className="footer-brand"><span className="brand-mark"><Leaf size={13} strokeWidth={2.2} /></span>GreenPulse</span><span>Community environment monitoring <i>·</i> District 5, Quezon City</span></footer>
+        <footer className="page-footer"><span className="footer-brand"><span className="brand-mark"><Leaf size={13} strokeWidth={2.2} /></span>GreenPulse</span><span>{t('Community environment monitoring')} <i>·</i> District 5, Quezon City</span></footer>
       </main>
 
-      {!staffMode && <button className={`report-fab ${fabVisible ? 'is-visible' : ''}`} type="button" onClick={startReport} aria-label="New report" aria-hidden={!fabVisible} tabIndex={fabVisible ? 0 : -1}><span className="report-fab-icon" aria-hidden="true"><Plus size={18} strokeWidth={2.6} /></span>Report</button>}
+      {!staffMode && <button className={`report-fab ${fabVisible ? 'is-visible' : ''}`} type="button" onClick={startReport} aria-label={t('New report')} aria-hidden={!fabVisible} tabIndex={fabVisible ? 0 : -1}><span className="report-fab-icon" aria-hidden="true"><Plus size={18} strokeWidth={2.6} /></span>{t('Report')}</button>}
 
       {openTile && <StatReportsModal
         icon={openTile.icon}
         tone={openTile.tone}
-        eyebrow={staffMode ? 'STAFF DESK' : 'COMMUNITY REPORTS'}
+        eyebrow={staffMode ? t('STAFF DESK') : t('COMMUNITY REPORTS')}
         title={openTile.label}
         description={openTile.description}
         rows={statTileRows}
         loading={loadingReports}
         onSelect={openTileReport}
         onClose={() => setStatTile(undefined)}
-        action={{ label: staffMode ? 'Open in staff queue' : 'Show on map and list', run: () => showTileReports(openTile.tile) }}
+        action={{ label: staffMode ? t('Open in staff queue') : t('Show on map and list'), run: () => showTileReports(openTile.tile) }}
       />}
       <ToastViewport toasts={toasts} onDismiss={dismissToast} />
       <CommandPalette open={paletteOpen} commands={paletteCommands} onClose={() => setPaletteOpen(false)} />
-      {celebrating && <SuccessBurst message="Report submitted. Thank you!" onDone={() => setCelebrating(false)} />}
+      {celebrating && <SuccessBurst message={t('Report submitted. Thank you!')} onDone={() => setCelebrating(false)} />}
       <ViewLoader visible={viewTransition.loaderVisible} label={activeViewLabel} dark={theme === 'dark'} />
 
       {followUpReport && session && <ResidentReportModal report={followUpReport} userId={session.user.id} onClose={() => setFollowUpId(undefined)} onPosted={() => void deliverNotificationEmails(followUpReport.id)} />}
 
       {reporting && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setReporting(false) }}>
-        {reportStep === 'start' ? <Suspense fallback={<section className="report-modal report-start-modal is-loading" role="dialog" aria-modal="true" aria-label="Report an issue"><span className="search-spinner" aria-label="Loading" /></section>}>
+        {reportStep === 'start' ? <Suspense fallback={<section className="report-modal report-start-modal is-loading" role="dialog" aria-modal="true" aria-label={t('Report an issue')}><span className="search-spinner" aria-label={t('Loading')} /></section>}>
           <ReportStart
             checker={photoChecker}
             guest={Boolean(isSupabaseConfigured && !session)}
@@ -3365,52 +3371,52 @@ function App() {
             onClose={() => setReporting(false)}
           />
         </Suspense> : <section className="report-modal report-form-modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-          <div className="modal-header"><div><p className="eyebrow">COMMUNITY REPORT</p><h2 id="modal-title">{t('reportFormTitle')}</h2><p>{isSupabaseConfigured && !session ? t('guestFormSubtitle') : t('reportFormSubtitle')}</p></div><button className="icon-button" type="button" onClick={() => setReporting(false)} aria-label="Close report form"><X size={19} /></button></div>
+          <div className="modal-header"><div><p className="eyebrow">{t('COMMUNITY REPORT')}</p><h2 id="modal-title">{translate('reportFormTitle')}</h2><p>{isSupabaseConfigured && !session ? translate('guestFormSubtitle') : translate('reportFormSubtitle')}</p></div><button className="icon-button" type="button" onClick={() => setReporting(false)} aria-label={t('Close report form')}><X size={19} /></button></div>
           <form className="report-form" ref={reportFormRef} onSubmit={submitReport}>
-            <label className="honeypot-field" aria-hidden="true">Website<input name="website" tabIndex={-1} autoComplete="off" /></label>
+            <label className="honeypot-field" aria-hidden="true">{t('Website')}<input name="website" tabIndex={-1} autoComplete="off" /></label>
             <div className="report-form-grid">
               <div className="report-form-col">
                 <section className="form-section">
-                   <h3 className="form-section-title"><span>1</span>{t('whatHappened')}</h3>
-                   <label className="field-label">{t('reportTitle')}<input ref={reportTitleRef} name="title" className={photoFilled.title ? 'is-autofilled' : undefined} onInput={() => setPhotoFilled((current) => ({ ...current, title: false }))} maxLength={90} placeholder="e.g. Waste piling up beside the road" required /></label>
-                   <fieldset className="choice-group"><legend>{t('category')}</legend><div className="choice-chips">{intakeCategories.map((category) => { const CategoryIcon = categoryIcon(category); return <label className="choice-chip" key={category}><input type="radio" name="category" value={category} checked={reportCategory === category} onChange={() => { categoryChosen.current = true; setPhotoFilled((current) => ({ ...current, category: false })); setReportCategory(category) }} /><span><CategoryIcon size={15} />{category}</span></label> })}</div></fieldset>
-                   {photoFilled.category && <p className="barangay-autofill-note" role="status"><Sparkles size={13} />Suggested from your photo. Change it if it looks wrong.</p>}
-                   <label className="field-label">{t('specificIssue')}<input ref={issueTypeRef} name="issue_type" list="issue-type-options" className={photoFilled.issueType ? 'is-autofilled' : undefined} onInput={() => setPhotoFilled((current) => ({ ...current, issueType: false }))} maxLength={80} placeholder="e.g. Clogged drainage" required /></label>
+                   <h3 className="form-section-title"><span>1</span>{translate('whatHappened')}</h3>
+                   <label className="field-label">{translate('reportTitle')}<input ref={reportTitleRef} name="title" className={photoFilled.title ? 'is-autofilled' : undefined} onInput={() => setPhotoFilled((current) => ({ ...current, title: false }))} maxLength={90} placeholder={t('e.g. Waste piling up beside the road')} required /></label>
+                   <fieldset className="choice-group"><legend>{translate('category')}</legend><div className="choice-chips">{intakeCategories.map((category) => { const CategoryIcon = categoryIcon(category); return <label className="choice-chip" key={category}><input type="radio" name="category" value={category} checked={reportCategory === category} onChange={() => { categoryChosen.current = true; setPhotoFilled((current) => ({ ...current, category: false })); setReportCategory(category) }} /><span><CategoryIcon size={15} />{t(category)}</span></label> })}</div></fieldset>
+                   {photoFilled.category && <p className="barangay-autofill-note" role="status"><Sparkles size={13} />{t('Suggested from your photo. Change it if it looks wrong.')}</p>}
+                   <label className="field-label">{translate('specificIssue')}<input ref={issueTypeRef} name="issue_type" list="issue-type-options" className={photoFilled.issueType ? 'is-autofilled' : undefined} onInput={() => setPhotoFilled((current) => ({ ...current, issueType: false }))} maxLength={80} placeholder={t('e.g. Clogged drainage')} required /></label>
                    <datalist id="issue-type-options">{(isReportCategory(reportCategory) ? issueTypesByCategory[reportCategory] : []).map((issueType) => <option key={issueType} value={issueType} />)}</datalist>
-                   <fieldset className="choice-group"><legend>{t('urgency')}</legend><div className="segmented">{['Low', 'Medium', 'High'].map((urgency) => <label className={`segment segment-${urgency.toLowerCase()}`} key={urgency}><input type="radio" name="urgency" value={urgency} defaultChecked={urgency === 'Medium'} /><span>{urgency}</span></label>)}</div></fieldset>
-                   <label className="field-label">{t('whenObserved')}<input name="observed_at" type="datetime-local" value={observedAt} max={toLocalDateTimeInput(new Date())} onChange={(event) => setObservedAt(event.target.value)} required /></label>
-                   <label className="field-label">{t('whatHappening')}<textarea name="description" rows={4} maxLength={500} placeholder={t('descriptionHint')} required /></label>
-                   <label className="field-label">{t('additionalInformation')} <span className="field-hint">{t('optionalContext')}</span><textarea name="additional_info" rows={3} maxLength={2000} placeholder="Add access details, recurring patterns, or other useful context." /></label>
+                   <fieldset className="choice-group"><legend>{translate('urgency')}</legend><div className="segmented">{['Low', 'Medium', 'High'].map((urgency) => <label className={`segment segment-${urgency.toLowerCase()}`} key={urgency}><input type="radio" name="urgency" value={urgency} defaultChecked={urgency === 'Medium'} /><span>{t(urgency)}</span></label>)}</div></fieldset>
+                   <label className="field-label">{translate('whenObserved')}<input name="observed_at" type="datetime-local" value={observedAt} max={toLocalDateTimeInput(new Date())} onChange={(event) => setObservedAt(event.target.value)} required /></label>
+                   <label className="field-label">{translate('whatHappening')}<textarea name="description" rows={4} maxLength={500} placeholder={translate('descriptionHint')} required /></label>
+                   <label className="field-label">{translate('additionalInformation')} <span className="field-hint">{translate('optionalContext')}</span><textarea name="additional_info" rows={3} maxLength={2000} placeholder={t('Add access details, recurring patterns, or other useful context.')} /></label>
                 </section>
               </div>
               <div className="report-form-col">
                 <section className="form-section">
-                  <h3 className="form-section-title"><span>2</span>{t('where')}</h3>
+                  <h3 className="form-section-title"><span>2</span>{translate('where')}</h3>
             <div className="location-autocomplete-wrap">
-              <label className="field-label" htmlFor="report-location">{t('location')} <span className="field-hint">Search a street, landmark, barangay, or facility</span></label>
+              <label className="field-label" htmlFor="report-location">{translate('location')} <span className="field-hint">{t('Search a street, landmark, barangay, or facility')}</span></label>
               <div className={`location-autocomplete ${locationConfirmed ? 'location-confirmed' : ''}`}>
                 <MapPin size={16} />
-                <input id="report-location" name="location" value={locationQuery} onChange={(event) => { geocodeRequest.current += 1; setLocationQuery(event.target.value); setLocationConfirmed(false); setLocationSearchMessage('') }} placeholder="e.g. Batasan Hills, Quezon City" autoComplete="off" role="combobox" aria-autocomplete="list" aria-expanded={locationSuggestions.length > 0} aria-controls="location-suggestions" />
-                {locationSearchBusy && <span className="search-spinner" aria-label="Searching locations" />}
+                <input id="report-location" name="location" value={locationQuery} onChange={(event) => { geocodeRequest.current += 1; setLocationQuery(event.target.value); setLocationConfirmed(false); setLocationSearchMessage('') }} placeholder={t('e.g. Batasan Hills, Quezon City')} autoComplete="off" role="combobox" aria-autocomplete="list" aria-expanded={locationSuggestions.length > 0} aria-controls="location-suggestions" />
+                {locationSearchBusy && <span className="search-spinner" aria-label={t('Searching locations')} />}
                 {locationConfirmed && <Check size={16} className="location-check" />}
               </div>
-              {locationSuggestions.length > 0 && <ul className="location-suggestions" id="location-suggestions" role="listbox" aria-label="Suggested places">{locationSuggestions.map((suggestion) => {
+              {locationSuggestions.length > 0 && <ul className="location-suggestions" id="location-suggestions" role="listbox" aria-label={t('Suggested places')}>{locationSuggestions.map((suggestion) => {
                 const suggestionBarangay = barangayBoundaries ? findBarangayAt(suggestion.coordinates, barangayBoundaries, boundaryTolerance) ?? null : undefined
-                return <li key={`${suggestion.label}-${suggestion.coordinates.join(',')}`}><button type="button" role="option" aria-selected="false" disabled={suggestionBarangay === null} title={suggestionBarangay === null ? 'Outside District 5. Reports are accepted for District 5 only.' : undefined} onClick={() => { geocodeRequest.current += 1; setLocation(suggestion.coordinates); setMapCenter(suggestion.coordinates); setLocationQuery(suggestion.label); fillBarangayFromLabel(suggestion.label); setLocationConfirmed(true); setLocationSuggestions([]); setLocationSearchMessage(''); setFormError('') }}><MapPin size={15} /><span>{suggestion.label}<small>{suggestionBarangay ? <b className="suggestion-barangay">Brgy. {suggestionBarangay}</b> : suggestionBarangay === null ? <b className="suggestion-barangay is-outside">Outside District 5</b> : null}{suggestion.coordinates[0].toFixed(5)}, {suggestion.coordinates[1].toFixed(5)}</small></span></button></li>
+                return <li key={`${suggestion.label}-${suggestion.coordinates.join(',')}`}><button type="button" role="option" aria-selected="false" disabled={suggestionBarangay === null} title={suggestionBarangay === null ? t('Outside District 5. Reports are accepted for District 5 only.') : undefined} onClick={() => { geocodeRequest.current += 1; setLocation(suggestion.coordinates); setMapCenter(suggestion.coordinates); setLocationQuery(suggestion.label); fillBarangayFromLabel(suggestion.label); setLocationConfirmed(true); setLocationSuggestions([]); setLocationSearchMessage(''); setFormError('') }}><MapPin size={15} /><span>{suggestion.label}<small>{suggestionBarangay ? <b className="suggestion-barangay">Brgy. {suggestionBarangay}</b> : suggestionBarangay === null ? <b className="suggestion-barangay is-outside">{t('Outside District 5')}</b> : null}{suggestion.coordinates[0].toFixed(5)}, {suggestion.coordinates[1].toFixed(5)}</small></span></button></li>
               })}</ul>}
-              {locationSearchBusy && <p className="location-feedback" role="status">Searching nearby places…</p>}
+              {locationSearchBusy && <p className="location-feedback" role="status">{t('Searching nearby places…')}</p>}
               {!locationSearchBusy && locationSearchMessage && <p className="location-feedback location-search-error" role="status">{locationSearchMessage}</p>}
-              {!locationSearchBusy && locationQuery.trim().length >= 3 && !locationConfirmed && !locationSearchMessage && locationSuggestions.length === 0 && <p className="location-feedback" role="status">No matches yet. Try another nearby name or use your current location.</p>}
-              <p className="location-attribution">Place suggestions by Photon · OpenStreetMap contributors</p>
+              {!locationSearchBusy && locationQuery.trim().length >= 3 && !locationConfirmed && !locationSearchMessage && locationSuggestions.length === 0 && <p className="location-feedback" role="status">{t('No matches yet. Try another nearby name or use your current location.')}</p>}
+              <p className="location-attribution">{t('Place suggestions by Photon · OpenStreetMap contributors')}</p>
             </div>
             <div className="barangay-field">
-              <label className="field-label">{t('barangay')}<select name="barangay" className={barangayAutofill === 'matched' ? 'is-autofilled' : undefined} value={reportBarangay} onChange={(event) => { changeReportBarangay(event.target.value) }} aria-describedby={barangayAutofill ? 'barangay-autofill-note' : undefined} required><option value="">Select barangay</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay}>{barangay}</option>)}</select></label>
+              <label className="field-label">{translate('barangay')}<select name="barangay" className={barangayAutofill === 'matched' ? 'is-autofilled' : undefined} value={reportBarangay} onChange={(event) => { changeReportBarangay(event.target.value) }} aria-describedby={barangayAutofill ? 'barangay-autofill-note' : undefined} required><option value="">{t('Select barangay')}</option>{DISTRICT_5_BARANGAYS.map((barangay) => <option key={barangay} value={barangay}>{barangay}</option>)}</select></label>
               {pinAtBarangayCenter && barangayPin
-                ? <p className="barangay-autofill-note" id="barangay-autofill-note" role="status" key={`pin-${reportBarangay}`}><MapPin size={13} />Pin moved to the middle of Barangay {barangayPin.barangay}. Drag it or tap the map to mark the exact spot.</p>
-                : barangayAutofill === 'matched' && <p className="barangay-autofill-note" id="barangay-autofill-note" role="status" key={reportBarangay}><Check size={13} />Filled in from the pinned location. Change it if it looks wrong.</p>}
-              {barangayAutofill === 'outside' && <p className="barangay-autofill-note is-outside" id="barangay-autofill-note" role="status"><AlertTriangle size={13} />This spot is outside District 5, so the report cannot be submitted. Move the pin inside the district.</p>}
+                ? <p className="barangay-autofill-note" id="barangay-autofill-note" role="status" key={`pin-${reportBarangay}`}><MapPin size={13} />{t('Pin moved to the middle of Barangay {barangay}. Drag it or tap the map to mark the exact spot.', { barangay: barangayPin.barangay })}</p>
+                : barangayAutofill === 'matched' && <p className="barangay-autofill-note" id="barangay-autofill-note" role="status" key={reportBarangay}><Check size={13} />{t('Filled in from the pinned location. Change it if it looks wrong.')}</p>}
+              {barangayAutofill === 'outside' && <p className="barangay-autofill-note is-outside" id="barangay-autofill-note" role="status"><AlertTriangle size={13} />{t('This spot is outside District 5, so the report cannot be submitted. Move the pin inside the district.')}</p>}
             </div>
-            <div className="location-picker-heading"><MapPin size={15} /><strong>{t('pinExactSpot')}</strong><span>{t('clickDragMap')}</span><button className="text-button" type="button" onClick={() => requestLocation()}><Crosshair size={14} /> {t('useMyLocation')}</button></div>
+            <div className="location-picker-heading"><MapPin size={15} /><strong>{translate('pinExactSpot')}</strong><span>{translate('clickDragMap')}</span><button className="text-button" type="button" onClick={() => requestLocation()}><Crosshair size={14} /> {translate('useMyLocation')}</button></div>
             <div className="report-location-map">
               <Suspense fallback={<MapSkeleton />}>
                 {districtOutline ? <LocationPickerMap
@@ -3425,26 +3431,26 @@ function App() {
                 /> : <MapSkeleton />}
               </Suspense>
             </div>
-            <div className="location-field"><div className="location-copy"><MapPin size={16} /><span><strong>{locationConfirmed ? 'Selected location' : 'Choose a map location'}</strong><small>{locationConfirmed ? `${location[0].toFixed(5)}, ${location[1].toFixed(5)}` : 'Pick a search suggestion or use GPS'}</small></span></div></div>
+            <div className="location-field"><div className="location-copy"><MapPin size={16} /><span><strong>{locationConfirmed ? t('Selected location') : t('Choose a map location')}</strong><small>{locationConfirmed ? `${location[0].toFixed(5)}, ${location[1].toFixed(5)}` : t('Pick a search suggestion or use GPS')}</small></span></div></div>
             {/* Guests read about their contact details in the follow-up step, next to those fields. */}
-            {isSupabaseConfigured && <p className="privacy-note">{session ? 'Your account identity stays private. The public map shows approximate report locations.' : 'The public map shows approximate report locations.'}</p>}
-            {nearbySuggestions.length > 0 && <section className="nearby-suggestions" aria-label="Similar open reports nearby"><div><strong>Similar open reports nearby</strong><p>If one is the same issue, follow it or confirm it is still present.</p></div>{nearbySuggestions.map((candidate) => <article className="nearby-suggestion" key={candidate.id}><span><strong>{candidate.title}</strong><small>{candidate.status} · {candidate.barangay ? `Barangay ${candidate.barangay} · ` : ''}{Math.round(distanceInMeters(candidate.coordinates, location))} m away</small></span><div className="nearby-suggestion-actions"><button className="text-button" type="button" onClick={() => { setReporting(false); setStaffMode(false); setSelectedId(candidate.id); setMapCenter(candidate.coordinates) }}>View</button>{session && <button className="text-button" type="button" onClick={() => void toggleReportFollow(candidate)}>{followedReportIds.includes(candidate.id) ? 'Unfollow' : 'Follow'}</button>}<button className="text-button" type="button" onClick={() => void confirmNearbyReport(candidate)}>Confirm still present</button></div></article>)}</section>}
+            {isSupabaseConfigured && <p className="privacy-note">{session ? t('Your account identity stays private. The public map shows approximate report locations.') : t('The public map shows approximate report locations.')}</p>}
+            {nearbySuggestions.length > 0 && <section className="nearby-suggestions" aria-label={t('Similar open reports nearby')}><div><strong>{t('Similar open reports nearby')}</strong><p>{t('If one is the same issue, follow it or confirm it is still present.')}</p></div>{nearbySuggestions.map((candidate) => <article className="nearby-suggestion" key={candidate.id}><span><strong>{candidate.title}</strong><small>{t(candidate.status)} · {candidate.barangay ? `${t('Barangay {barangay}', { barangay: candidate.barangay })} · ` : ''}{t('{distance} m away', { distance: Math.round(distanceInMeters(candidate.coordinates, location)) })}</small></span><div className="nearby-suggestion-actions"><button className="text-button" type="button" onClick={() => { setReporting(false); setStaffMode(false); setSelectedId(candidate.id); setMapCenter(candidate.coordinates) }}>{t('View')}</button>{session && <button className="text-button" type="button" onClick={() => void toggleReportFollow(candidate)}>{followedReportIds.includes(candidate.id) ? t('Unfollow') : t('Follow')}</button>}<button className="text-button" type="button" onClick={() => void confirmNearbyReport(candidate)}>{t('Confirm still present')}</button></div></article>)}</section>}
                 </section>
                 <section className="form-section">
-            <h3 className="form-section-title"><span>3</span>{t('photo')}</h3>
-            <div className="photo-row"><label className="upload-button"><Camera size={15} />{photoFiles.length ? `${t('addPhotos')} (${photoFiles.length}/${MAX_REPORT_PHOTOS})` : t('addPhotos')}<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => { void handlePhotos(event.target.files); event.currentTarget.value = '' }} /></label><span>Optional · up to {MAX_REPORT_PHOTOS} JPEG, PNG, or WebP photos · max {isSupabaseConfigured && !session ? '2.5 MB each for guests' : '5 MB each'} · compressed before upload</span></div>
-            {photoPreviews.length > 0 && <div className="report-photo-previews">{photoPreviews.map((preview, index) => <div className="report-photo-preview" key={`${index}-${preview.slice(-24)}`}><img className="photo-preview" src={preview} alt={`Selected report attachment ${index + 1}`} /><button className="remove-photo" type="button" aria-label={`Remove report photo ${index + 1}`} onClick={() => { setPhotoPreviews((current) => current.filter((_, photoIndex) => photoIndex !== index)); setPhotoFiles((current) => current.filter((_, photoIndex) => photoIndex !== index)) }}><X size={13} /> Remove</button></div>)}</div>}
+            <h3 className="form-section-title"><span>3</span>{translate('photo')}</h3>
+            <div className="photo-row"><label className="upload-button"><Camera size={15} />{photoFiles.length ? `${translate('addPhotos')} (${photoFiles.length}/${MAX_REPORT_PHOTOS})` : translate('addPhotos')}<input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event) => { void handlePhotos(event.target.files); event.currentTarget.value = '' }} /></label><span>{t('Optional · up to {count} JPEG, PNG, or WebP photos', { count: MAX_REPORT_PHOTOS })} · {t('max')} {isSupabaseConfigured && !session ? t('2.5 MB each for guests') : t('5 MB each')} · {t('compressed before upload')}</span></div>
+            {photoPreviews.length > 0 && <div className="report-photo-previews">{photoPreviews.map((preview, index) => <div className="report-photo-preview" key={`${index}-${preview.slice(-24)}`}><img className="photo-preview" src={preview} alt={t('Selected report attachment {number}', { number: index + 1 })} /><button className="remove-photo" type="button" aria-label={t('Remove report photo {number}', { number: index + 1 })} onClick={() => { setPhotoPreviews((current) => current.filter((_, photoIndex) => photoIndex !== index)); setPhotoFiles((current) => current.filter((_, photoIndex) => photoIndex !== index)) }}><X size={13} /> {t('Remove')}</button></div>)}</div>}
             {/* Off keeps the photos private; on shares them publicly once the report is verified. */}
             {photoFiles.length > 0 && (session || !isSupabaseConfigured) && <div className="photo-visibility">
               <label className={`photo-visibility-toggle${photoVisibility === 'public' ? ' is-public' : ''}`}>
                 <span className="photo-visibility-icon" aria-hidden="true">{photoVisibility === 'public' ? <Globe size={16} /> : <Lock size={16} />}</span>
-                <span className="photo-visibility-copy"><b>Make photos public</b><small id="photo-visibility-state">{photoVisibility === 'public' ? 'Public: anyone on the map, guests included, can see them once staff verify the report.' : 'Private: only you, responders and admins can see them.'}</small></span>
+                <span className="photo-visibility-copy"><b>{t('Make photos public')}</b><small id="photo-visibility-state">{photoVisibility === 'public' ? t('Public: anyone on the map, guests included, can see them once staff verify the report.') : t('Private: only you, responders and admins can see them.')}</small></span>
                 <input type="checkbox" role="switch" name="photos_public" checked={photoVisibility === 'public'} onChange={(event) => setPhotoVisibility(event.target.checked ? 'public' : 'private')} aria-describedby="photo-visibility-state" />
                 <i aria-hidden="true" />
               </label>
-              {photoVisibility === 'public' && <p className="workflow-hint" role="status">Make sure your photos don't show faces, plate numbers or anything else you don't want to share.</p>}
+              {photoVisibility === 'public' && <p className="workflow-hint" role="status">{t('Make sure your photos don\'t show faces, plate numbers or anything else you don\'t want to share.')}</p>}
             </div>}
-            {photoFiles.length > 0 && isSupabaseConfigured && !session && <p className="workflow-hint photo-visibility-note"><Lock size={13} aria-hidden="true" /> Guest photos stay private: only responders and admins see them.</p>}
+            {photoFiles.length > 0 && isSupabaseConfigured && !session && <p className="workflow-hint photo-visibility-note"><Lock size={13} aria-hidden="true" /> {t('Guest photos stay private: only responders and admins see them.')}</p>}
             <PhotoIssueSuggestion
               state={photoSuggestion.state}
               applied={photoGuessApplied}
@@ -3453,13 +3459,13 @@ function App() {
               onApply={() => { if (photoSuggestion.state.status === 'suggested') applyPhotoGuess(photoSuggestion.state.guess, true) }}
             />
                 </section>
-                {isSupabaseConfigured && !session && <section className="form-section guest-contact-section"><h3 className="form-section-title"><span>4</span>{t('followUp')}</h3><p className="workflow-hint">Provide at least one contact for security and follow-up. Your email and phone number stay private.</p><label className="field-label">Email address<input name="contact_email" type="email" autoComplete="email" maxLength={254} placeholder="you@example.com" /></label><label className="field-label">Mobile number<input name="contact_phone" type="tel" autoComplete="tel" inputMode="tel" maxLength={24} placeholder="09XXXXXXXXX or +639XXXXXXXXX" /></label><p className="workflow-hint">You can still track the report with the code shown after submission.</p></section>}
+                {isSupabaseConfigured && !session && <section className="form-section guest-contact-section"><h3 className="form-section-title"><span>4</span>{translate('followUp')}</h3><p className="workflow-hint">{t('Provide at least one contact for security and follow-up. Your email and phone number stay private.')}</p><label className="field-label">{t('Email address')}<input name="contact_email" type="email" autoComplete="email" maxLength={254} placeholder={t('you@example.com')} /></label><label className="field-label">{t('Mobile number')}<input name="contact_phone" type="tel" autoComplete="tel" inputMode="tel" maxLength={24} placeholder={t('09XXXXXXXXX or +639XXXXXXXXX')} /></label><p className="workflow-hint">{t('You can still track the report with the code shown after submission.')}</p></section>}
               </div>
             </div>
-            <label className="privacy-consent"><input type="checkbox" name="public_display_consent" required /><span>{t('publicConsent')} <small>{t('retentionNotice')}</small></span></label>
+            <label className="privacy-consent"><input type="checkbox" name="public_display_consent" required /><span>{translate('publicConsent')} <small>{translate('retentionNotice')}</small></span></label>
             {formError && <p className="form-error" role="alert">{formError}</p>}
             {formNotice && <p className="workflow-success" role="status">{formNotice}</p>}
-            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => void saveReportDraft(false)}>Save draft</button>{isSupabaseConfigured && !isOnline && <button className="secondary-button" type="button" onClick={() => void saveReportDraft(true)}>Queue for upload</button>}<button className="secondary-button" type="button" onClick={() => setReporting(false)}>{t('cancel')}</button><button className="primary-button" type="submit" disabled={loadingReports || guestSubmitting || (isSupabaseConfigured && !isOnline)}>{guestSubmitting ? 'Submitting…' : loadingReports ? 'Connecting…' : <><Check size={16} /> {t('submitReport')}</>}</button></div>
+            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => void saveReportDraft(false)}>{t('Save draft')}</button>{isSupabaseConfigured && !isOnline && <button className="secondary-button" type="button" onClick={() => void saveReportDraft(true)}>{t('Queue for upload')}</button>}<button className="secondary-button" type="button" onClick={() => setReporting(false)}>{translate('cancel')}</button><button className="primary-button" type="submit" disabled={loadingReports || guestSubmitting || (isSupabaseConfigured && !isOnline)}>{guestSubmitting ? t('Submitting…') : loadingReports ? t('Connecting…') : <><Check size={16} /> {translate('submitReport')}</>}</button></div>
           </form>
         </section>}
       </div>}
@@ -3470,32 +3476,32 @@ function App() {
 
       {responderModalOpen && profile?.role === 'admin' && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !responderBusy) setResponderModalOpen(false) }}>
         <section className="report-modal responder-modal" role="dialog" aria-modal="true" aria-labelledby="responder-title">
-          <div className="modal-header"><div><p className="eyebrow">STAFF DESK</p><h2 id="responder-title">Add a responder</h2><p>Send an invitation email so they can finish setting up their account.</p></div><button className="icon-button" type="button" onClick={() => setResponderModalOpen(false)} disabled={responderBusy} aria-label="Close add responder form"><X size={19} /></button></div>
+          <div className="modal-header"><div><p className="eyebrow">{t('STAFF DESK')}</p><h2 id="responder-title">{t('Add a responder')}</h2><p>{t('Send an invitation email so they can finish setting up their account.')}</p></div><button className="icon-button" type="button" onClick={() => setResponderModalOpen(false)} disabled={responderBusy} aria-label={t('Close add responder form')}><X size={19} /></button></div>
           <form onSubmit={(event) => void createResponder(event)}>
-            <label className="field-label">Responder name<input name="display_name" autoComplete="name" minLength={2} maxLength={80} required /></label>
-            <label className="field-label">Email address<input name="email" type="email" autoComplete="email" maxLength={254} required /></label>
+            <label className="field-label">{t('Responder name')}<input name="display_name" autoComplete="name" minLength={2} maxLength={80} required /></label>
+            <label className="field-label">{t('Email address')}<input name="email" type="email" autoComplete="email" maxLength={254} required /></label>
             {responderMessage && <p className="form-error" role="alert">{responderMessage}</p>}
-            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setResponderModalOpen(false)} disabled={responderBusy}>Cancel</button><button className="primary-button" type="submit" disabled={responderBusy}>{responderBusy ? 'Sending invitation…' : <><Plus size={15} /> Invite responder</>}</button></div>
+            <div className="modal-actions"><button className="secondary-button" type="button" onClick={() => setResponderModalOpen(false)} disabled={responderBusy}>{t('Cancel')}</button><button className="primary-button" type="submit" disabled={responderBusy}>{responderBusy ? t('Sending invitation…') : <><Plus size={15} /> {t('Invite responder')}</>}</button></div>
           </form>
         </section>
       </div>}
 
       {teamModalOpen && profile?.role === 'admin' && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setTeamModalOpen(false) }}>
         <section className="report-modal team-modal" role="dialog" aria-modal="true" aria-labelledby="team-title">
-          <div className="modal-header"><div><p className="eyebrow">STAFF DESK</p><h2 id="team-title">Manage teams</h2><p>Group responders so reports can be assigned to a crew.</p></div><button className="icon-button" type="button" onClick={() => setTeamModalOpen(false)} aria-label="Close team manager"><X size={19} /></button></div>
-          <form className="team-create" onSubmit={createTeam}><label className="field-label">New team name<input name="team_name" maxLength={60} placeholder="e.g. Drainage crew" required /></label><button className="primary-button" type="submit" disabled={teamBusy}><Plus size={15} /> Add team</button></form>
+          <div className="modal-header"><div><p className="eyebrow">{t('STAFF DESK')}</p><h2 id="team-title">{t('Manage teams')}</h2><p>{t('Group responders so reports can be assigned to a crew.')}</p></div><button className="icon-button" type="button" onClick={() => setTeamModalOpen(false)} aria-label={t('Close team manager')}><X size={19} /></button></div>
+          <form className="team-create" onSubmit={createTeam}><label className="field-label">{t('New team name')}<input name="team_name" maxLength={60} placeholder={t('e.g. Drainage crew')} required /></label><button className="primary-button" type="submit" disabled={teamBusy}><Plus size={15} /> {t('Add team')}</button></form>
           {teamMessage && <p className="form-error" role="alert">{teamMessage}</p>}
-          <div className="team-list">{teams.length === 0 ? <p className="staff-empty">No teams yet. Create one above.</p> : teams.map((team) => <div className="team-card" key={team.id}>
-            <div className="team-card-heading"><strong><Users size={15} />{team.name}</strong><span>{team.memberIds.length} {team.memberIds.length === 1 ? 'member' : 'members'}</span><button className="icon-button" type="button" disabled={teamBusy} onClick={() => setTeamDeleteId(team.id)} aria-label={`Delete ${team.name}`} aria-expanded={teamDeleteId === team.id}><Trash2 size={15} /></button></div>
-            {teamDeleteId === team.id && <div className="team-delete-confirm" role="group" aria-label={`Confirm deleting ${team.name}`}><span>Delete <strong>{team.name}</strong>? Reports assigned to this team become unassigned. This can’t be undone.</span><div><button className="secondary-button" type="button" disabled={teamBusy} onClick={() => setTeamDeleteId(undefined)}>Keep team</button><button className="secondary-button button-danger" type="button" disabled={teamBusy} onClick={() => void deleteTeam(team)}><Trash2 size={14} /> Delete team</button></div></div>}
-            <div className="choice-chips">{staffUsers.map((user) => <label className="choice-chip" key={user.id}><input type="checkbox" checked={team.memberIds.includes(user.id)} disabled={teamBusy} onChange={() => void toggleTeamMember(team, user.id)} /><span>{user.display_name || 'Unnamed staff member'}</span></label>)}</div>
+          <div className="team-list">{teams.length === 0 ? <p className="staff-empty">{t('No teams yet. Create one above.')}</p> : teams.map((team) => <div className="team-card" key={team.id}>
+            <div className="team-card-heading"><strong><Users size={15} />{team.name}</strong><span>{team.memberIds.length} {team.memberIds.length === 1 ? t('member') : t('members')}</span><button className="icon-button" type="button" disabled={teamBusy} onClick={() => setTeamDeleteId(team.id)} aria-label={t('Delete {name}', { name: team.name })} aria-expanded={teamDeleteId === team.id}><Trash2 size={15} /></button></div>
+            {teamDeleteId === team.id && <div className="team-delete-confirm" role="group" aria-label={t('Confirm deleting {name}', { name: team.name })}><span>{t('Delete this team?')} <strong>{team.name}</strong> · {t('Reports assigned to this team become unassigned. This can’t be undone.')}</span><div><button className="secondary-button" type="button" disabled={teamBusy} onClick={() => setTeamDeleteId(undefined)}>{t('Keep team')}</button><button className="secondary-button button-danger" type="button" disabled={teamBusy} onClick={() => void deleteTeam(team)}><Trash2 size={14} /> {t('Delete team')}</button></div></div>}
+            <div className="choice-chips">{staffUsers.map((user) => <label className="choice-chip" key={user.id}><input type="checkbox" checked={team.memberIds.includes(user.id)} disabled={teamBusy} onChange={() => void toggleTeamMember(team, user.id)} /><span>{user.display_name || t('Unnamed staff member')}</span></label>)}</div>
           </div>)}</div>
         </section>
       </div>}
 
       {authModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeAuthModal() }}>
         {pendingConfirmation ? <section className="report-modal auth-modal auth-code-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
-          <button className="icon-button auth-code-close" type="button" onClick={closeAuthModal} aria-label="Close sign-in form"><X size={19} /></button>
+          <button className="icon-button auth-code-close" type="button" onClick={closeAuthModal} aria-label={t('Close sign-in form')}><X size={19} /></button>
           <EmailCodeStep
             key={pendingConfirmation.email}
             email={pendingConfirmation.email}
@@ -3512,25 +3518,25 @@ function App() {
             purpose={pendingConfirmation.purpose}
           />
         </section> : <section className="report-modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
-          <div className="modal-header"><div><p className="eyebrow">DISTRICT 5 COMMUNITY ACCOUNT</p><h2 id="auth-title">{authTitle}</h2><p>{authSubtitle}</p></div><button className="icon-button" type="button" onClick={closeAuthModal} aria-label="Close sign-in form"><X size={19} /></button></div>
+          <div className="modal-header"><div><p className="eyebrow">{t('DISTRICT 5 COMMUNITY ACCOUNT')}</p><h2 id="auth-title">{authTitle}</h2><p>{authSubtitle}</p></div><button className="icon-button" type="button" onClick={closeAuthModal} aria-label={t('Close sign-in form')}><X size={19} /></button></div>
           <form onSubmit={submitAuth}>
-            {authModal === 'sign-up' && <label className="field-label">Name<input name="display_name" autoComplete="name" maxLength={80} defaultValue={authPrefill.displayName} required /></label>}
-            {authModal !== 'new-password' && <label className="field-label">Email<input name="email" type="email" autoComplete="email" maxLength={254} defaultValue={authPrefill.email} required /></label>}
-            {(authModal === 'sign-in' || authModal === 'sign-up') && <label className="field-label">Password<input name="password" type="password" autoComplete={authModal === 'sign-up' ? 'new-password' : 'current-password'} minLength={authModal === 'sign-up' ? 8 : undefined} placeholder={authModal === 'sign-up' ? 'At least 8 characters' : undefined} required /></label>}
+            {authModal === 'sign-up' && <label className="field-label">{t('Name')}<input name="display_name" autoComplete="name" maxLength={80} defaultValue={authPrefill.displayName} required /></label>}
+            {authModal !== 'new-password' && <label className="field-label">{t('Email')}<input name="email" type="email" autoComplete="email" maxLength={254} defaultValue={authPrefill.email} required /></label>}
+            {(authModal === 'sign-in' || authModal === 'sign-up') && <label className="field-label">{t('Password')}<input name="password" type="password" autoComplete={authModal === 'sign-up' ? 'new-password' : 'current-password'} minLength={authModal === 'sign-up' ? 8 : undefined} placeholder={authModal === 'sign-up' ? t('At least 8 characters') : undefined} required /></label>}
             {authModal === 'sign-in' && <button className="text-button auth-forgot" type="button" disabled={authBusy} onClick={(event) => {
               const typed = (event.currentTarget.form?.elements.namedItem('email') as HTMLInputElement | null)?.value.trim()
               openAuthModal('reset', { prefill: { ...authPrefill, email: typed || authPrefill.email } })
-            }}>Forgot password?</button>}
+            }}>{t('Forgot password?')}</button>}
             {authModal === 'new-password' && <>
               {session?.user.email && <input type="email" name="username" autoComplete="username" value={session.user.email} readOnly hidden />}
-              <label className="field-label">New password<input name="password" type="password" autoComplete="new-password" minLength={8} placeholder="At least 8 characters" required /></label>
-              <label className="field-label">Confirm new password<input name="confirm_password" type="password" autoComplete="new-password" minLength={8} required /></label>
+              <label className="field-label">{t('New password')}<input name="password" type="password" autoComplete="new-password" minLength={8} placeholder={t('At least 8 characters')} required /></label>
+              <label className="field-label">{t('Confirm new password')}<input name="confirm_password" type="password" autoComplete="new-password" minLength={8} required /></label>
             </>}
             {authMessage && <p className={authMessageSuccess ? 'auth-success' : 'form-error'} role={authMessageSuccess ? 'status' : 'alert'}>{authMessage}</p>}
-            {authSuggestion && <button className="text-button" type="button" onClick={followAuthSuggestion} disabled={authBusy}>{authSuggestion === 'sign-up' ? 'Create an account instead' : 'Sign in instead'}</button>}
+            {authSuggestion && <button className="text-button" type="button" onClick={followAuthSuggestion} disabled={authBusy}>{authSuggestion === 'sign-up' ? t('Create an account instead') : t('Sign in instead')}</button>}
             <div className="modal-actions">
-              {authModal === 'new-password' ? <span /> : <button className="text-button" type="button" onClick={() => openAuthModal(authModal === 'sign-in' ? 'sign-up' : 'sign-in', { prefill: authPrefill })} disabled={authBusy}>{authModal === 'sign-up' ? 'Already have an account? Sign in' : authModal === 'reset' ? 'Back to sign in' : 'Create an account'}</button>}
-              <button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? 'Please wait…' : authModal === 'sign-up' ? 'Create account' : authModal === 'reset' ? 'Send code' : authModal === 'new-password' ? 'Save password' : 'Sign in'}</button>
+              {authModal === 'new-password' ? <span /> : <button className="text-button" type="button" onClick={() => openAuthModal(authModal === 'sign-in' ? 'sign-up' : 'sign-in', { prefill: authPrefill })} disabled={authBusy}>{authModal === 'sign-up' ? t('Already have an account? Sign in') : authModal === 'reset' ? t('Back to sign in') : t('Create an account')}</button>}
+              <button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? t('Please wait…') : authModal === 'sign-up' ? t('Create account') : authModal === 'reset' ? t('Send code') : authModal === 'new-password' ? t('Save password') : t('Sign in')}</button>
             </div>
           </form>
         </section>}
@@ -3538,23 +3544,23 @@ function App() {
 
       {profileModal && profile && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setProfileModal(false) }}>
         <section className="report-modal profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title">
-          <div className="modal-header"><div><p className="eyebrow">YOUR COMMUNITY ACCOUNT</p><h2 id="profile-title">Profile settings</h2><p>Keep your name and account image up to date.</p></div><button className="icon-button" type="button" onClick={() => setProfileModal(false)} aria-label="Close profile settings"><X size={19} /></button></div>
+          <div className="modal-header"><div><p className="eyebrow">{t('YOUR COMMUNITY ACCOUNT')}</p><h2 id="profile-title">{t('Profile settings')}</h2><p>{t('Keep your name and account image up to date.')}</p></div><button className="icon-button" type="button" onClick={() => setProfileModal(false)} aria-label={t('Close profile settings')}><X size={19} /></button></div>
           <form id="profile-form" onSubmit={saveProfile}>
-            <div className="profile-editor"><div className="profile-avatar-large">{profileAvatarPreview || profileAvatarUrl ? <img src={profileAvatarPreview || profileAvatarUrl} alt="Profile preview" /> : <UserRound size={27} />}</div><label className="upload-button"><Upload size={15} /> Change photo<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => handleProfileAvatar(event.target.files?.[0])} /></label><span className="profile-upload-note">JPEG, PNG, or WebP · max 3 MB</span></div>
-            <label className="field-label">Display name<input name="display_name" defaultValue={profile.display_name} maxLength={80} required /></label>
-            <label className="field-label">{session?.user.email ? 'Email' : 'Phone number'}<input value={session?.user.email ?? session?.user.phone ?? ''} readOnly /></label>
-            <div className="field-label">Role<span><span className={`profile-role-badge role-${profile.role}`}>{getRoleLabel(profile.role)}</span></span></div>
-            {session?.user.email ? <label className="notification-email-setting"><input type="checkbox" name="email_notifications" defaultChecked={profile.email_notifications !== false} /><span><strong>Email notifications</strong><small>Send report updates to this account's email address.</small></span></label> : <p className="workflow-hint">Report updates will appear in the in-app inbox for this phone-based account.</p>}
+            <div className="profile-editor"><div className="profile-avatar-large">{profileAvatarPreview || profileAvatarUrl ? <img src={profileAvatarPreview || profileAvatarUrl} alt={t('Profile preview')} /> : <UserRound size={27} />}</div><label className="upload-button"><Upload size={15} /> {t('Change photo')}<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => handleProfileAvatar(event.target.files?.[0])} /></label><span className="profile-upload-note">{t('JPEG, PNG, or WebP · max 3 MB')}</span></div>
+            <label className="field-label">{t('Display name')}<input name="display_name" defaultValue={profile.display_name} maxLength={80} required /></label>
+            <label className="field-label">{session?.user.email ? t('Email') : t('Phone number')}<input value={session?.user.email ?? session?.user.phone ?? ''} readOnly /></label>
+            <div className="field-label">{t('Role')}<span><span className={`profile-role-badge role-${profile.role}`}>{getRoleLabel(profile.role)}</span></span></div>
+            {session?.user.email ? <label className="notification-email-setting"><input type="checkbox" name="email_notifications" defaultChecked={profile.email_notifications !== false} /><span><strong>{t('Email notifications')}</strong><small>{t('Send report updates to this account\'s email address.')}</small></span></label> : <p className="workflow-hint">{t('Report updates will appear in the in-app inbox for this phone-based account.')}</p>}
           </form>
           {session?.user.email && <form className="password-settings" onSubmit={savePassword}>
-            <div><h3>Sign-in password</h3><p>Change the password you use to sign in. It is saved on its own, separately from your profile.</p></div>
-            <label className="field-label">New password<input name="new_password" type="password" minLength={8} autoComplete="new-password" required /></label>
-            <label className="field-label">Confirm new password<input name="confirm_password" type="password" minLength={8} autoComplete="new-password" required /></label>
+            <div><h3>{t('Sign-in password')}</h3><p>{t('Change the password you use to sign in. It is saved on its own, separately from your profile.')}</p></div>
+            <label className="field-label">{t('New password')}<input name="new_password" type="password" minLength={8} autoComplete="new-password" required /></label>
+            <label className="field-label">{t('Confirm new password')}<input name="confirm_password" type="password" minLength={8} autoComplete="new-password" required /></label>
             {passwordMessage && <p className={passwordMessageSuccess ? 'auth-success' : 'form-error'} role={passwordMessageSuccess ? 'status' : 'alert'}>{passwordMessage}</p>}
-            <div className="modal-actions"><button className="secondary-button" type="submit" disabled={passwordSaving}>{passwordSaving ? 'Saving…' : 'Change password'}</button></div>
+            <div className="modal-actions"><button className="secondary-button" type="submit" disabled={passwordSaving}>{passwordSaving ? t('Saving…') : t('Change password')}</button></div>
           </form>}
           {/* The profile's own actions close the sheet, so they sit at the very end, after the password section. */}
-          <div className="modal-actions profile-actions"><button className="text-button profile-signout" type="button" onClick={() => { setProfileModal(false); void supabase?.auth.signOut() }}><LogOut size={14} /> Sign out</button><button className="secondary-button" type="button" onClick={() => setProfileModal(false)}>Cancel</button><button className="primary-button" type="submit" form="profile-form" disabled={profileSaving}>{profileSaving ? 'Saving…' : <><Check size={16} /> Save profile</>}</button></div>
+          <div className="modal-actions profile-actions"><button className="text-button profile-signout" type="button" onClick={() => { setProfileModal(false); void supabase?.auth.signOut() }}><LogOut size={14} /> {t('Sign out')}</button><button className="secondary-button" type="button" onClick={() => setProfileModal(false)}>{t('Cancel')}</button><button className="primary-button" type="submit" form="profile-form" disabled={profileSaving}>{profileSaving ? t('Saving…') : <><Check size={16} /> {t('Save profile')}</>}</button></div>
         </section>
       </div>}
     </div>

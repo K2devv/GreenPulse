@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { motionIsReduced } from './display-prefs'
+import { t } from './lib/i18n'
 
 const prefersReducedMotion = motionIsReduced
 
@@ -33,5 +34,5 @@ export function AnimatedNumber({ value, duration = 600 }: { value: number; durat
 
 export function StatNumber({ value, loading = false }: { value: number; loading?: boolean }) {
   if (!loading) return <AnimatedNumber value={value} />
-  return <><span className="skeleton skeleton-stat" aria-hidden="true" /><span className="sr-only">Loading</span></>
+  return <><span className="skeleton skeleton-stat" aria-hidden="true" /><span className="sr-only">{t('Loading')}</span></>
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { AlertTriangle, ChevronRight, Clock3, MapPin, Search, X, type LucideIcon } from 'lucide-react'
 import { EmptyIllustration } from './EmptyIllustration'
 import { formatReportId } from './lib/report-filters'
+import { t } from './lib/i18n'
 
 export type StatReportRow = {
   id: string
@@ -47,7 +48,7 @@ export function StatReportsModal({ icon: Icon, tone, eyebrow, title, description
   }, [])
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase()
-    return needle ? rows.filter((row) => `${row.title} ${row.category} ${row.place} ${row.status} ${row.id}`.toLowerCase().includes(needle)) : rows
+    return needle ? rows.filter((row) => `${row.title} ${row.category} ${t(row.category)} ${row.place} ${row.status} ${t(row.status)} ${row.id}`.toLowerCase().includes(needle)) : rows
   }, [query, rows])
 
   return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
@@ -59,14 +60,14 @@ export function StatReportsModal({ icon: Icon, tone, eyebrow, title, description
           <h2 id="stat-modal-title">{title}<span className="count-badge">{loading ? '…' : rows.length}</span></h2>
           <p>{description}</p>
         </div>
-        <button className="icon-button" type="button" onClick={onClose} aria-label={`Close ${title.toLowerCase()}`}><X size={19} /></button>
+        <button className="icon-button" type="button" onClick={onClose} aria-label={t('Close {title}', { title: title.toLowerCase() })}><X size={19} /></button>
       </header>
-      {rows.length >= SEARCH_FROM && <label className="search-box stat-modal-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search these reports" aria-label="Search these reports" />{query && <button type="button" onClick={() => setQuery('')} aria-label="Clear search"><X size={14} /></button>}</label>}
+      {rows.length >= SEARCH_FROM && <label className="search-box stat-modal-search"><Search size={15} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('Search these reports')} aria-label={t('Search these reports')} />{query && <button type="button" onClick={() => setQuery('')} aria-label={t('Clear search')}><X size={14} /></button>}</label>}
       <div className="stat-modal-list">
-        {loading ? <p className="stat-modal-note" role="status">Loading reports…</p> : visible.length === 0 ? <div className="empty-state">
+        {loading ? <p className="stat-modal-note" role="status">{t('Loading reports…')}</p> : visible.length === 0 ? <div className="empty-state">
           <EmptyIllustration variant="search" />
-          <strong>{rows.length ? 'No matching reports' : 'Nothing here right now'}</strong>
-          <span>{rows.length ? 'Try a different search.' : 'Reports will appear here as soon as they match.'}</span>
+          <strong>{rows.length ? t('No matching reports') : t('Nothing here right now')}</strong>
+          <span>{rows.length ? t('Try a different search.') : t('Reports will appear here as soon as they match.')}</span>
         </div> : <ul>
           {visible.map((row, index) => <li key={row.id} style={{ '--i': Math.min(index, 12) } as CSSProperties}>
             <button className="stat-row" type="button" onClick={() => onSelect(row.id)} style={{ '--cat': row.color } as CSSProperties}>
@@ -75,8 +76,8 @@ export function StatReportsModal({ icon: Icon, tone, eyebrow, title, description
                 <strong>{row.title}</strong>
                 <span className="stat-row-meta"><span>{formatReportId(row.id)}</span><span><MapPin size={11} aria-hidden="true" />{row.place}</span><span><Clock3 size={11} aria-hidden="true" />{row.createdLabel}</span></span>
                 <span className="stat-row-tags">
-                  <span className={`status-pill status-${row.status.toLowerCase().replace(/ /g, '-')}`}><i />{row.status}</span>
-                  {row.urgent && <span className="urgency-pill"><AlertTriangle size={11} aria-hidden="true" />Urgent</span>}
+                  <span className={`status-pill status-${row.status.toLowerCase().replace(/ /g, '-')}`}><i />{t(row.status)}</span>
+                  {row.urgent && <span className="urgency-pill"><AlertTriangle size={11} aria-hidden="true" />{t('Urgent')}</span>}
                 </span>
               </span>
               <ChevronRight className="stat-row-go" size={16} aria-hidden="true" />
@@ -85,10 +86,10 @@ export function StatReportsModal({ icon: Icon, tone, eyebrow, title, description
         </ul>}
       </div>
       <footer className="stat-modal-footer">
-        <span>{rows.length ? 'Select a report to open it.' : ''}</span>
+        <span>{rows.length ? t('Select a report to open it.') : ''}</span>
         <div>
           {action && rows.length > 0 && <button className="secondary-button" type="button" onClick={action.run}>{action.label}</button>}
-          <button className="primary-button" type="button" onClick={onClose}>Done</button>
+          <button className="primary-button" type="button" onClick={onClose}>{t('Done')}</button>
         </div>
       </footer>
     </section>

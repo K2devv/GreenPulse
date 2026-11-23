@@ -1,3 +1,4 @@
+import { t } from './i18n'
 /** Email and password sign-in helpers: confirmation resend cooldowns, repeat sign-ups, and user-facing auth error messages. */
 
 export type AuthStep = 'sign-in' | 'sign-up' | 'resend' | 'verify' | 'set-password'
@@ -54,51 +55,51 @@ export function describeAuthError(error: unknown, context: { step: AuthStep }): 
   const { step } = context
 
   if (code === 'email_provider_disabled' || /email logins are disabled/i.test(message)) {
-    return { message: "Email sign-in isn't available right now. Please try again later." }
+    return { message: t('Email sign-in isn\'t available right now. Please try again later.') }
   }
 
   const waitMatch = /after (\d+) seconds?/i.exec(message)
   if ((code && RATE_LIMIT_CODES.has(code)) || waitMatch || status === 429 || /rate limit/i.test(message)) {
     const retryAfterSeconds = waitMatch ? Math.max(1, Number(waitMatch[1])) : CONFIRMATION_RESEND_COOLDOWN_SECONDS
     if (step === 'sign-up' || step === 'resend') {
-      return { message: `Too many emails were requested. You can ask for another one in ${retryAfterSeconds} seconds.`, retryAfterSeconds }
+      return { message: t('Too many emails were requested. You can ask for another one in {seconds} seconds.', { seconds: retryAfterSeconds }), retryAfterSeconds }
     }
-    return { message: `Too many attempts. Wait ${retryAfterSeconds} seconds and try again.`, retryAfterSeconds }
+    return { message: t('Too many attempts. Wait {seconds} seconds and try again.', { seconds: retryAfterSeconds }), retryAfterSeconds }
   }
 
   // Supabase answers a wrong code and an expired code the same way.
   if (code === 'otp_expired' || /token has expired or is invalid/i.test(message)) {
-    return { message: 'That code is incorrect or has expired. Check the email, or send a new code.', codeRejected: true }
+    return { message: t('That code is incorrect or has expired. Check the email, or send a new code.'), codeRejected: true }
   }
 
   if (code === 'signup_disabled' || /signups not allowed/i.test(message)) {
-    return { message: "New accounts can't be created right now. Please try again later." }
+    return { message: t('New accounts can\'t be created right now. Please try again later.') }
   }
   if ((code && ACCOUNT_EXISTS_CODES.has(code)) || /already (been )?registered|already exists/i.test(message)) {
-    return { message: 'An account already uses this email address. Sign in instead.', suggestSignIn: true }
+    return { message: t('An account already uses this email address. Sign in instead.'), suggestSignIn: true }
   }
   if (code === 'email_not_confirmed' || /email not confirmed/i.test(message)) {
-    return { message: 'Confirm your email address first. Open the link we emailed you, or send a new one.', needsConfirmation: true }
+    return { message: t('Confirm your email address first. Open the link we emailed you, or send a new one.'), needsConfirmation: true }
   }
   if (code === 'invalid_credentials' || /invalid login credentials/i.test(message)) {
-    return { message: 'The email or password is incorrect.' }
+    return { message: t('The email or password is incorrect.') }
   }
 
   if (code === 'email_address_not_authorized' || /error sending .*email/i.test(message)) {
-    return { message: "We couldn't send the confirmation email. Try again in a few minutes." }
+    return { message: t('We couldn\'t send the confirmation email. Try again in a few minutes.') }
   }
   if (code === 'email_address_invalid' || code === 'validation_failed' || /unable to validate email|invalid email/i.test(message)) {
-    return { message: 'Enter a valid email address.' }
+    return { message: t('Enter a valid email address.') }
   }
 
-  if (code === 'weak_password') return { message: message ? `Choose a stronger password. ${message}` : 'Choose a stronger password.' }
-  if (code === 'same_password') return { message: 'Choose a password different from your current one.' }
-  if (code === 'reauthentication_needed') return { message: 'For security, sign out and sign in again before changing your password.' }
-  if (code === 'user_banned') return { message: 'This account is suspended. Contact the District 5 office for help.' }
+  if (code === 'weak_password') return { message: message ? t('Choose a stronger password. {message}', { message }) : t('Choose a stronger password.') }
+  if (code === 'same_password') return { message: t('Choose a password different from your current one.') }
+  if (code === 'reauthentication_needed') return { message: t('For security, sign out and sign in again before changing your password.') }
+  if (code === 'user_banned') return { message: t('This account is suspended. Contact the District 5 office for help.') }
 
   if (status === 0 || /failed to fetch|network ?error|load failed/i.test(message)) {
-    return { message: 'Could not reach the sign-in service. Check your connection and try again.' }
+    return { message: t('Could not reach the sign-in service. Check your connection and try again.') }
   }
 
-  return { message: message || FALLBACK_MESSAGE }
+  return { message: message || t(FALLBACK_MESSAGE) }
 }

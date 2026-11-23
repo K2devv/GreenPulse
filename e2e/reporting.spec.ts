@@ -151,10 +151,25 @@ test.describe('report intake', () => {
     await expect(page.getByRole('dialog', { name: 'Report an issue' })).toHaveCount(0)
   })
 
-  test('keeps the application in English without a language toggle', async ({ page }) => {
+  test('switches between English and Filipino and remembers the choice', async ({ page }) => {
     await page.goto('/')
     await expect(page.locator('html')).toHaveAttribute('lang', 'en')
-    await expect(page.locator('.language-toggle')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Report an issue' })).toBeVisible()
+    await page.getByRole('group', { name: 'Language' }).getByRole('button', { name: 'Filipino' }).click()
+    await expect(page.locator('html')).toHaveAttribute('lang', 'fil')
+    await expect(page.getByRole('button', { name: 'Mag-ulat ng problema' })).toBeVisible()
+    await expect(page.getByRole('group', { name: 'Wika' }).getByRole('button', { name: 'Filipino' })).toHaveAttribute('aria-pressed', 'true')
+
+    // The choice survives a reload, and the app opens straight in Filipino.
+    await page.reload()
+    await expect(page.locator('html')).toHaveAttribute('lang', 'fil')
+    await expect(page.getByRole('button', { name: 'Mag-ulat ng problema' })).toBeVisible()
+    await page.getByRole('button', { name: 'Mag-ulat ng problema' }).click()
+    await expect(page.getByRole('dialog', { name: 'Mag-ulat ng problema' })).toBeVisible()
+    await page.keyboard.press('Escape')
+
+    await page.getByRole('group', { name: 'Wika' }).getByRole('button', { name: 'English' }).click()
+    await expect(page.locator('html')).toHaveAttribute('lang', 'en')
     await expect(page.getByRole('button', { name: 'Report an issue' })).toBeVisible()
   })
 

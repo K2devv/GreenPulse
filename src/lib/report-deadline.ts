@@ -1,4 +1,5 @@
 import { isOpenStatus } from './report-workflow'
+import { t } from './i18n'
 
 export type DeadlineSettings = { response_sla_hours: number; high_urgency_sla_hours: number }
 export type DeadlineReport = { status: string; urgency: string; createdAt: string }
@@ -25,5 +26,5 @@ export function reportDeadline(report: DeadlineReport, settings: DeadlineSetting
   const remainingMs = created + windowMs - now
   const overdue = remainingMs <= 0
   const soon = !overdue && remainingMs <= Math.min(windowMs * 0.25, 4 * HOUR)
-  return { overdue, soon, remainingMs, label: overdue ? `Overdue ${formatCountdown(remainingMs)}` : `Due in ${formatCountdown(remainingMs)}` }
+  return { overdue, soon, remainingMs, label: overdue ? t('Overdue {countdown}', { countdown: formatCountdown(remainingMs) }) : t('Due in {countdown}', { countdown: formatCountdown(remainingMs) }) }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { SlidersHorizontal } from 'lucide-react'
 import type { DisplayPrefs } from './display-prefs'
+import { t } from './lib/i18n'
 
 const OPTIONS: { key: keyof DisplayPrefs; label: string; hint: string; staffOnly?: boolean }[] = [
   { key: 'reduceMotion', label: 'Reduce motion', hint: 'Turns off animations and transitions.' },
@@ -26,11 +27,11 @@ export function DisplaySettings({ prefs, onChange, showStaffOptions = false }: {
   }, [open])
 
   return <div className="display-settings" ref={wrapRef}>
-    <button className="icon-button" type="button" aria-label="Display settings" aria-expanded={open} aria-haspopup="true" title="Display settings" onClick={() => setOpen((current) => !current)}><SlidersHorizontal size={16} /></button>
-    {open && <div className="display-panel" role="group" aria-label="Display settings">
-      <strong>Display</strong>
+    <button className="icon-button" type="button" aria-label={t('Display settings')} aria-expanded={open} aria-haspopup="true" title={t('Display settings')} onClick={() => setOpen((current) => !current)}><SlidersHorizontal size={16} /></button>
+    {open && <div className="display-panel" role="group" aria-label={t('Display settings')}>
+      <strong>{t('Display')}</strong>
       {OPTIONS.filter((option) => showStaffOptions || !option.staffOnly).map((option) => <label className="display-option" key={option.key}>
-        <span><b>{option.label}</b><small>{option.hint}</small></span>
+        <span><b>{t(option.label)}</b><small>{t(option.hint)}</small></span>
         <input type="checkbox" role="switch" checked={prefs[option.key]} onChange={(event) => onChange({ [option.key]: event.target.checked })} />
         <i aria-hidden="true" />
       </label>)}
