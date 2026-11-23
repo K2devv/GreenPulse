@@ -59,6 +59,38 @@ export function panBy(state: ZoomState, dx: number, dy: number, photo: Size, sta
   return clampPan({ scale: state.scale, x: state.x + dx, y: state.y + dy }, photo, stage)
 }
 
+/** A rotation in quarter turns, counted up without limit so it always animates forward, as 0 to 3. */
+export const quarterTurns = (turns: number) => ((turns % 4) + 4) % 4
+
+/** A size turned by `turns` quarter turns: width and height swap on every odd turn. */
+export function rotatedSize(size: Size, turns: number): Size {
+  return quarterTurns(turns) % 2 === 1 ? { width: size.height, height: size.width } : size
+}
+
+/**
+ * The part of the photo the stage shows, as fractions of the photo (0 to 1 from its top left), for
+ * the zoom navigator.
+ */
+export function visibleRegion(state: ZoomState, photo: Size, stage: Size): { left: number; top: number; width: number; height: number } {
+  if (photo.width <= 0 || photo.height <= 0) return { left: 0, top: 0, width: 1, height: 1 }
+  const span = (offset: number, view: number, length: number) => {
+    // The stage spans -view/2 to view/2 around its middle; on the photo that is (p - offset) / scale.
+    const start = Math.max(0, Math.min(1, (-view / 2 - offset) / state.scale / length + 0.5))
+    const end = Math.max(0, Math.min(1, (view / 2 - offset) / state.scale / length + 0.5))
+    return { start, size: end - start }
+  }
+  const x = span(state.x, stage.width, photo.width)
+  const y = span(state.y, stage.height, photo.height)
+  return { left: x.start, top: y.start, width: x.size, height: y.size }
+}
+
+/** Moves the zoomed photo so the point at `fraction` of it (0 to 1 from its top left) sits in the middle of the stage. */
+export function centerOn(state: ZoomState, fraction: Point, photo: Size, stage: Size): ZoomState {
+  const x = -(fraction.x - 0.5) * photo.width * state.scale
+  const y = -(fraction.y - 0.5) * photo.height * state.scale
+  return clampPan({ scale: state.scale, x, y }, photo, stage)
+}
+
 /** The next zoom step up (`direction` 1) or down (-1) from `scale`. */
 export function stepZoom(scale: number, direction: 1 | -1): number {
   if (direction > 0) return ZOOM_STEPS.find((step) => step > scale + 0.01) ?? MAX_ZOOM

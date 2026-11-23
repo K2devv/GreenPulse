@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FITTED, MAX_ZOOM, clampPan, fitSize, panBy, pinchZoom, stepZoom, zoomAt, zoomLabel } from './photo-zoom'
+import { FITTED, MAX_ZOOM, centerOn, clampPan, fitSize, panBy, pinchZoom, quarterTurns, rotatedSize, stepZoom, visibleRegion, zoomAt, zoomLabel } from './photo-zoom'
 
 const stage = { width: 800, height: 600 }
 const photo = { width: 800, height: 500 }
@@ -80,6 +80,57 @@ describe('panBy', () => {
 
   it('does not move the fitted photo', () => {
     expect(panBy(FITTED, 150, 50, photo, stage)).toEqual(FITTED)
+  })
+})
+
+describe('rotation', () => {
+  it('counts quarter turns from 0 to 3, however far it has turned', () => {
+    expect([0, 1, 2, 3, 4, 5, 9, -1].map(quarterTurns)).toEqual([0, 1, 2, 3, 0, 1, 1, 3])
+  })
+
+  it('swaps width and height on odd turns', () => {
+    expect(rotatedSize({ width: 1600, height: 900 }, 1)).toEqual({ width: 900, height: 1600 })
+    expect(rotatedSize({ width: 1600, height: 900 }, 2)).toEqual({ width: 1600, height: 900 })
+    expect(rotatedSize({ width: 1600, height: 900 }, 7)).toEqual({ width: 900, height: 1600 })
+  })
+})
+
+describe('visibleRegion', () => {
+  it('shows the whole photo when it is fitted', () => {
+    expect(visibleRegion(FITTED, photo, stage)).toEqual({ left: 0, top: 0, width: 1, height: 1 })
+  })
+
+  it('shows the middle half at 2x', () => {
+    // At 2x the 800 x 500 photo is 1600 x 1000; the 800 x 600 stage sees x 25%–75%, y 20%–80%.
+    const region = visibleRegion({ scale: 2, x: 0, y: 0 }, photo, stage)
+    expect(region.left).toBeCloseTo(0.25)
+    expect(region.width).toBeCloseTo(0.5)
+    expect(region.top).toBeCloseTo(0.2)
+    expect(region.height).toBeCloseTo(0.6)
+  })
+
+  it('follows the pan', () => {
+    // Moving the photo 400 px right at 2x shows its left half.
+    const region = visibleRegion({ scale: 2, x: 400, y: 0 }, photo, stage)
+    expect(region.left).toBeCloseTo(0)
+    expect(region.width).toBeCloseTo(0.5)
+  })
+})
+
+describe('centerOn', () => {
+  it('brings the chosen point of the photo to the middle', () => {
+    const centered = centerOn({ scale: 2, x: 0, y: 0 }, { x: 0.375, y: 0.5 }, photo, stage)
+    expect(centered.scale).toBe(2)
+    expect(centered.x).toBe(200)
+    expect(centered.y).toBeCloseTo(0)
+  })
+
+  it('stops at the edges', () => {
+    expect(centerOn({ scale: 2, x: 0, y: 0 }, { x: 0, y: 1 }, photo, stage)).toEqual({ scale: 2, x: 400, y: -200 })
+  })
+
+  it('leaves the fitted photo centered', () => {
+    expect(centerOn(FITTED, { x: 0.1, y: 0.9 }, photo, stage)).toEqual(FITTED)
   })
 })
 
