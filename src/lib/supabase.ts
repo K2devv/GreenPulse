@@ -1,5 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
-import { isRecoveryLink, readAuthLinkError, type AuthLinkError } from './auth-link'
+import { isInviteLink, isRecoveryLink, readAuthLinkError, type AuthLinkError } from './auth-link'
 import { toPhotoVisibility } from './report-photo-access'
 import type { SessionTokens } from './session-fetch'
 
@@ -12,11 +12,12 @@ export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey)
 /**
  * What the address said about an emailed link when the app opened. It has to be read before the
  * client is created: supabase-js then removes a reset link's tokens from the address, and can sign
- * the reader in and announce PASSWORD_RECOVERY before the app has started listening for it.
+ * the reader in and announce PASSWORD_RECOVERY before the app has started listening for it. An
+ * accepted invitation only announces SIGNED_IN, so the address is the one sign that it was an invite.
  */
-export const openedFromAuthLink: { recovery: boolean; error: AuthLinkError | null } = typeof window === 'undefined'
-  ? { recovery: false, error: null }
-  : { recovery: isRecoveryLink(window.location.href), error: readAuthLinkError(window.location.href) }
+export const openedFromAuthLink: { recovery: boolean; invite: boolean; error: AuthLinkError | null } = typeof window === 'undefined'
+  ? { recovery: false, invite: false, error: null }
+  : { recovery: isRecoveryLink(window.location.href), invite: isInviteLink(window.location.href), error: readAuthLinkError(window.location.href) }
 
 export const supabase = isSupabaseConfigured ? createClient(supabaseUrl!, supabaseAnonKey!) : null
 

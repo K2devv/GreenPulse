@@ -450,15 +450,17 @@ function App() {
   // Read once on the first render, before the effects below clear it: a code step this tab was
   // showing before a reload. What the address said about an emailed link was read before sign-in started.
   const [bootAuth] = useState(() => {
-    if (!supabase) return { codeStep: null, linkError: null, recoveryLink: false }
+    if (!supabase) return { codeStep: null, linkError: null, recoveryLink: false, inviteLink: false }
     let codeStep: PendingCode | null = null
     try {
       codeStep = parsePendingCode(sessionStorage.getItem(PENDING_CODE_KEY), Date.now())
     } catch {
       codeStep = null
     }
-    return { codeStep, linkError: openedFromAuthLink.error, recoveryLink: openedFromAuthLink.recovery }
+    return { codeStep, linkError: openedFromAuthLink.error, recoveryLink: openedFromAuthLink.recovery, inviteLink: openedFromAuthLink.invite }
   })
+  // The new-password step opened from an accepted invitation (no password yet) rather than a reset.
+  const [newPasswordForInvite, setNewPasswordForInvite] = useState(false)
   const bootAuthHandled = useRef(false)
   // The new-password fields, for the live checklist under them.
   const [newPassword, setNewPassword] = useState('')
@@ -867,13 +869,14 @@ function App() {
   useEffect(() => {
     if (!supabase || !authReady || bootAuthHandled.current) return
     bootAuthHandled.current = true
-    const { codeStep, linkError, recoveryLink } = bootAuth
+    const { codeStep, linkError, recoveryLink, inviteLink } = bootAuth
     // A reset link (Supabase's default template) that signed the reader in: ask for the new password.
-    if (recoveryLink && session) {
-      openNewPasswordStep()
+    // An accepted invitation signs the responder in without one, so ask them to choose it now.
+    if ((recoveryLink || inviteLink) && session) {
+      openNewPasswordStep(inviteLink)
       return
     }
-    if (linkError || recoveryLink) {
+    if (linkError || recoveryLink || inviteLink) {
       if (linkError) window.history.replaceState(window.history.state, '', withoutAuthLinkError(window.location.href))
       if (session) {
         pushToast({ tone: 'info', message: t('That email link has expired or was already used.') })
@@ -1775,19 +1778,28 @@ function App() {
     setNewPasswordConfirm('')
   }
 
-  /** The step after a verified reset. Uses only state setters, so the auth listener's first-render copy is safe to call. */
-  function openNewPasswordStep() {
+  /**
+   * The step after a verified reset, or after an accepted invitation (`forInvite`), which signs the
+   * responder in without a password. Uses only state setters, so the auth listener's first-render copy is safe to call.
+   */
+  function openNewPasswordStep(forInvite = false) {
     setPendingConfirmation(null)
     setAuthMessage('')
     setAuthMessageSuccess(false)
     setAuthSuggestion(null)
+    setNewPasswordForInvite(forInvite)
     setAuthModal('new-password')
   }
 
-  /** Closing by hand (X, Escape, Back). Leaving the new-password step keeps the reset's sign-in, so say where to finish. */
+  /** Closing by hand (X, Escape, Back). Leaving the new-password step keeps the link's sign-in, so say where to finish. */
   function dismissAuthModal() {
     if (authModal === 'new-password' && session) {
-      pushToast({ tone: 'info', message: t('You’re signed in. To choose a new password later, open your profile and use Sign-in password.') })
+      pushToast({
+        tone: 'info',
+        message: newPasswordForInvite
+          ? t('You’re signed in. Before you sign out, choose a password from your profile under Sign-in password.')
+          : t('You’re signed in. To choose a new password later, open your profile and use Sign-in password.'),
+      })
     }
     closeAuthModal()
   }
@@ -1928,6 +1940,12 @@ function App() {
           if (described.sessionEnded) setAuthSuggestion('reset')
           return
         }
+        // An invited account had no password before, so there is no other sign-in to end.
+        if (newPasswordForInvite) {
+          closeAuthModal()
+          pushToast({ message: t('Password saved. Next time, sign in with your email address and this password.') })
+          return
+        }
         // Whoever knew the old password may still be signed in somewhere, so end every other session.
         const { error: signOutError } = await supabase.auth.signOut({ scope: 'others' }).catch((caught: unknown) => ({ error: caught }))
         closeAuthModal()
@@ -1987,10 +2005,13 @@ function App() {
   const confirmationResendSeconds = pendingConfirmation ? secondsUntilResend(pendingConfirmation.sentAt, resendClock, pendingConfirmation.cooldownSeconds) : 0
   const authTitle = authModal === 'sign-up' ? t('Create your account')
     : authModal === 'reset' ? t('Reset your password')
-      : authModal === 'new-password' ? t('Choose a new password')
+      : authModal === 'new-password' ? (newPasswordForInvite ? t('Choose your password') : t('Choose a new password'))
         : t('Welcome back')
   const authSubtitle = authModal === 'sign-up' ? t('Create an account with your email address and a password.')
     : authModal === 'reset' ? t('Enter the email address you sign in with. We’ll send you a 6-digit code.')
+      : authModal === 'new-password' && newPasswordForInvite ? (session?.user.email
+        ? t('Invitation accepted for {email}. Choose the password you’ll sign in with from now on.', { email: session.user.email })
+        : t('Invitation accepted. Choose the password you’ll sign in with from now on.'))
       : authModal === 'new-password' ? (session?.user.email
         ? t('Signed in as {email}. Choose the password you’ll use from now on.', { email: session.user.email })
         : t('You’re signed in. Set the password you’ll use next time.'))

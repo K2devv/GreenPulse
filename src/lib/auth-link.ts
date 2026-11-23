@@ -37,14 +37,27 @@ export function readAuthLinkError(href: string): AuthLinkError | null {
   return null
 }
 
-/** True when `href` is where a password reset link lands: the session tokens in the fragment, marked `type=recovery`. */
-export function isRecoveryLink(href: string): boolean {
+/** True when `href` carries the session tokens of an emailed link of this `type` in the fragment. */
+function isSignInLink(href: string, type: 'recovery' | 'invite') {
   try {
     const params = fragmentParams(new URL(href))
-    return params.get('type') === 'recovery' && params.has('access_token')
+    return params.get('type') === type && params.has('access_token')
   } catch {
     return false
   }
+}
+
+/** True when `href` is where a password reset link lands: the session tokens in the fragment, marked `type=recovery`. */
+export function isRecoveryLink(href: string): boolean {
+  return isSignInLink(href, 'recovery')
+}
+
+/**
+ * True when `href` is where an accepted invitation lands, marked `type=invite`. Invitations
+ * (api/admin-create-responder.ts) come without a password, so the app asks for one next.
+ */
+export function isInviteLink(href: string): boolean {
+  return isSignInLink(href, 'invite')
 }
 
 /** `href` without Supabase's link-error parameters; anything else in the address is kept. */

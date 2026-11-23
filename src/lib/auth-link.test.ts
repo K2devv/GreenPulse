@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isRecoveryLink, readAuthLinkError, withoutAuthLinkError } from './auth-link'
+import { isInviteLink, isRecoveryLink, readAuthLinkError, withoutAuthLinkError } from './auth-link'
 
 describe('isRecoveryLink', () => {
   it('recognises where a password reset link lands', () => {
@@ -13,6 +13,20 @@ describe('isRecoveryLink', () => {
     expect(isRecoveryLink('https://greenpulse.example/#error=access_denied&error_code=otp_expired')).toBe(false)
     expect(isRecoveryLink('https://greenpulse.example/')).toBe(false)
     expect(isRecoveryLink('not a url')).toBe(false)
+  })
+})
+
+describe('isInviteLink', () => {
+  it('recognises where an accepted invitation lands', () => {
+    expect(isInviteLink('https://greenpulse.example/#access_token=abc&expires_in=3600&refresh_token=r&token_type=bearer&type=invite')).toBe(true)
+  })
+
+  it('ignores reset links, errors, and ordinary addresses', () => {
+    expect(isInviteLink('https://greenpulse.example/#access_token=abc&type=recovery')).toBe(false)
+    expect(isInviteLink('https://greenpulse.example/#type=invite')).toBe(false)
+    expect(isInviteLink('https://greenpulse.example/?type=invite&access_token=abc')).toBe(false)
+    expect(isInviteLink('https://greenpulse.example/#error=access_denied&error_code=otp_expired')).toBe(false)
+    expect(isInviteLink('not a url')).toBe(false)
   })
 })
 
