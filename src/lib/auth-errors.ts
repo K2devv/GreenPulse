@@ -1,7 +1,8 @@
 import { t } from './i18n'
 /** Email and password sign-in helpers: confirmation resend cooldowns, repeat sign-ups, and user-facing auth error messages. */
 
-export type AuthStep = 'sign-in' | 'sign-up' | 'resend' | 'verify' | 'set-password'
+/** 'set-password' is Profile settings; 'reset-password' is choosing a new password after a reset code. */
+export type AuthStep = 'sign-in' | 'sign-up' | 'resend' | 'verify' | 'set-password' | 'reset-password'
 
 export type AuthErrorDescription = {
   message: string
@@ -12,6 +13,8 @@ export type AuthErrorDescription = {
   needsConfirmation?: boolean
   /** The confirmation code was wrong or has expired. */
   codeRejected?: boolean
+  /** The sign-in session is gone (expired, revoked, or signed out in another tab). */
+  sessionEnded?: boolean
 }
 
 /** Supabase sends at most about one confirmation email per address per minute. */
@@ -96,6 +99,13 @@ export function describeAuthError(error: unknown, context: { step: AuthStep }): 
   if (code === 'same_password') return { message: t('Choose a password different from your current one.') }
   if (code === 'reauthentication_needed') return { message: t('For security, sign out and sign in again before changing your password.') }
   if (code === 'user_banned') return { message: t('This account is suspended. Contact the District 5 office for help.') }
+
+  // supabase-js says "Auth session missing!" when nobody is signed in; the server names a revoked session.
+  if (code === 'session_not_found' || code === 'session_expired' || code === 'refresh_token_not_found' || /auth session missing/i.test(message)) {
+    return step === 'reset-password'
+      ? { message: t('Your password reset timed out. Send yourself a new code to finish.'), sessionEnded: true }
+      : { message: t('You’ve been signed out. Sign in again and try once more.'), sessionEnded: true }
+  }
 
   if (status === 0 || /failed to fetch|network ?error|load failed/i.test(message)) {
     return { message: t('Could not reach the sign-in service. Check your connection and try again.') }

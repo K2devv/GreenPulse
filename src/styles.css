@@ -869,6 +869,17 @@ html[data-motion="reduced"] .map-pin-urgent::after, html[data-motion="reduced"] 
 .auth-modal .modal-actions { justify-content: space-between; align-items: center; }
 .auth-modal .modal-actions .text-button { padding: 6px 0; font-size: var(--fs-sm); text-align: left; }
 .auth-modal .auth-forgot { align-self: flex-end; margin-top: -6px; padding: 4px 0; font-size: var(--fs-sm); }
+/* A password input with a show/hide button inside its right edge (PasswordField.tsx). */
+.password-input { position: relative; display: block; }
+.field-label .password-input input { padding-right: 46px; }
+.password-toggle { position: absolute; top: 1px; right: 1px; bottom: 1px; display: inline-grid; place-items: center; width: 42px; min-height: 0; padding: 0; border: 0; border-radius: 0 var(--radius-md) var(--radius-md) 0; color: var(--text-muted); background: transparent; cursor: pointer; transition: color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out); }
+.password-toggle:hover { color: var(--text); background: var(--surface-2); }
+.password-toggle[aria-pressed="true"] { color: var(--accent-text); }
+/* The new-password step's live checklist: each rule turns green once it is met. */
+.password-checklist { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: -3px 0 0; padding: 0; list-style: none; color: var(--text-muted); font-size: var(--fs-sm); }
+.password-checklist li { display: inline-flex; align-items: center; gap: 6px; transition: color var(--dur-fast) var(--ease-out); }
+.password-checklist li.is-met { color: var(--accent-text); font-weight: 600; }
+.password-checklist li.is-met svg { animation: pop-in var(--dur-med) var(--ease-spring); }
 .profile-actions { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 /* ---------- Modals: spring entrance, brand hairline, softer depth ---------- */
 .modal-backdrop { background: rgba(12, 22, 16, .55); backdrop-filter: blur(10px) saturate(130%); -webkit-backdrop-filter: blur(10px) saturate(130%); }
