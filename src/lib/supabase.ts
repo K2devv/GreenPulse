@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { isRecoveryLink, readAuthLinkError, type AuthLinkError } from './auth-link'
 import { toPhotoVisibility } from './report-photo-access'
 import type { SessionTokens } from './session-fetch'
 
@@ -7,6 +8,16 @@ const supabaseUrl = environment.VITE_SUPABASE_URL
 const supabaseAnonKey = environment.VITE_SUPABASE_ANON_KEY
 
 export const isSupabaseConfigured = Boolean(supabaseUrl && supabaseAnonKey)
+
+/**
+ * What the address said about an emailed link when the app opened. It has to be read before the
+ * client is created: supabase-js then removes a reset link's tokens from the address, and can sign
+ * the reader in and announce PASSWORD_RECOVERY before the app has started listening for it.
+ */
+export const openedFromAuthLink: { recovery: boolean; error: AuthLinkError | null } = typeof window === 'undefined'
+  ? { recovery: false, error: null }
+  : { recovery: isRecoveryLink(window.location.href), error: readAuthLinkError(window.location.href) }
+
 export const supabase = isSupabaseConfigured ? createClient(supabaseUrl!, supabaseAnonKey!) : null
 
 /**

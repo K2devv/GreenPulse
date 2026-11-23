@@ -10,6 +10,7 @@ import {
   Camera,
   Check,
   ChevronDown,
+  Circle,
   Clock3,
   FileSearch,
   ClipboardCheck,
@@ -48,12 +49,15 @@ import { Capacitor } from '@capacitor/core'
 import { App as NativeApp } from '@capacitor/app'
 import { Geolocation } from '@capacitor/geolocation'
 import { topBackLayer, topEscapeLayer, type BackLayer } from './lib/native-back'
-import { attachReporterNames, getAuthRedirectUrl, isSupabaseConfigured, reporterIdsOf, sessionTokens, supabase, toReport, type EnvironmentalFollowUp, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
+import { attachReporterNames, getAuthRedirectUrl, isSupabaseConfigured, openedFromAuthLink, reporterIdsOf, sessionTokens, supabase, toReport, type EnvironmentalFollowUp, type Profile, type ReportEvent, type ReportResolutionFeedback, type ReportRow, type Team } from './lib/supabase'
 import { apiUrl } from './lib/api-url'
 import { fetchWithSession } from './lib/session-fetch'
 import { THEME_CHOICE_KEY, oppositeTheme, readThemeChoice, resolveTheme, type Theme } from './lib/theme-preference'
 import { normalizePhoneNumber } from './lib/phone-number'
 import { CONFIRMATION_RESEND_COOLDOWN_SECONDS, describeAuthError, isExistingAccountSignUp, secondsUntilResend } from './lib/auth-errors'
+import { withoutAuthLinkError } from './lib/auth-link'
+import { checkNewPassword } from './lib/password-rules'
+import { PENDING_CODE_KEY, isCodeStillFresh, parsePendingCode, type CodePurpose, type PendingCode } from './lib/pending-code'
 import { StaffWorkflowPanel } from './StaffWorkflowPanel'
 import { AnimatedNumber } from './AnimatedNumber'
 import { HeroPanel, type HeroStat } from './HeroPanel'
@@ -99,6 +103,7 @@ import { barangayPinPoint } from './lib/barangay-center'
 import { canHandleEscalation, type SlaEscalation } from './lib/sla-escalations'
 import { EscalationList } from './EscalationList'
 import { EmailCodeStep, type CodeStatus } from './EmailCodeStep'
+import { PasswordField } from './PasswordField'
 import { NotificationBell, NotificationPanel } from './NotificationPanel'
 import { LanguageToggle } from './LanguageToggle'
 import { useDialogFocusTrap } from './useDialogFocusTrap'
@@ -253,8 +258,6 @@ const categoryOptions: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage
 const intakeCategories: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage']
 /** The sign-in dialog's screens. 'reset' asks for an email to send a reset code to; 'new-password' follows a verified reset. */
 type AuthMode = 'sign-in' | 'sign-up' | 'reset' | 'new-password'
-/** What an emailed 6-digit code confirms: a new account, or a password reset. */
-type CodePurpose = 'signup' | 'recovery'
 const STAFF_PAGE_SIZE = 50
 /** Reports shown at a time in the phone report list. */
 const FEED_PHONE_PAGE = 8
@@ -440,7 +443,26 @@ function App() {
   const [authMessageSuccess, setAuthMessageSuccess] = useState(false)
   const [authBusy, setAuthBusy] = useState(false)
   // A sign-up or password reset waiting for its emailed code. `sentAt` and `cooldownSeconds` drive the resend countdown.
-  const [pendingConfirmation, setPendingConfirmation] = useState<{ email: string; sentAt: number; cooldownSeconds: number; purpose: CodePurpose } | null>(null)
+  const [pendingConfirmation, setPendingConfirmation] = useState<PendingCode | null>(null)
+  // The last code emailed in this tab, kept after the code step closes. Asking for a reset code for
+  // the same address again while the resend limit runs reopens the step instead of failing.
+  const lastCodeSent = useRef<PendingCode | null>(null)
+  // Read once on the first render, before the effects below clear it: a code step this tab was
+  // showing before a reload. What the address said about an emailed link was read before sign-in started.
+  const [bootAuth] = useState(() => {
+    if (!supabase) return { codeStep: null, linkError: null, recoveryLink: false }
+    let codeStep: PendingCode | null = null
+    try {
+      codeStep = parsePendingCode(sessionStorage.getItem(PENDING_CODE_KEY), Date.now())
+    } catch {
+      codeStep = null
+    }
+    return { codeStep, linkError: openedFromAuthLink.error, recoveryLink: openedFromAuthLink.recovery }
+  })
+  const bootAuthHandled = useRef(false)
+  // The new-password fields, for the live checklist under them.
+  const [newPassword, setNewPassword] = useState('')
+  const [newPasswordConfirm, setNewPasswordConfirm] = useState('')
   const [resendClock, setResendClock] = useState(() => Date.now())
   // The 6-digit code step: what the boxes show, the latest error, and a counter that clears and shakes them.
   const [codeStatus, setCodeStatus] = useState<CodeStatus>('waiting')
@@ -448,7 +470,7 @@ function App() {
   const [codeErrorNonce, setCodeErrorNonce] = useState(0)
   const [codeNotice, setCodeNotice] = useState('')
   const [codeResendBusy, setCodeResendBusy] = useState(false)
-  const [authSuggestion, setAuthSuggestion] = useState<'sign-in' | 'sign-up' | null>(null)
+  const [authSuggestion, setAuthSuggestion] = useState<'sign-in' | 'sign-up' | 'reset' | null>(null)
   const [authPrefill, setAuthPrefill] = useState<{ email?: string; displayName?: string }>({})
   const [passwordSaving, setPasswordSaving] = useState(false)
   const [passwordMessage, setPasswordMessage] = useState('')
@@ -467,10 +489,22 @@ function App() {
     return () => window.clearInterval(timer)
   }, [pendingConfirmation])
 
+  // Keeps the open code step across a reload of this tab (see pending-code.ts) and remembers the last code sent.
+  useEffect(() => {
+    if (pendingConfirmation && pendingConfirmation.sentAt > 0) lastCodeSent.current = pendingConfirmation
+    try {
+      if (!pendingConfirmation) sessionStorage.removeItem(PENDING_CODE_KEY)
+      else if (pendingConfirmation.sentAt > 0) sessionStorage.setItem(PENDING_CODE_KEY, JSON.stringify(pendingConfirmation))
+    } catch {
+      // Storage can be blocked; the step then just doesn't survive a reload.
+    }
+  }, [pendingConfirmation])
+
   // A sign-in from elsewhere (another tab, or a link in an older email) closes the modal. While a code is
   // being checked or celebrated, the code step closes the modal itself after its success animation.
+  // A reset link signs the reader in and opens the new-password step in the same update, so that step stays.
   useEffect(() => {
-    if (session && codeStatus !== 'verifying' && codeStatus !== 'success') closeAuthModal()
+    if (session && authModal !== 'new-password' && codeStatus !== 'verifying' && codeStatus !== 'success') closeAuthModal()
   }, [session])
 
   useEffect(() => {
@@ -818,13 +852,9 @@ function App() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
       setSession(nextSession)
       setAuthReady(true)
-      // Opened from a password reset link (the default Supabase template): ask for the new password.
-      if (event === 'PASSWORD_RECOVERY') {
-        setPendingConfirmation(null)
-        setAuthMessage('')
-        setAuthSuggestion(null)
-        setAuthModal('new-password')
-      }
+      // A verified reset code, or a reset link that finished after this listener started: ask for the
+      // new password. A link that finished earlier is caught by the check after this effect.
+      if (event === 'PASSWORD_RECOVERY') openNewPasswordStep()
       if (!nextSession) {
         setProfile(null)
         setStaffMode(false)
@@ -832,6 +862,32 @@ function App() {
     })
     return () => subscription.unsubscribe()
   }, [])
+
+  // Once auth is ready: explain an email link that couldn't be used, or bring back a code step lost to a reload.
+  useEffect(() => {
+    if (!supabase || !authReady || bootAuthHandled.current) return
+    bootAuthHandled.current = true
+    const { codeStep, linkError, recoveryLink } = bootAuth
+    // A reset link (Supabase's default template) that signed the reader in: ask for the new password.
+    if (recoveryLink && session) {
+      openNewPasswordStep()
+      return
+    }
+    if (linkError || recoveryLink) {
+      if (linkError) window.history.replaceState(window.history.state, '', withoutAuthLinkError(window.location.href))
+      if (session) {
+        pushToast({ tone: 'info', message: t('That email link has expired or was already used.') })
+        return
+      }
+      openAuthModal('reset')
+      setAuthMessage(t('That email link has expired or was already used. Send yourself a new code below.'))
+      return
+    }
+    if (codeStep && !session) {
+      openAuthModal(codeStep.purpose === 'recovery' ? 'reset' : 'sign-up', { prefill: { email: codeStep.email } })
+      awaitConfirmation(codeStep.email, codeStep.sentAt, codeStep.purpose, codeStep.cooldownSeconds)
+    }
+  }, [authReady, session])
 
   useEffect(() => {
     if (!themeChoice) return
@@ -1643,7 +1699,7 @@ function App() {
     }
     const close: Record<BackLayer, () => void> = {
       palette: () => setPaletteOpen(false),
-      auth: closeAuthModal,
+      auth: dismissAuthModal,
       profile: () => setProfileModal(false),
       responder: () => { if (!responderBusy) setResponderModalOpen(false) },
       team: () => setTeamModalOpen(false),
@@ -1705,6 +1761,8 @@ function App() {
     setAuthModal(mode)
     setAuthMessage('')
     setAuthMessageSuccess(false)
+    setNewPassword('')
+    setNewPasswordConfirm('')
   }
 
   function closeAuthModal() {
@@ -1713,6 +1771,25 @@ function App() {
     setAuthSuggestion(null)
     setAuthMessage('')
     setAuthMessageSuccess(false)
+    setNewPassword('')
+    setNewPasswordConfirm('')
+  }
+
+  /** The step after a verified reset. Uses only state setters, so the auth listener's first-render copy is safe to call. */
+  function openNewPasswordStep() {
+    setPendingConfirmation(null)
+    setAuthMessage('')
+    setAuthMessageSuccess(false)
+    setAuthSuggestion(null)
+    setAuthModal('new-password')
+  }
+
+  /** Closing by hand (X, Escape, Back). Leaving the new-password step keeps the reset's sign-in, so say where to finish. */
+  function dismissAuthModal() {
+    if (authModal === 'new-password' && session) {
+      pushToast({ tone: 'info', message: t('You’re signed in. To choose a new password later, open your profile and use Sign-in password.') })
+    }
+    closeAuthModal()
   }
 
   function showAuthError(error: unknown, context: Parameters<typeof describeAuthError>[1]) {
@@ -1725,13 +1802,13 @@ function App() {
 
   function followAuthSuggestion() {
     if (!authModal || !authSuggestion) return
-    openAuthModal(authSuggestion, { prefill: authPrefill })
+    openAuthModal(authSuggestion, { prefill: { ...authPrefill, email: authPrefill.email || session?.user.email } })
   }
 
   /** Shows the 6-digit code step. `sentAt` 0 allows an immediate resend. */
-  function awaitConfirmation(email: string, sentAt: number, purpose: CodePurpose = 'signup') {
+  function awaitConfirmation(email: string, sentAt: number, purpose: CodePurpose = 'signup', cooldownSeconds = CONFIRMATION_RESEND_COOLDOWN_SECONDS) {
     setResendClock(Date.now())
-    setPendingConfirmation({ email, sentAt, cooldownSeconds: CONFIRMATION_RESEND_COOLDOWN_SECONDS, purpose })
+    setPendingConfirmation({ email, sentAt, cooldownSeconds, purpose })
     setCodeStatus('waiting')
     setCodeError('')
     setCodeNotice('')
@@ -1785,6 +1862,8 @@ function App() {
         return
       }
       setCodeStatus('success')
+      // The code is used up, so asking again must send a new one.
+      lastCodeSent.current = null
       // Let the success animation play before moving on.
       window.setTimeout(() => {
         if (recovery) {
@@ -1819,6 +1898,13 @@ function App() {
     setAuthBusy(true)
     try {
       if (mode === 'reset') {
+        const recent = lastCodeSent.current
+        if (isCodeStillFresh(recent, email, 'recovery', Date.now())) {
+          // The code already sent still works, and Supabase would refuse another email this soon.
+          awaitConfirmation(recent.email, recent.sentAt, 'recovery', recent.cooldownSeconds)
+          setCodeNotice(t('We already sent a code to {email}. Enter it below.', { email: recent.email }))
+          return
+        }
         // Supabase answers the same whether or not an account uses this address, so the next
         // step never reveals which addresses are registered.
         const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: getAuthRedirectUrl() })
@@ -1831,22 +1917,21 @@ function App() {
       }
 
       if (mode === 'new-password') {
-        const confirmation = String(formData.get('confirm_password') ?? '')
-        if (password.length < 8) {
-          setAuthMessage(t('Use at least 8 characters.'))
-          return
-        }
-        if (password !== confirmation) {
-          setAuthMessage(t('The passwords do not match.'))
+        const check = checkNewPassword(password, String(formData.get('confirm_password') ?? ''))
+        if (check.error) {
+          setAuthMessage(check.error)
           return
         }
         const { error } = await supabase.auth.updateUser({ password })
         if (error) {
-          showAuthError(error, { step: 'set-password' })
+          const described = showAuthError(error, { step: 'reset-password' })
+          if (described.sessionEnded) setAuthSuggestion('reset')
           return
         }
+        // Whoever knew the old password may still be signed in somewhere, so end every other session.
+        const { error: signOutError } = await supabase.auth.signOut({ scope: 'others' }).catch((caught: unknown) => ({ error: caught }))
         closeAuthModal()
-        pushToast({ message: t('Password changed. You’re signed in.') })
+        pushToast({ message: signOutError ? t('Password changed. You’re signed in.') : t('Password changed. You’re signed in, and other devices were signed out.') })
         return
       }
 
@@ -1887,7 +1972,7 @@ function App() {
       }
       awaitConfirmation(email, Date.now())
     } catch (error) {
-      showAuthError(error, { step: mode === 'reset' ? 'resend' : mode === 'new-password' ? 'set-password' : mode })
+      showAuthError(error, { step: mode === 'reset' ? 'resend' : mode === 'new-password' ? 'reset-password' : mode })
     } finally {
       setAuthBusy(false)
     }
@@ -1906,8 +1991,11 @@ function App() {
         : t('Welcome back')
   const authSubtitle = authModal === 'sign-up' ? t('Create an account with your email address and a password.')
     : authModal === 'reset' ? t('Enter the email address you sign in with. We’ll send you a 6-digit code.')
-      : authModal === 'new-password' ? t('You’re signed in. Set the password you’ll use next time.')
+      : authModal === 'new-password' ? (session?.user.email
+        ? t('Signed in as {email}. Choose the password you’ll use from now on.', { email: session.user.email })
+        : t('You’re signed in. Set the password you’ll use next time.'))
         : t('Sign in with your email and password. You can also submit a guest report with a tracking code.')
+  const newPasswordCheck = checkNewPassword(newPassword, newPasswordConfirm)
 
   async function savePassword(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -1915,14 +2003,10 @@ function App() {
     const form = event.currentTarget
     const formData = new FormData(form)
     const password = String(formData.get('new_password') ?? '')
-    const confirmation = String(formData.get('confirm_password') ?? '')
+    const check = checkNewPassword(password, String(formData.get('confirm_password') ?? ''))
     setPasswordMessageSuccess(false)
-    if (password.length < 8) {
-      setPasswordMessage(t('Use at least 8 characters.'))
-      return
-    }
-    if (password !== confirmation) {
-      setPasswordMessage(t('The passwords do not match.'))
+    if (check.error) {
+      setPasswordMessage(check.error)
       return
     }
     setPasswordSaving(true)
@@ -3511,9 +3595,10 @@ function App() {
         </section>
       </div>}
 
-      {authModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeAuthModal() }}>
+      {/* A stray tap outside doesn't close the new-password step: the reset would be left half done. */}
+      {authModal && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && authModal !== 'new-password') closeAuthModal() }}>
         {pendingConfirmation ? <section className="report-modal auth-modal auth-code-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
-          <button className="icon-button auth-code-close" type="button" onClick={closeAuthModal} aria-label={t('Close sign-in form')}><X size={19} /></button>
+          <button className="icon-button auth-code-close" type="button" onClick={dismissAuthModal} aria-label={t('Close sign-in form')}><X size={19} /></button>
           <EmailCodeStep
             key={pendingConfirmation.email}
             email={pendingConfirmation.email}
@@ -3530,22 +3615,28 @@ function App() {
             purpose={pendingConfirmation.purpose}
           />
         </section> : <section className="report-modal auth-modal" role="dialog" aria-modal="true" aria-labelledby="auth-title">
-          <div className="modal-header"><div><p className="eyebrow">{t('DISTRICT 5 COMMUNITY ACCOUNT')}</p><h2 id="auth-title">{authTitle}</h2><p>{authSubtitle}</p></div><button className="icon-button" type="button" onClick={closeAuthModal} aria-label={t('Close sign-in form')}><X size={19} /></button></div>
+          <div className="modal-header"><div><p className="eyebrow">{t('DISTRICT 5 COMMUNITY ACCOUNT')}</p><h2 id="auth-title">{authTitle}</h2><p>{authSubtitle}</p></div><button className="icon-button" type="button" onClick={dismissAuthModal} aria-label={t('Close sign-in form')}><X size={19} /></button></div>
           <form onSubmit={submitAuth}>
             {authModal === 'sign-up' && <label className="field-label">{t('Name')}<input name="display_name" autoComplete="name" maxLength={80} defaultValue={authPrefill.displayName} required /></label>}
             {authModal !== 'new-password' && <label className="field-label">{t('Email')}<input name="email" type="email" autoComplete="email" maxLength={254} defaultValue={authPrefill.email} required /></label>}
-            {(authModal === 'sign-in' || authModal === 'sign-up') && <label className="field-label">{t('Password')}<input name="password" type="password" autoComplete={authModal === 'sign-up' ? 'new-password' : 'current-password'} minLength={authModal === 'sign-up' ? 8 : undefined} placeholder={authModal === 'sign-up' ? t('At least 8 characters') : undefined} required /></label>}
+            {(authModal === 'sign-in' || authModal === 'sign-up') && <PasswordField label={t('Password')} name="password" autoComplete={authModal === 'sign-up' ? 'new-password' : 'current-password'} minLength={authModal === 'sign-up' ? 8 : undefined} placeholder={authModal === 'sign-up' ? t('At least 8 characters') : undefined} required />}
             {authModal === 'sign-in' && <button className="text-button auth-forgot" type="button" disabled={authBusy} onClick={(event) => {
               const typed = (event.currentTarget.form?.elements.namedItem('email') as HTMLInputElement | null)?.value.trim()
               openAuthModal('reset', { prefill: { ...authPrefill, email: typed || authPrefill.email } })
             }}>{t('Forgot password?')}</button>}
             {authModal === 'new-password' && <>
               {session?.user.email && <input type="email" name="username" autoComplete="username" value={session.user.email} readOnly hidden />}
-              <label className="field-label">{t('New password')}<input name="password" type="password" autoComplete="new-password" minLength={8} placeholder={t('At least 8 characters')} required /></label>
-              <label className="field-label">{t('Confirm new password')}<input name="confirm_password" type="password" autoComplete="new-password" minLength={8} required /></label>
+              <PasswordField label={t('New password')} name="password" autoComplete="new-password" minLength={8} placeholder={t('At least 8 characters')} required value={newPassword} onChange={(event) => setNewPassword(event.target.value)} />
+              <PasswordField label={t('Confirm new password')} name="confirm_password" autoComplete="new-password" minLength={8} required value={newPasswordConfirm} onChange={(event) => setNewPasswordConfirm(event.target.value)} />
+              <ul className="password-checklist" aria-label={t('Password requirements')}>
+                {[{ met: newPasswordCheck.longEnough, label: t('At least 8 characters') }, { met: newPasswordCheck.matches, label: t('Both passwords match') }].map((rule) => <li key={rule.label} className={rule.met ? 'is-met' : undefined}>
+                  {rule.met ? <Check size={14} strokeWidth={2.6} aria-hidden="true" /> : <Circle size={14} aria-hidden="true" />}
+                  <span className="sr-only">{rule.met ? t('Done:') : t('Not yet:')}</span>{rule.label}
+                </li>)}
+              </ul>
             </>}
             {authMessage && <p className={authMessageSuccess ? 'auth-success' : 'form-error'} role={authMessageSuccess ? 'status' : 'alert'}>{authMessage}</p>}
-            {authSuggestion && <button className="text-button" type="button" onClick={followAuthSuggestion} disabled={authBusy}>{authSuggestion === 'sign-up' ? t('Create an account instead') : t('Sign in instead')}</button>}
+            {authSuggestion && <button className="text-button" type="button" onClick={followAuthSuggestion} disabled={authBusy}>{authSuggestion === 'sign-up' ? t('Create an account instead') : authSuggestion === 'reset' ? t('Send a new code') : t('Sign in instead')}</button>}
             <div className="modal-actions">
               {authModal === 'new-password' ? <span /> : <button className="text-button" type="button" onClick={() => openAuthModal(authModal === 'sign-in' ? 'sign-up' : 'sign-in', { prefill: authPrefill })} disabled={authBusy}>{authModal === 'sign-up' ? t('Already have an account? Sign in') : authModal === 'reset' ? t('Back to sign in') : t('Create an account')}</button>}
               <button className="primary-button" type="submit" disabled={authBusy}>{authBusy ? t('Please wait…') : authModal === 'sign-up' ? t('Create account') : authModal === 'reset' ? t('Send code') : authModal === 'new-password' ? t('Save password') : t('Sign in')}</button>
@@ -3566,8 +3657,8 @@ function App() {
           </form>
           {session?.user.email && <form className="password-settings" onSubmit={savePassword}>
             <div><h3>{t('Sign-in password')}</h3><p>{t('Change the password you use to sign in. It is saved on its own, separately from your profile.')}</p></div>
-            <label className="field-label">{t('New password')}<input name="new_password" type="password" minLength={8} autoComplete="new-password" required /></label>
-            <label className="field-label">{t('Confirm new password')}<input name="confirm_password" type="password" minLength={8} autoComplete="new-password" required /></label>
+            <PasswordField label={t('New password')} name="new_password" minLength={8} autoComplete="new-password" required />
+            <PasswordField label={t('Confirm new password')} name="confirm_password" minLength={8} autoComplete="new-password" required />
             {passwordMessage && <p className={passwordMessageSuccess ? 'auth-success' : 'form-error'} role={passwordMessageSuccess ? 'status' : 'alert'}>{passwordMessage}</p>}
             <div className="modal-actions"><button className="secondary-button" type="submit" disabled={passwordSaving}>{passwordSaving ? t('Saving…') : t('Change password')}</button></div>
           </form>}

@@ -87,6 +87,22 @@ describe('describeAuthError', () => {
     expect(describeAuthError({ code: 'reauthentication_needed', message: 'x' }, { step: 'set-password' }).message).toMatch(/sign out/)
   })
 
+  it('explains a sign-in session that ended before the new password was saved', () => {
+    // supabase-js's AuthSessionMissingError has no code, only this message.
+    const missing = describeAuthError({ name: 'AuthSessionMissingError', message: 'Auth session missing!', status: 400 }, { step: 'reset-password' })
+    expect(missing).toMatchObject({ sessionEnded: true })
+    expect(missing.message).toMatch(/new code/)
+    expect(describeAuthError({ code: 'session_not_found', message: 'Session from session_id claim in JWT does not exist' }, { step: 'reset-password' }).sessionEnded).toBe(true)
+    const profile = describeAuthError({ code: 'session_expired', message: 'x' }, { step: 'set-password' })
+    expect(profile).toMatchObject({ sessionEnded: true })
+    expect(profile.message).toMatch(/signed out/)
+  })
+
+  it('treats the reset step like a password change for other errors', () => {
+    expect(describeAuthError({ code: 'same_password', message: 'x' }, { step: 'reset-password' }).message).toMatch(/different/)
+    expect(describeAuthError({ code: 'over_request_rate_limit', message: 'x' }, { step: 'reset-password' }).message).toMatch(/Too many attempts/)
+  })
+
   it('maps suspended accounts and network failures', () => {
     expect(describeAuthError({ code: 'user_banned', message: 'User is banned' }, { step: 'sign-in' }).message).toMatch(/suspended/)
     expect(describeAuthError(new TypeError('Failed to fetch'), { step: 'sign-in' }).message).toMatch(/connection/)
