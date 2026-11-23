@@ -1,5 +1,4 @@
 import { createClient } from '@supabase/supabase-js'
-import { claimRateLimit, hashRateLimitSubject, rateLimitAddress } from '../server/request-safety'
 import { withAppCors } from '../server/app-cors'
 
 declare const process: { env: Record<string, string | undefined> }
@@ -27,32 +26,23 @@ async function handler(request: Request): Promise<Response> {
     return jsonResponse({ error: 'A valid report identifier is required.' }, 400)
   }
 
-  const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { autoRefreshToken: false, persistSession: false } })
+  // Only responders and admins confirm that an issue is still there; residents and guests don't.
   const accessToken = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '')
-  let reporterId: string | null = null
-  let guestIpHash: string | null = null
-  if (accessToken) {
-    const authClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: `Bearer ${accessToken}` } }, auth: { autoRefreshToken: false, persistSession: false } })
-    const { data: { user }, error } = await authClient.auth.getUser(accessToken)
-    if (error || !user) return jsonResponse({ error: 'Your session expired. Sign in again.' }, 401)
-    reporterId = user.id
-  } else {
-    const address = rateLimitAddress(request)
-    if (!address) return jsonResponse({ error: 'Report confirmation is temporarily unavailable.' }, 503)
-    const [hourLimit, dayLimit] = await Promise.all([
-      claimRateLimit(admin, `ip:${address}`, serviceRoleKey, 'guest_confirmation_hour', 10, 3600),
-      claimRateLimit(admin, `ip:${address}`, serviceRoleKey, 'guest_confirmation_day', 20, 86400),
-    ])
-    if (hourLimit.error || dayLimit.error) return jsonResponse({ error: 'Report confirmation is temporarily unavailable.' }, 503)
-    if (!hourLimit.allowed || !dayLimit.allowed) return jsonResponse({ error: 'Too many recent confirmations. Please try again later.' }, 429)
-    guestIpHash = await hashRateLimitSubject(`ip:${address}:report:${reportId}`, serviceRoleKey)
-  }
+  if (!accessToken) return jsonResponse({ error: 'Only responders and admins can confirm a report is still there.' }, 403)
+  const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { autoRefreshToken: false, persistSession: false } })
+  const authClient = createClient(supabaseUrl, anonKey, { global: { headers: { Authorization: `Bearer ${accessToken}` } }, auth: { autoRefreshToken: false, persistSession: false } })
+  const { data: { user }, error: userError } = await authClient.auth.getUser(accessToken)
+  if (userError || !user) return jsonResponse({ error: 'Your session expired. Sign in again.' }, 401)
+  const { data: profile, error: profileError } = await admin.from('profiles').select('role').eq('id', user.id).maybeSingle()
+  if (profileError) return jsonResponse({ error: 'Your account could not be checked.' }, 500)
+  if (profile?.role !== 'responder' && profile?.role !== 'admin') return jsonResponse({ error: 'Only responders and admins can confirm a report is still there.' }, 403)
+  const reporterId = user.id
 
   const { data: report, error: reportError } = await admin.from('reports').select('id, status').eq('id', reportId).maybeSingle()
   if (reportError) return jsonResponse({ error: 'The report could not be checked.' }, 500)
   if (!report || ['Resolved', 'Closed', 'Rejected', 'Duplicate'].includes(report.status)) return jsonResponse({ error: 'This report is no longer open for confirmations.' }, 409)
 
-  const { error: insertError } = await admin.from('report_confirmations').insert({ report_id: reportId, reporter_id: reporterId, guest_ip_hash: guestIpHash })
+  const { error: insertError } = await admin.from('report_confirmations').insert({ report_id: reportId, reporter_id: reporterId, guest_ip_hash: null })
   if (insertError?.code === '23505') return jsonResponse({ error: 'You have already confirmed this report.' }, 409)
   if (insertError) return jsonResponse({ error: 'Your confirmation could not be saved.' }, 500)
   return jsonResponse({ confirmed: true })
