@@ -27,6 +27,8 @@ type ReportFeedCardProps = {
   selected: boolean
   statusChanged: boolean
   engagement?: ReportEngagement
+  /** Responders and admins see the "still there" count; residents and guests don't. */
+  showStillThere: boolean
   canConfirm: boolean
   confirmState: ConfirmState
   userId?: string
@@ -46,7 +48,7 @@ function reporterLabel(name: string | undefined) {
   return name === 'Guest reporter' ? t('a guest') : name
 }
 
-export function ReportFeedCard({ report, icon: Icon, color, place, createdLabel, selected, statusChanged, engagement, canConfirm, confirmState, userId, canComment, onToggle, onConfirm, onDiscuss, onSignIn, onCommentPosted }: ReportFeedCardProps) {
+export function ReportFeedCard({ report, icon: Icon, color, place, createdLabel, selected, statusChanged, engagement, showStillThere, canConfirm, confirmState, userId, canComment, onToggle, onConfirm, onDiscuss, onSignIn, onCommentPosted }: ReportFeedCardProps) {
   const step = reportProgressStep(report.status)
   const detailId = `report-detail-${report.id}`
   return <article
@@ -76,7 +78,7 @@ export function ReportFeedCard({ report, icon: Icon, color, place, createdLabel,
         </span>
       </span>
       {engagement && <span className="feed-card-foot">
-        <span><Eye size={14} aria-hidden="true" />{t('{count} still there', { count: engagement.stillThere })}</span>
+        {showStillThere && <span><Eye size={14} aria-hidden="true" />{t('{count} still there', { count: engagement.stillThere })}</span>}
         <span><MessageSquare size={14} aria-hidden="true" />{tn('{count} comment', '{count} comments', engagement.comments)}</span>
       </span>}
     </button>
