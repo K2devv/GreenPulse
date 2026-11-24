@@ -61,7 +61,7 @@ export type NotificationRow = {
 export type ReportRow = {
   id: string
   title: string
-  category: 'Waste' | 'Pollution' | 'Flooding' | 'Drainage' | 'Water pollution' | 'Air pollution'
+  category: 'Waste' | 'Pollution' | 'Flooding' | 'Drainage'
   status: 'Submitted' | 'Under review' | 'Additional information requested' | 'Verified' | 'In progress' | 'Awaiting verification' | 'Resolved' | 'Rejected' | 'Closed' | 'Duplicate'
   urgency: 'Low' | 'Medium' | 'High'
   description: string

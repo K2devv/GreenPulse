@@ -1,3 +1,5 @@
+import { isReportCategory } from './report-categories'
+
 export const DISTRICT_5_BARANGAYS = [
   'Bagbag',
   'Capri',
@@ -123,6 +125,8 @@ export function loadSavedFilters(userId: string, storage: FilterStorage = localS
     for (const key of Object.keys(defaultReportFilters) as (keyof ReportFilters)[]) {
       if (key !== 'query' && typeof parsed[key] === 'string') restored[key] = parsed[key]
     }
+    // A category that no longer exists (such as the old Water pollution and Air pollution) would match nothing.
+    if (restored.category && !isReportCategory(restored.category)) restored.category = ''
     return restored
   } catch {
     return { ...defaultReportFilters }

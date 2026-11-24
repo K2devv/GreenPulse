@@ -33,9 +33,9 @@ const DAY_MS = 86_400_000
 const FOCUS_CATEGORIES: Partial<Record<SummaryFocus, string[]>> = {
   flood: ['Flooding'],
   waste: ['Waste'],
-  pollution: ['Pollution', 'Water pollution', 'Air pollution'],
+  pollution: ['Pollution'],
 }
-const CATEGORIES = ['Waste', 'Pollution', 'Flooding', 'Drainage', 'Water pollution', 'Air pollution']
+const CATEGORIES = ['Waste', 'Pollution', 'Flooding', 'Drainage']
 const STATUSES = ['Submitted', 'Under review', 'Additional information requested', 'Verified', 'In progress', 'Awaiting verification', 'Resolved', 'Rejected', 'Closed', 'Duplicate']
 const URGENCIES = ['High', 'Medium', 'Low']
 

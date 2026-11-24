@@ -114,5 +114,7 @@ describe('helpers', () => {
     expect(loadSavedFilters('u3', storage)).toEqual({ ...defaultReportFilters, category: 'Waste' })
     store.set('greenpulse-staff-filters:u4', '{oops')
     expect(loadSavedFilters('u4', storage)).toEqual(defaultReportFilters)
+    store.set('greenpulse-staff-filters:u5', JSON.stringify({ category: 'Air pollution', urgency: 'High' }))
+    expect(loadSavedFilters('u5', storage)).toEqual({ ...defaultReportFilters, urgency: 'High' })
   })
 })

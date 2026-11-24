@@ -38,7 +38,6 @@ import {
   Siren,
   Sparkles,
   Sun,
-  Trees,
   Upload,
   UserRound,
   Waves,
@@ -134,7 +133,7 @@ const LocationPickerMap = lazy(() => import('./LocationPickerMap'))
 const loadReportStart = () => import('./ReportStart')
 const ReportStart = lazy(loadReportStart)
 
-type Category = 'Waste' | 'Pollution' | 'Flooding' | 'Drainage' | 'Water pollution' | 'Air pollution'
+type Category = 'Waste' | 'Pollution' | 'Flooding' | 'Drainage'
 type Status = 'Submitted' | 'Under review' | 'Additional information requested' | 'Verified' | 'In progress' | 'Awaiting verification' | 'Resolved' | 'Rejected' | 'Closed' | 'Duplicate'
 type Urgency = 'Low' | 'Medium' | 'High'
 
@@ -237,8 +236,6 @@ const categoryColors: Record<Category, string> = {
   Waste: '#d77a37',
   Pollution: '#527ba4',
   Flooding: '#3986a2',
-  'Water pollution': '#527ba4',
-  'Air pollution': '#8d775b',
   Drainage: '#7f8c42',
 }
 
@@ -254,8 +251,7 @@ const isInsideDistrict = ([latitude, longitude]: [number, number]) =>
   latitude >= districtBounds[0][0] && latitude <= districtBounds[1][0] && longitude >= districtBounds[0][1] && longitude <= districtBounds[1][1]
 const outsideDistrictMessage = 'That location is outside District 5, Quezon City.'
 const outsideDistrictSubmitMessage = 'This report cannot be submitted because its location is outside District 5, Quezon City. Move the pin inside the district.'
-const categoryOptions: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage', 'Water pollution', 'Air pollution']
-const intakeCategories: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage']
+const categoryOptions: Category[] = ['Waste', 'Pollution', 'Flooding', 'Drainage']
 /** The sign-in dialog's screens. 'reset' asks for an email to send a reset code to; 'new-password' follows a verified reset. */
 type AuthMode = 'sign-in' | 'sign-up' | 'reset' | 'new-password'
 const STAFF_PAGE_SIZE = 50
@@ -381,8 +377,7 @@ async function deliverNotificationEmails(reportId: string) {
 
 const categoryIcon = (category: Category) => {
   if (category === 'Flooding') return Waves
-  if (category === 'Pollution' || category === 'Water pollution') return Droplets
-  if (category === 'Air pollution') return Trees
+  if (category === 'Pollution') return Droplets
   if (category === 'Drainage') return Filter
   return Leaf
 }
@@ -3496,7 +3491,7 @@ function App() {
                 <section className="form-section">
                    <h3 className="form-section-title"><span>1</span>{translate('whatHappened')}</h3>
                    <label className="field-label">{translate('reportTitle')}<input ref={reportTitleRef} name="title" className={photoFilled.title ? 'is-autofilled' : undefined} onInput={() => setPhotoFilled((current) => ({ ...current, title: false }))} maxLength={90} placeholder={t('e.g. Waste piling up beside the road')} required /></label>
-                   <fieldset className="choice-group"><legend>{translate('category')}</legend><div className="choice-chips">{intakeCategories.map((category) => { const CategoryIcon = categoryIcon(category); return <label className="choice-chip" key={category}><input type="radio" name="category" value={category} checked={reportCategory === category} onChange={() => { categoryChosen.current = true; setPhotoFilled((current) => ({ ...current, category: false })); setReportCategory(category) }} /><span><CategoryIcon size={15} />{t(category)}</span></label> })}</div></fieldset>
+                   <fieldset className="choice-group"><legend>{translate('category')}</legend><div className="choice-chips">{categoryOptions.map((category) => { const CategoryIcon = categoryIcon(category); return <label className="choice-chip" key={category}><input type="radio" name="category" value={category} checked={reportCategory === category} onChange={() => { categoryChosen.current = true; setPhotoFilled((current) => ({ ...current, category: false })); setReportCategory(category) }} /><span><CategoryIcon size={15} />{t(category)}</span></label> })}</div></fieldset>
                    {photoFilled.category && <p className="barangay-autofill-note" role="status"><Sparkles size={13} />{t('Suggested from your photo. Change it if it looks wrong.')}</p>}
                    <label className="field-label">{translate('specificIssue')}<input ref={issueTypeRef} name="issue_type" list="issue-type-options" className={photoFilled.issueType ? 'is-autofilled' : undefined} onInput={() => setPhotoFilled((current) => ({ ...current, issueType: false }))} maxLength={80} placeholder={t('e.g. Clogged drainage')} required /></label>
                    <datalist id="issue-type-options">{(isReportCategory(reportCategory) ? issueTypesByCategory[reportCategory] : []).map((issueType) => <option key={issueType} value={issueType} />)}</datalist>
