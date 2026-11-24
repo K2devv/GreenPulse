@@ -148,7 +148,7 @@ export function buildReportAnalytics(reports: AnalyticsReport[], now = new Date(
     critical: reports.filter((report) => report.urgency === 'High').length,
     thisWeek: datedReports.filter(({ createdAt }) => createdAt >= weekStart && createdAt <= now).length,
     thisMonth: datedReports.filter(({ createdAt }) => createdAt >= monthStart && createdAt <= now).length,
-    byCategory: countBy(reports, (report) => report.category, ['Waste', 'Pollution', 'Flooding', 'Drainage', 'Water pollution', 'Air pollution']),
+    byCategory: countBy(reports, (report) => report.category, ['Waste', 'Pollution', 'Flooding', 'Drainage']),
     byStatus: statusCounts,
     byUrgency: countBy(reports, (report) => report.urgency, ['High', 'Medium', 'Low']),
     overTime: dates,

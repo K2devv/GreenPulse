@@ -21,7 +21,7 @@ import { toneForMessage } from '../Toaster'
 import { UI_COPY } from './ui-copy'
 
 const STATUSES = ['Submitted', 'Under review', 'Additional information requested', 'Verified', 'In progress', 'Awaiting verification', 'Resolved', 'Rejected', 'Closed', 'Duplicate']
-const CATEGORIES = [...reportCategories, 'Water pollution', 'Air pollution']
+const CATEGORIES = [...reportCategories]
 const URGENCIES = ['High', 'Medium', 'Low']
 
 afterEach(() => setLanguageForTest('en', null))
